@@ -1,10 +1,10 @@
 # VeRedact
 
-Evaluation framework for **ZK-Redact** — a privacy-preserving scheme for scalable redaction and provenance auditing in permissioned blockchains. This codebase benchmarks ZK-Redact against baseline redactable blockchain schemes under fair, unified conditions.
+Evaluation framework for **ZK-Redact** — a privacy-preserving scheme for scalable redaction and provenance auditing in permissioned blockchains.
 
 ## Evaluation Principles
 
-- **Fair comparison.** All schemes (ZK-Redact and baselines) run against the **same database, configuration, and workload**. No scheme receives preferential tuning.
+- **Fair comparison.** All experiments run against a **consistent database, configuration, and workload**.
 - **No hardcoded values or bias.** Every parameter (batch sizes, shard counts, key lengths, workload profiles) is loaded from a shared config file — never embedded in code.
 - **No magic numbers.** Parameters from other papers are not blindly reused. All values must be justified in the config or documented with rationale.
 - **Reproducibility.** Identical configs produce identical results across runs.
@@ -69,7 +69,7 @@ make test   # run full test suite
 
 ## Running Experiments
 
-All experiments read from the shared config (`config/experiment.yaml`). Each scheme — ZK-Redact and every baseline — uses the **same database snapshot and parameters**.
+All experiments read from the shared config (`config/experiment.yaml`).
 
 ```bash
 make experiments       # run all benchmarks
@@ -90,7 +90,7 @@ VeRedact/
 ├── pkg/                   # Shared libraries (proto, ch, zk, crypto, merkle)
 ├── internal/              # Component internals (gateway, pvl, redactor, pai)
 ├── network/               # Blockchain network config + chaincode
-├── baselines/             # Baseline scheme implementations
+
 ├── config/                # Shared experiment and scheme configurations
 ├── experiments/           # Experiment scripts
 ├── results/               # Output (generated)
