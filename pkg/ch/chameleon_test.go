@@ -21,7 +21,7 @@ func mustKey(t *testing.T) *PrivateKey {
 
 func mustRand(t *testing.T) *big.Int {
 	t.Helper()
-	r, err := Randomness(testCurve(), rand.Reader)
+	r, err := NewRandomness(testCurve(), rand.Reader)
 	if err != nil {
 		t.Fatalf("Randomness: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestRandScalarRejectsExhaustedReader(t *testing.T) {
 
 func BenchmarkHash(b *testing.B) {
 	sk, _ := KeyGen(testCurve(), rand.Reader)
-	r, _ := Randomness(testCurve(), rand.Reader)
+	r, _ := NewRandomness(testCurve(), rand.Reader)
 	m := make([]byte, 512)
 
 	b.ResetTimer()
@@ -283,7 +283,7 @@ func BenchmarkHash(b *testing.B) {
 
 func BenchmarkAdapt(b *testing.B) {
 	sk, _ := KeyGen(testCurve(), rand.Reader)
-	r, _ := Randomness(testCurve(), rand.Reader)
+	r, _ := NewRandomness(testCurve(), rand.Reader)
 	oldM := make([]byte, 512)
 	newM := make([]byte, 512)
 	newM[0] = 1

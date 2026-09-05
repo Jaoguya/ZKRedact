@@ -21,7 +21,7 @@ func TestEphemeralHashMatchesPaperEquation(t *testing.T) {
 
 	ctx := []byte("h_{i-1}")
 	m := []byte("block payload")
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 
 	got, err := k.Hash(ctx, m, r)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestEphemeralAdaptProducesCollision(t *testing.T) {
 	oldM := []byte("harmful content")
 	newM := []byte("[redacted]")
 
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 	oldR := EphemeralRandomness{R: r, Yx: k.Yx, Yy: k.Yy}
 
 	oldH, err := k.Hash(ctx, oldM, r)
@@ -80,7 +80,7 @@ func TestEphemeralAdaptRotatesY(t *testing.T) {
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
 
 	ctx := []byte("ctx")
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 	oldR := EphemeralRandomness{R: r, Yx: k.Yx, Yy: k.Yy}
 
 	beforeX, beforeY := new(big.Int).Set(k.Yx), new(big.Int).Set(k.Yy)
@@ -105,7 +105,7 @@ func TestEphemeralVerifyNeedsCorrectY(t *testing.T) {
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
 
 	ctx := []byte("ctx")
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 	staleY := EphemeralRandomness{R: r, Yx: new(big.Int).Set(k.Yx), Yy: new(big.Int).Set(k.Yy)}
 
 	h, _ := k.Hash(ctx, []byte("m"), r)
@@ -130,7 +130,7 @@ func TestEphemeralAdaptRejectsForeignY(t *testing.T) {
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
 	other, _ := EphemeralKeyGen(curve, rand.Reader)
 
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 	foreign := EphemeralRandomness{R: r, Yx: other.Yx, Yy: other.Yy}
 
 	if _, err := k.EphemeralAdapt([]byte("ctx"), []byte("m"), foreign, []byte("m'")); err == nil {
@@ -141,7 +141,7 @@ func TestEphemeralAdaptRejectsForeignY(t *testing.T) {
 func TestEphemeralContextBinding(t *testing.T) {
 	curve := testCurve()
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 
 	// ctx is the previous block hash in Ref[13]; different positions in the
 	// chain must give different hashes for the same payload.
@@ -364,7 +364,7 @@ func BenchmarkEphemeralAdapt(b *testing.B) {
 	curve := elliptic.P256()
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
 	ctx := []byte("ctx")
-	r, _ := Randomness(curve, rand.Reader)
+	r, _ := NewRandomness(curve, rand.Reader)
 	er := EphemeralRandomness{R: r, Yx: k.Yx, Yy: k.Yy}
 	oldM := make([]byte, 512)
 	newM := make([]byte, 512)

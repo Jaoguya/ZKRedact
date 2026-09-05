@@ -117,8 +117,8 @@ func KeyGen(curve elliptic.Curve, rnd io.Reader) (*PrivateKey, error) {
 	}, nil
 }
 
-// Randomness draws a fresh r in [1, n-1].
-func Randomness(curve elliptic.Curve, rnd io.Reader) (*big.Int, error) {
+// NewRandomness draws a fresh r in [1, n-1].
+func NewRandomness(curve elliptic.Curve, rnd io.Reader) (*big.Int, error) {
 	if rnd == nil {
 		rnd = rand.Reader
 	}
