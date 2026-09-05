@@ -869,3 +869,88 @@ func TestCommitteeIgnoresUnsignedCertificate(t *testing.T) {
 		t.Errorf("%d members voted on a certificate the CA did not sign, want 0", len(ballots))
 	}
 }
+
+// Regression: T_rdbl must not depend on who is asking.
+//
+// An earlier version folded "requester unknown" into Redactable, so a
+// certificate for an unregistered requester asserted that a perfectly ordinary
+// transaction was outside T_rdbl (Eq. 6). Committee members re-derive their
+// decision from P_C, so they would have been reasoning from a false claim about
+// the ledger — and the denial reason named the wrong cause, which is how it was
+// noticed. The three conditions are recorded separately for this reason.
+func TestCertificateSeparatesRequesterValidityFromRedactability(t *testing.T) {
+	s := mustSetup(t)
+	target, found := s.ledger.lookup("tx-00000003")
+	if !found {
+		t.Fatal("fixture error: target missing")
+	}
+	policy := s.policies["pol-0000"]
+
+	known, err := s.ca.validate(request("c1", eligibleRequester(t, s), "tx-00000003"),
+		target, policy, testPolicy)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	unknown, err := s.ca.validate(request("c2", "id-999999", "tx-00000003"),
+		target, policy, testPolicy)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	if !known.Redactable {
+		t.Fatal("fixture error: expected a redactable target")
+	}
+	if unknown.Redactable != known.Redactable {
+		t.Errorf("Redactable is %v for an unknown requester and %v for a known one; "+
+			"T_rdbl is a property of the ledger, not of the requester",
+			unknown.Redactable, known.Redactable)
+	}
+	if unknown.RequesterKnown {
+		t.Errorf("an unregistered requester passed V(n_i, C)")
+	}
+	if unknown.Granted() {
+		t.Errorf("granted a request from an unregistered requester")
+	}
+
+	// The genesis transaction is genuinely outside T_rdbl, so Redactable must
+	// be able to be false — otherwise the field above proves nothing.
+	gen, _ := s.ledger.lookup("tx-genesis")
+	genCert, err := s.ca.validate(request("c3", eligibleRequester(t, s), "tx-genesis"),
+		gen, policy, testPolicy)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if genCert.Redactable {
+		t.Errorf("genesis transaction reported as redactable")
+	}
+}
+
+// V(n_i, C) must be covered by the CA signature, like the other two conditions.
+// A field outside the signed bytes can be flipped in transit, and a committee
+// member verifying P_C would accept the altered value.
+func TestCertificateSignatureCoversAllThreeConditions(t *testing.T) {
+	s := mustSetup(t)
+	target, _ := s.ledger.lookup("tx-00000003")
+
+	for _, tc := range []struct {
+		name string
+		flip func(*policyCert)
+	}{
+		{"RequesterKnown", func(c *policyCert) { c.RequesterKnown = !c.RequesterKnown }},
+		{"Redactable", func(c *policyCert) { c.Redactable = !c.Redactable }},
+		{"Satisfies", func(c *policyCert) { c.Satisfies = !c.Satisfies }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert, err := s.ca.validate(request("s1", eligibleRequester(t, s), "tx-00000003"),
+				target, s.policies["pol-0000"], testPolicy)
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			tc.flip(cert)
+			if s.ca.verifyCert(cert) {
+				t.Errorf("CA signature still verifies after %s was altered; "+
+					"the field is outside the signed bytes", tc.name)
+			}
+		})
+	}
+}
