@@ -4,10 +4,12 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~13,000 lines Go across 34 files, plus the Fabric network
-**Compiled:** ✅ Go 1.27.1 — `go build ./...` and `go vet ./...` clean across both
-modules, 133 tests passing, `make validate-config` passing, and the redaction
-chaincode verified on a live Fabric network (`network/scripts/smoke.sh`, 10/10)
+**Code:** ~14,000 lines Go across 41 files, plus the Fabric network
+**Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
+149 tests passing, `make validate-config` clean, and the redaction chaincode
+verified on a live Fabric network on **both topologies**: smoke 10/10 on each,
+and the Go client's fabric vote path passing end to end against four
+organisations with cross-org endorsement.
 
 ---
 
@@ -44,7 +46,7 @@ something pass.** If a guard fires, it is telling you something true.
 source ~/.bashrc
 
 make build                      # compiles clean
-make test                       # vet + 133 tests
+make test                       # vet + 149 tests
 make validate-config            # passes; one expected WARN, see below
 ```
 
@@ -97,7 +99,7 @@ and the crossover under load is the actual finding.
 | `experiments/exp1,2,3` | All three runners |
 | `cmd/validate-config` | Config gate |
 | `cmd/run-experiment` | Entry point |
-| `internal/schemes/ref10` | **All five algorithms, 50 tests** — networked voting wired |
+| `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
 The other three schemes — `zkredact`, `ref13`, `ref22` — have real structure and
@@ -218,7 +220,63 @@ production deployments use.
 > setup starts compiling circuits, since a slow `Setup` there multiplies across
 > the whole ledger sweep.
 
-### 4. ZK circuits → `pkg/zk` ⬅️ **start here**
+### 3.5 Run these on AWS before starting task 4 ⬅️ **do this first**
+
+Three things cannot be checked on a Windows laptop, and every defect this
+project has hit so far lived where the code had never actually run. Task 4 adds
+the largest new component in the project, so close these before the surface
+grows.
+
+```bash
+./scripts/setup-ec2.sh && source ~/.bashrc
+make build && make test && make validate-config
+./network/scripts/network.sh up full
+./network/scripts/network.sh deploy
+./network/scripts/smoke.sh
+```
+
+Then, in order:
+
+**1. Race detector on the live path.** Needs cgo, which the Windows host had no
+compiler for. The fabric transport caches one gateway per member behind a
+mutex, and Exp 1 drives it from up to 1024 goroutines.
+
+```bash
+go test -race -tags live ./internal/schemes/ref10/ -run TestLive -v
+```
+
+A race here is not a crash you would notice — it is corrupted ballots partway
+through a sweep.
+
+**2. Concurrency at the real levels.** `TestLiveConcurrentAuthorize` uses 4,
+which was enough to show requests overlap rather than queue. It is not enough
+to show the transport holds at 64, 256 or 1024. Raise the constant and run it
+at the levels `experiments.verification_throughput.concurrency_levels` actually
+uses.
+
+Watch for: rounds interfering (approval rate should not move with concurrency),
+gateway connections exhausting the peer, and endorsement timeouts that read as
+latency rather than as failures.
+
+**3. A real experiment through the fabric transport.** No experiment has ever
+run with `vote_transport: fabric` — only single authorizations and the
+four-way concurrency test.
+
+```bash
+# in config/experiment.yaml: vote_transport: fabric
+make experiment-verification-throughput
+```
+
+The clock guard refuses this on a coarse-clock host, so EC2 is the first place
+it can happen. Expect it to be slow: one authorization took ~10s against the
+minimal topology, and the full config is 11 concurrency levels x 30 repetitions
+x 10,000 requests. Start from `config/pilot.yaml`.
+
+**Until all three pass, Ref[10]'s Exp 1 and Exp 2 numbers remain a lower
+bound.** The in-process figures already in this file were measured without a
+network.
+
+### 4. ZK circuits → `pkg/zk`
 Groth16 over BLS12-381 via **gnark**. Circuit encodes the Phase 2 statement:
 requester satisfies the policy, state version matches, without revealing
 attributes.
@@ -268,6 +326,35 @@ real run to resolve the values that cannot be guessed:
 ---
 
 ## Findings already made — do not re-derive
+
+### Code breaks where it has never run
+
+Eleven defects have been found in this component. Every one sat on a path that
+compiled, passed the tests around it, and had never actually executed — and
+every one failed by pointing somewhere other than its cause:
+
+| Defect | Presented as |
+|---|---|
+| Schnorr sign inverted in the chaincode | a network that never reached threshold |
+| `committee_size` absent from the wire | the membership guard silently failing open |
+| Member ids used as Fabric identity directories | a missing file deep in the SDK |
+| Client and contract ranked committees differently | a membership bug, not a one-byte hash difference |
+| `RegisterNodes` never called | a chaincode fault, not a missing setup step |
+| `network.sh` hardcoded the minimal channel profile | a full run that was one org wide |
+| `up` reused containers after regenerating crypto | "certificate signed by unknown authority" |
+| `deploy` addressed minimal ports on the full topology | an endorsement policy failure |
+| No anchor peers in the channel | "no peer combination can satisfy the policy" |
+| Clock guard blocked dry runs | `make pilot` failing on every dev machine |
+| Live tests reused request ids | passing once, then failing as "round already exists" |
+
+The lesson is procedural, not technical: **write the test that runs the path,
+and run it twice.** Several of these were found only by running something a
+second time, or on a topology that had been configured but never started.
+
+Two implementations of one thing diverged three times — the Schnorr equations,
+the committee ranking, and the wire format. Where the chaincode cannot import
+`pkg/crypto` because it is a separate module, golden vectors held on both sides
+are the only thing that keeps them together.
 
 ### The three schemes use three different chameleon hashes
 This was nearly a silent error twice over. All three are implemented, and
@@ -328,6 +415,11 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Ref[22] accumulator < 3072 bits → `Setup` fails | `ref22` | a baseline benchmarked below the shared security level |
 | CH construction a scheme needs not implemented → `Setup` fails | all four schemes, via `ch.CheckRequired` | a baseline silently given a cheaper chameleon hash than its paper specifies |
 | `baselines.ref22_shen.accumulator_bits` ≠ `security.accumulator_bits` → error | `validate-config` | the runtime security level drifting from the documented one — `ref22.Setup` reads the baseline copy |
+| Clock too coarse to resolve the measurements → run refused | `run-experiment` | a full results file of quantised, plausible-looking numbers |
+| Fabric identities fewer than dataset members → `Setup` fails | `ref10` | a partial map letting some committees vote and others not |
+| `vote_transport: fabric` without gateway settings → `Setup` fails | `ref10` | in-process latency reported as a networked measurement |
+| Committee ranking pinned by golden vectors on both sides | `ref10` + chaincode | client and contract drawing different committees |
+| Schnorr agreement pinned by golden vectors on both sides | `ref10` + chaincode | the contract rejecting every honest vote |
 | Curve below `target_bits` → validation error | `validate-config` | the BN254 trap |
 | `delete_set_sizes` ≠ `redaction_batch.sizes` → error | `validate-config` | two Exp 2 curves on incomparable axes |
 | Shard sweep not exceeding vCPUs → error | `validate-config` | saturation knee outside the plot |
@@ -364,6 +456,12 @@ internal/schemes/        the four systems under test
 experiments/             one runner per experiment
 cmd/                     validate-config, run-experiment
 scripts/setup-ec2.sh     host provisioning (install | verify)
+network/
+  chaincode/redaction/   Algorithm 3 as chaincode (separate Go module)
+  compose.minimal.yaml   1 org — verification only
+  compose.yaml           4 orgs x 2 peers + 3 orderers — measurement topology
+  scripts/network.sh     up [minimal|full] | deploy | status | down
+  scripts/smoke.sh       end-to-end checks against the deployed contract
 ```
 
 ## Commands
@@ -377,7 +475,16 @@ make experiment-verification-throughput     # Exp 1
 make experiment-redaction-throughput        # Exp 2
 make experiment-provenance-audit            # Exp 3
 make experiments                            # all three
+
+make test-live                              # live Fabric integration
+./network/scripts/network.sh up minimal     # 1 org — verification only
+./network/scripts/network.sh up full        # 4 orgs — measurement topology
+./network/scripts/network.sh deploy
+./network/scripts/smoke.sh                  # 10 checks against the deployed contract
 ```
+
+`make test` stays free of Docker. `make test-live` is build-tagged so it cannot
+pass quietly when no network is running.
 
 Every experiment target depends on `validate-config`. That is deliberate:
 validation you have to remember is validation that gets skipped.
