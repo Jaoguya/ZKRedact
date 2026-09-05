@@ -32,6 +32,7 @@ import (
 	exp3 "zkredact/experiments/exp3_audit"
 	"zkredact/internal/schemes"
 	"zkredact/pkg/config"
+	"zkredact/pkg/metrics"
 	"zkredact/pkg/results"
 	"zkredact/pkg/scheme"
 	"zkredact/pkg/workload"
@@ -86,7 +87,20 @@ func run(configPath, expName string, dryRun bool, only string) error {
 	fmt.Printf("config      %s (version %s)\n", configPath, cfg.Meta.ConfigVersion)
 	fmt.Printf("seed        %d\n", seed)
 	fmt.Printf("security    %d-bit\n", targetBits)
-	fmt.Printf("repetitions %d\n\n", reps)
+	fmt.Printf("repetitions %d\n", reps)
+
+	// Refuse to measure on a host whose clock cannot resolve what is being
+	// measured. A coarse clock does not error — it quantises every duration to
+	// multiples of its tick, which collapses the latency percentiles and makes
+	// the Exp 2 cost decomposition meaningless while still producing a full,
+	// plausible-looking results file.
+	//
+	// Checked before the dataset is built so the failure costs seconds rather
+	// than a sweep.
+	if err := metrics.RequireUsableClock(); err != nil {
+		return fmt.Errorf("this host cannot be measured on: %w", err)
+	}
+	fmt.Printf("clock       %v resolution\n\n", metrics.ClockResolution())
 
 	// -------------------------------------------------------------------------
 	// Shared workload — generated once, used by every scheme

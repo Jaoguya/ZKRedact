@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"zkredact/pkg/merkle"
+	"zkredact/pkg/metrics"
 	"zkredact/pkg/scheme"
 )
 
@@ -533,6 +534,17 @@ func TestRedactAppliesAndReportsCostSplit(t *testing.T) {
 
 	// exp2 fails any scheme reporting zero CryptoTime alongside successful
 	// redactions, because that means the decomposition was never instrumented.
+	//
+	// Only checkable on a host whose clock can resolve a single redaction. On a
+	// coarse-clock host every duration rounds to zero regardless of the code, so
+	// asserting here would test the machine rather than the scheme. The harness
+	// refuses to record results on such a host (metrics.RequireUsableClock), so
+	// skipping is safe: no measured run can reach this state undetected.
+	if !metrics.ClockIsUsable() {
+		t.Skipf("clock resolution is %v, too coarse to time a single redaction; "+
+			"the cost split cannot be asserted on this host",
+			metrics.ClockResolution())
+	}
 	if res.CryptoTime <= 0 {
 		t.Errorf("CryptoTime is zero after a successful redaction")
 	}
