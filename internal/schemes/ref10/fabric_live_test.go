@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,14 @@ func liveGatewayParams(t *testing.T) map[string]any {
 	}
 	tlsCert := filepath.Join(cryptoPath, "peers", "peer0.org1.example.com", "tls", "ca.crt")
 
+	// peer0.org1 is exposed at 7051 on the minimal topology and 11051 on the
+	// full one; the marker says which is running.
+	endpoint := "localhost:7051"
+	if b, err := os.ReadFile(filepath.Join(liveNetworkRoot, ".topology")); err == nil &&
+		strings.TrimSpace(string(b)) == "full" {
+		endpoint = "localhost:11051"
+	}
+
 	return map[string]any{
 		"committee_size":         3,
 		"vote_threshold":         2,
@@ -56,7 +65,7 @@ func liveGatewayParams(t *testing.T) map[string]any {
 		"hash":                   "SHA-256",
 		"block_max_transactions": 100,
 		"gateway": map[string]any{
-			"peer_endpoint":      "localhost:7051",
+			"peer_endpoint":      endpoint,
 			"peer_server_name":   "peer0.org1.example.com",
 			"tls_cert_path":      tlsCert,
 			"msp_id":             "Org1MSP",

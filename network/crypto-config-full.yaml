@@ -28,9 +28,17 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
-      # committee the fault assumption requires.
-      Count: 4
+      # 8 per org.
+      #
+      # The gateway binds to ONE organisation's MSP, so committee members are
+      # drawn from a single org's identities — see the deviation note in
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover
+      # committee_size, which config/experiment.yaml sets to 7.
+      #
+      # 4 was not enough and the shortfall stopped Setup rather than producing
+      # a partial committee, which is the guard working; raising it here is the
+      # fix that guard asks for.
+      Count: 8
 
   - Name: Org2
     Domain: org2.example.com
@@ -39,9 +47,17 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
-      # committee the fault assumption requires.
-      Count: 4
+      # 8 per org.
+      #
+      # The gateway binds to ONE organisation's MSP, so committee members are
+      # drawn from a single org's identities — see the deviation note in
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover
+      # committee_size, which config/experiment.yaml sets to 7.
+      #
+      # 4 was not enough and the shortfall stopped Setup rather than producing
+      # a partial committee, which is the guard working; raising it here is the
+      # fix that guard asks for.
+      Count: 8
 
   - Name: Org3
     Domain: org3.example.com
@@ -50,9 +66,17 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
-      # committee the fault assumption requires.
-      Count: 4
+      # 8 per org.
+      #
+      # The gateway binds to ONE organisation's MSP, so committee members are
+      # drawn from a single org's identities — see the deviation note in
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover
+      # committee_size, which config/experiment.yaml sets to 7.
+      #
+      # 4 was not enough and the shortfall stopped Setup rather than producing
+      # a partial committee, which is the guard working; raising it here is the
+      # fix that guard asks for.
+      Count: 8
 
   - Name: Org4
     Domain: org4.example.com
@@ -61,7 +85,15 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
-      # committee the fault assumption requires.
-      Count: 4
+      # 8 per org.
+      #
+      # The gateway binds to ONE organisation's MSP, so committee members are
+      # drawn from a single org's identities — see the deviation note in
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover
+      # committee_size, which config/experiment.yaml sets to 7.
+      #
+      # 4 was not enough and the shortfall stopped Setup rather than producing
+      # a partial committee, which is the guard working; raising it here is the
+      # fix that guard asks for.
+      Count: 8
 

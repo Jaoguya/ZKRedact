@@ -107,39 +107,72 @@ generate_crypto() {
 # Channel
 # -----------------------------------------------------------------------------
 create_channel() {
-  step "Creating channel $CHANNEL"
+  local topology="$1"
+  step "Creating channel $CHANNEL ($topology)"
   need configtxgen
   need osnadmin
 
+  # The profile MUST follow the topology. A full network created from the
+  # minimal profile comes up with eight peers but a single-organisation
+  # channel: the other orgs can never join, endorsement never crosses an
+  # organisational boundary, and the run looks like a measurement while being
+  # one org wide.
+  local profile="MinimalChannel" orderers=1
+  if [[ "$topology" == "full" ]]; then
+    profile="FullChannel"
+    orderers=3
+  fi
+
   mkdir -p "$NET_DIR/channel-artifacts"
-  ( cd "$NET_DIR" && FABRIC_CFG_PATH="$NET_DIR" configtxgen \
-      -profile MinimalChannel -outputBlock "channel-artifacts/$CHANNEL.block" -channelID "$CHANNEL" ) \
-    || die "configtxgen failed"
+  ( cd "$NET_DIR" && FABRIC_CFG_PATH="$NET_DIR" configtxgen       -profile "$profile" -outputBlock "channel-artifacts/$CHANNEL.block" -channelID "$CHANNEL" )     || die "configtxgen failed"
+  ok "genesis block from profile $profile"
 
-  local tls="$NET_DIR/organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/tls"
-  osnadmin channel join \
-    --channelID "$CHANNEL" \
-    --config-block "$NET_DIR/channel-artifacts/$CHANNEL.block" \
-    -o localhost:7053 \
-    --ca-file "$tls/ca.crt" \
-    --client-cert "$tls/server.crt" \
-    --client-key "$tls/server.key" >/dev/null || die "orderer failed to join the channel"
-  ok "orderer joined"
+  # Every orderer joins, not just the first: a Raft set with one member has no
+  # leader election and no follower replication, which are part of the commit
+  # latency Exp 1 measures.
+  for ((i = 0; i < orderers; i++)); do
+    local tls="$NET_DIR/organizations/ordererOrganizations/example.com/orderers/orderer$i.example.com/tls"
+    local admin_port=$((7053 + i * 1000))
+    osnadmin channel join       --channelID "$CHANNEL"       --config-block "$NET_DIR/channel-artifacts/$CHANNEL.block"       -o "localhost:$admin_port"       --ca-file "$tls/ca.crt"       --client-cert "$tls/server.crt"       --client-key "$tls/server.key" >/dev/null       || die "orderer$i failed to join the channel"
+  done
+  ok "$orderers orderer(s) joined"
 
-  peer_env
-  peer channel join -b "$NET_DIR/channel-artifacts/$CHANNEL.block" >/dev/null \
-    || die "peer failed to join the channel"
-  ok "peer joined"
+  # Every peer joins. A peer outside the channel cannot endorse, so leaving one
+  # out quietly shrinks the endorsement set the policy is evaluated against.
+  local orgs=1 peers=1
+  if [[ "$topology" == "full" ]]; then
+    orgs=4; peers=2
+  fi
+  local joined=0
+  for ((o = 1; o <= orgs; o++)); do
+    for ((pnum = 0; pnum < peers; pnum++)); do
+      peer_env "$o" "$pnum" "$topology"
+      peer channel join -b "$NET_DIR/channel-artifacts/$CHANNEL.block" >/dev/null         || die "peer$pnum.org$o failed to join the channel"
+      joined=$((joined + 1))
+    done
+  done
+  ok "$joined peer(s) joined"
 }
 
+# peer_env points the CLI at one peer.
+#
+# Ports follow compose: the minimal topology exposes peer0.org1 on 7051; the
+# full topology exposes peer<n>.org<o> on 11051 + 1000*(2*(o-1) + n).
 peer_env() {
-  local org="$NET_DIR/organizations/peerOrganizations/org1.example.com"
+  local org="${1:-1}" pnum="${2:-0}" topology="${3:-minimal}"
+  local dir="$NET_DIR/organizations/peerOrganizations/org$org.example.com"
+
   export FABRIC_CFG_PATH="$FABRIC_BIN/../config"
   export CORE_PEER_TLS_ENABLED=true
-  export CORE_PEER_LOCALMSPID=Org1MSP
-  export CORE_PEER_TLS_ROOTCERT_FILE="$org/peers/peer0.org1.example.com/tls/ca.crt"
-  export CORE_PEER_MSPCONFIGPATH="$org/users/Admin@org1.example.com/msp"
-  export CORE_PEER_ADDRESS=localhost:7051
+  export CORE_PEER_LOCALMSPID="Org${org}MSP"
+  export CORE_PEER_TLS_ROOTCERT_FILE="$dir/peers/peer$pnum.org$org.example.com/tls/ca.crt"
+  export CORE_PEER_MSPCONFIGPATH="$dir/users/Admin@org$org.example.com/msp"
+
+  if [[ "$topology" == "full" ]]; then
+    export CORE_PEER_ADDRESS="localhost:$((11051 + 1000 * (2 * (org - 1) + pnum)))"
+  else
+    export CORE_PEER_ADDRESS=localhost:7051
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -157,6 +190,15 @@ cmd_up() {
   [[ -r "$compose" ]] || die "missing $compose"
 
   check_config_agreement
+
+  # Tear down first. generate_crypto issues a NEW CA, and `docker compose up -d`
+  # leaves already-running containers alone — so a second `up` gives clients
+  # certificates from the new CA while the orderers still trust the old one.
+  # The failure is "certificate signed by unknown authority", which reads as a
+  # TLS misconfiguration rather than as stale containers.
+  step "Clearing any previous network"
+  cmd_down_quiet
+
   generate_crypto "$topology"
 
   step "Starting containers ($topology)"
@@ -172,7 +214,7 @@ cmd_up() {
   sleep 3
   ok "containers running"
 
-  create_channel
+  create_channel "$topology"
 
   echo "$topology" > "$MARKER"
   if [[ "$topology" == "minimal" ]]; then
@@ -237,18 +279,30 @@ JSON
   ( cd "$pkgdir" && tar -czf code.tar.gz connection.json       && tar -czf "$NET_DIR/channel-artifacts/${CC_NAME}.tar.gz" metadata.json code.tar.gz )     || die "packaging failed"
   ok "packaged as ccaas"
 
-  peer_env
-  local pkg="$NET_DIR/channel-artifacts/${CC_NAME}.tar.gz"
-  # NOT swallowed. An install failure hidden here surfaces much later as
-  # "definition exists, but chaincode is not installed" at invoke time, which
-  # points at the channel rather than at the package.
-  peer lifecycle chaincode install "$pkg" >/dev/null 2>&1     || die "install failed; run it without redirection to see the builder error"
-  ok "installed"
+  local topology; topology=$(cat "$MARKER")
+  local orgs=1 peers=1
+  if [[ "$topology" == "full" ]]; then
+    orgs=4; peers=2
+  fi
 
+  local pkg="$NET_DIR/channel-artifacts/${CC_NAME}.tar.gz"
   local pkg_id
-  pkg_id=$(peer lifecycle chaincode calculatepackageid "$pkg" 2>/dev/null)
+  pkg_id=$(peer_env 1 0 "$topology"; peer lifecycle chaincode calculatepackageid "$pkg" 2>/dev/null)
   [[ -n "$pkg_id" ]] || die "could not compute the package id"
   ok "package id $pkg_id"
+
+  # Install on every peer. A peer without the chaincode cannot endorse, so
+  # leaving one out shrinks the endorsement set the MAJORITY policy is
+  # evaluated against — silently, since the remaining peers still succeed.
+  local installed=0
+  for ((o = 1; o <= orgs; o++)); do
+    for ((pnum = 0; pnum < peers; pnum++)); do
+      peer_env "$o" "$pnum" "$topology"
+      peer lifecycle chaincode install "$pkg" >/dev/null 2>&1         || die "install on peer$pnum.org$o failed; run it without redirection to see the builder error"
+      installed=$((installed + 1))
+    done
+  done
+  ok "installed on $installed peer(s)"
 
   # The chaincode service must be running before the definition is committed:
   # the peer connects to it to initialise, and a missing service surfaces as a
@@ -266,10 +320,31 @@ JSON
   step "Approving and committing"
   local tls="$NET_DIR/organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/tls/ca.crt"
 
-  peer lifecycle chaincode approveformyorg     -o localhost:7050 --ordererTLSHostnameOverride orderer0.example.com     --tls --cafile "$tls" --channelID "$CHANNEL"     --name "$CC_NAME" --version "$CC_VERSION" --package-id "$pkg_id"     --sequence "$CC_SEQUENCE" >/dev/null || die "approve failed"
-  ok "approved"
+  # Every org approves. The lifecycle policy is MAJORITY, so a commit with only
+  # one org's approval fails — and with all four the commit itself exercises
+  # cross-organisation endorsement, which is what the full topology is for.
+  for ((o = 1; o <= orgs; o++)); do
+    peer_env "$o" 0 "$topology"
+    peer lifecycle chaincode approveformyorg       -o localhost:7050 --ordererTLSHostnameOverride orderer0.example.com       --tls --cafile "$tls" --channelID "$CHANNEL"       --name "$CC_NAME" --version "$CC_VERSION" --package-id "$pkg_id"       --sequence "$CC_SEQUENCE" >/dev/null || die "approve failed for org$o"
+  done
+  ok "$orgs org(s) approved"
 
-  peer lifecycle chaincode commit     -o localhost:7050 --ordererTLSHostnameOverride orderer0.example.com     --tls --cafile "$tls" --channelID "$CHANNEL"     --name "$CC_NAME" --version "$CC_VERSION" --sequence "$CC_SEQUENCE"     --peerAddresses localhost:7051     --tlsRootCertFiles "$NET_DIR/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt"     >/dev/null || die "commit failed"
+  # Commit names one peer per org so endorsement is collected across all of
+  # them, as the policy requires.
+  local peer_args=()
+  for ((o = 1; o <= orgs; o++)); do
+    local addr
+    if [[ "$topology" == "full" ]]; then
+      addr="localhost:$((11051 + 1000 * (2 * (o - 1))))"
+    else
+      addr="localhost:7051"
+    fi
+    peer_args+=(--peerAddresses "$addr" --tlsRootCertFiles
+      "$NET_DIR/organizations/peerOrganizations/org$o.example.com/peers/peer0.org$o.example.com/tls/ca.crt")
+  done
+
+  peer_env 1 0 "$topology"
+  peer lifecycle chaincode commit     -o localhost:7050 --ordererTLSHostnameOverride orderer0.example.com     --tls --cafile "$tls" --channelID "$CHANNEL"     --name "$CC_NAME" --version "$CC_VERSION" --sequence "$CC_SEQUENCE"     "${peer_args[@]}" >/dev/null || die "commit failed"
   ok "committed to channel $CHANNEL"
 }
 
@@ -284,6 +359,17 @@ cmd_status() {
   fi
   docker ps --filter "network=zkredact_fabric" \
     --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
+}
+
+# cmd_down_quiet is cmd_down without the banner, for reuse from cmd_up.
+cmd_down_quiet() {
+  CHAINCODE_ID=unused docker compose -f "$NET_DIR/chaincode-service.yaml" down -v --remove-orphans 2>/dev/null || true
+  for c in "$NET_DIR/compose.yaml" "$NET_DIR/compose.minimal.yaml"; do
+    [[ -r "$c" ]] && docker compose -f "$c" down -v --remove-orphans 2>/dev/null || true
+  done
+  docker ps -aq --filter "name=dev-peer" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -f "$MARKER"
+  rm -rf "$NET_DIR/organizations" "$NET_DIR/channel-artifacts"
 }
 
 cmd_down() {

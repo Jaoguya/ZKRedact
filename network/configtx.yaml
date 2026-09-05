@@ -46,6 +46,92 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('Org1MSP.peer')"
+    # Anchor peers make this org discoverable to the others. Without them the
+    # Gateway cannot assemble a cross-organisation endorsement plan and fails
+    # with "no peer combination can satisfy the endorsement policy" — which
+    # reads as a policy problem rather than a discovery one. The CLI hides this
+    # because it is told each peer address explicitly.
+    AnchorPeers:
+      - Host: peer0.org1.example.com
+        Port: 7051
+
+  - &Org2
+    Name: Org2MSP
+    ID: Org2MSP
+    MSPDir: organizations/peerOrganizations/org2.example.com/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin', 'Org2MSP.peer', 'Org2MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin', 'Org2MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Org2MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Org2MSP.peer')"
+    # Anchor peers make this org discoverable to the others. Without them the
+    # Gateway cannot assemble a cross-organisation endorsement plan and fails
+    # with "no peer combination can satisfy the endorsement policy" — which
+    # reads as a policy problem rather than a discovery one. The CLI hides this
+    # because it is told each peer address explicitly.
+    AnchorPeers:
+      - Host: peer0.org2.example.com
+        Port: 7051
+
+  - &Org3
+    Name: Org3MSP
+    ID: Org3MSP
+    MSPDir: organizations/peerOrganizations/org3.example.com/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Org3MSP.admin', 'Org3MSP.peer', 'Org3MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Org3MSP.admin', 'Org3MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Org3MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Org3MSP.peer')"
+    # Anchor peers make this org discoverable to the others. Without them the
+    # Gateway cannot assemble a cross-organisation endorsement plan and fails
+    # with "no peer combination can satisfy the endorsement policy" — which
+    # reads as a policy problem rather than a discovery one. The CLI hides this
+    # because it is told each peer address explicitly.
+    AnchorPeers:
+      - Host: peer0.org3.example.com
+        Port: 7051
+
+  - &Org4
+    Name: Org4MSP
+    ID: Org4MSP
+    MSPDir: organizations/peerOrganizations/org4.example.com/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Org4MSP.admin', 'Org4MSP.peer', 'Org4MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Org4MSP.admin', 'Org4MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Org4MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Org4MSP.peer')"
+    # Anchor peers make this org discoverable to the others. Without them the
+    # Gateway cannot assemble a cross-organisation endorsement plan and fails
+    # with "no peer combination can satisfy the endorsement policy" — which
+    # reads as a policy problem rather than a discovery one. The CLI hides this
+    # because it is told each peer address explicitly.
+    AnchorPeers:
+      - Host: peer0.org4.example.com
+        Port: 7051
 
 Capabilities:
   Channel: &ChannelCapabilities
@@ -143,3 +229,42 @@ Profiles:
       <<: *ApplicationDefaults
       Organizations:
         - *Org1
+
+  # Measurement topology: 4 orgs, 3 Raft orderers.
+  #
+  # The endorsement policy is MAJORITY across organisations, so a transaction
+  # needs signatures from more than one org. That is the cost the minimal
+  # profile does not have, and it is a component of what Exp 1 measures — a
+  # single-org channel would understate Ref[10] while looking like a full run.
+  FullChannel:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Addresses:
+        - orderer0.example.com:7050
+        - orderer1.example.com:7050
+        - orderer2.example.com:7050
+      EtcdRaft:
+        Consenters:
+          - Host: orderer0.example.com
+            Port: 7050
+            ClientTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/tls/server.crt
+            ServerTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/tls/server.crt
+          - Host: orderer1.example.com
+            Port: 7050
+            ClientTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer1.example.com/tls/server.crt
+            ServerTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer1.example.com/tls/server.crt
+          - Host: orderer2.example.com
+            Port: 7050
+            ClientTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer2.example.com/tls/server.crt
+            ServerTLSCert: organizations/ordererOrganizations/example.com/orderers/orderer2.example.com/tls/server.crt
+      Organizations:
+        - *OrdererOrg
+      Capabilities: *OrdererCapabilities
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *Org1
+        - *Org2
+        - *Org3
+        - *Org4

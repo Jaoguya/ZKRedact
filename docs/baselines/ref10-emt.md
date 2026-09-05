@@ -177,6 +177,23 @@ the shared dataset) or an unrelated comparison.
 
 ---
 
+### Voters come from one organisation
+
+The Fabric gateway binds to a single MSP, so the committee is drawn from one
+organisation's identities even on the four-org topology. Ref[10] draws N_auth
+from the whole network, so a fully faithful deployment would spread voters
+across organisations.
+
+**What this does and does not affect.** Every vote is still a transaction
+endorsed under the channel's MAJORITY policy, so each ballot crosses all four
+organisations and the dominant network cost is present. What is missing is
+organisational diversity among the *voters* themselves.
+
+Recorded because it is invisible in the results: the throughput and latency
+figures look the same either way. Lifting it needs one gateway configuration
+per organisation and a committee selection that spans them — worth doing before
+any claim that specifically concerns cross-organisational voting.
+
 ## 7. Fidelity checklist
 
 Verify before any Experiment 1 result is recorded:
