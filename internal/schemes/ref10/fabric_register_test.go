@@ -2,11 +2,15 @@ package ref10
 
 import (
 	"context"
+	"crypto/elliptic"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zkredact/pkg/scheme"
 )
 
 // These tests cover the three defects a review found on the fabric path, all of
@@ -249,4 +253,61 @@ func TestFabricTransportRoundJSONIsWellFormed(t *testing.T) {
 	if decoded.ContractAddr != r.ContractAddr {
 		t.Errorf("contract address did not survive: %q", decoded.ContractAddr)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Committee selection agreement with the chaincode
+// -----------------------------------------------------------------------------
+
+// Golden committee vectors, shared verbatim with
+// network/chaincode/redaction/contract_test.go.
+//
+// WHY THEY EXIST. The contract recomputes N_auth from its own node set, so
+// committee selection is a second implementation of the same ranking. It
+// diverged once already: this side hashed addr||id while the contract hashed
+// addr||0x1f||id, so the two drew different committees and the peer rejected
+// honest votes as "not on the committee" — which reads as a membership bug
+// rather than a hashing difference, and only a live run surfaced it.
+//
+// If this fails, one side changed. Make them agree before touching anything
+// else; a divergence here silently rejects every vote.
+var goldenCommittees = map[string][]string{
+	"con-vector-A": {"id-009", "id-008", "id-011", "id-002", "id-004"},
+	"con-vector-B": {"id-002", "id-001", "id-007", "id-008", "id-000"},
+}
+
+func TestCommitteeSelectionMatchesChaincode(t *testing.T) {
+	ids := make([]scheme.Identity, 12)
+	for i := range ids {
+		ids[i] = scheme.Identity{
+			ID:         fmt.Sprintf("id-%03d", i),
+			Attributes: map[string]string{"validator": "true"},
+		}
+	}
+	reg, err := newRegistry(ids, elliptic.P256(), 42)
+	if err != nil {
+		t.Fatalf("newRegistry: %v", err)
+	}
+
+	for addr, want := range goldenCommittees {
+		got, err := reg.selectCommittee(addr, "S OR R OR V", len(want))
+		if err != nil {
+			t.Fatalf("selectCommittee(%s): %v", addr, err)
+		}
+		for i := range want {
+			if got[i].Identity.ID != want[i] {
+				t.Fatalf("committee for %s differs from the chaincode's ranking at "+
+					"position %d: got %s, want %s\n  full: %v",
+					addr, i, got[i].Identity.ID, want[i], memberIDs(got))
+			}
+		}
+	}
+}
+
+func memberIDs(ms []*member) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.Identity.ID
+	}
+	return out
 }

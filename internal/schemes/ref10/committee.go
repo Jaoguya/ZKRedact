@@ -124,8 +124,18 @@ func (r *registry) selectCommittee(contractAddr string, policy string, size int)
 	}
 	rs := make([]ranked, len(pool))
 	for i, m := range pool {
+		// H(addr || 0x1f || id). The separator is not decoration: without it
+		// addr="a"+id="bc" and addr="ab"+id="c" hash identically, so two
+		// different rounds could draw the same ranking.
+		//
+		// It must also match network/chaincode/redaction exactly. The contract
+		// recomputes N_auth independently, and when the two orderings diverge
+		// the peer rejects honest votes as "not on the committee" — which reads
+		// as a membership bug rather than a hashing difference.
+		// TestCommitteeSelectionMatchesChaincode pins the agreement.
 		h := sha256.New()
 		h.Write([]byte(contractAddr))
+		h.Write([]byte{0x1f})
 		h.Write([]byte(m.Identity.ID))
 		var sum [sha256.Size]byte
 		copy(sum[:], h.Sum(nil))

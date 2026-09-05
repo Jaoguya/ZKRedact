@@ -36,6 +36,7 @@ help:
 	@echo "  make validate-config      check $(CONFIG) before running anything"
 	@echo "  make test                 full test suite"
 	@echo "  make fidelity-check       baseline fidelity tests (negative tests)"
+	@echo "  make test-live            live Fabric integration (needs a running network)"
 	@echo ""
 	@echo "Experiments:"
 	@echo "  make pilot                short run to resolve sweep bounds"
@@ -148,6 +149,19 @@ build:
 # Baseline fidelity: every verification path must actually REJECT invalid input.
 # A commitment scheme that never rejects anything benchmarks beautifully and is
 # worthless. See the fidelity checklists in docs/baselines/*.md.
+# Live integration against a running network. Build-tagged so a normal
+# `make test` does not depend on Docker, and so this cannot silently pass when
+# the network is down.
+#
+# Three defects lived where the fake-based tests could not reach - RegisterNodes
+# never called, committee_size absent from the wire, member ids used as identity
+# directory names - and a fourth, the client and contract ranking committees
+# differently, surfaced only here.
+.PHONY: test-live
+test-live:
+	@echo "==> live integration (requires network.sh up + deploy)"
+	@$(GO) test -tags live ./internal/schemes/ref10/ -run TestLive -v -count=1
+
 .PHONY: fidelity-check
 fidelity-check:
 	@echo "==> baseline fidelity (negative tests)"

@@ -437,3 +437,32 @@ func TestCommitteeIsAPrefixOfTheOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestCommitteeSelectionMatchesClient is the other half of the agreement pinned
+// by TestCommitteeSelectionMatchesChaincode in internal/schemes/ref10.
+//
+// The vectors are identical on both sides. They diverged once — the client
+// hashed addr||id while this side hashed addr||0x1f||id — and the symptom was
+// the peer rejecting honest votes as "not on the committee", which points at
+// membership rather than at hashing. Only a live run surfaced it.
+func TestCommitteeSelectionMatchesClient(t *testing.T) {
+	golden := map[string][]string{
+		"con-vector-A": {"id-009", "id-008", "id-011", "id-002", "id-004"},
+		"con-vector-B": {"id-002", "id-001", "id-007", "id-008", "id-000"},
+	}
+
+	nodes := testNodes(12)
+	for addr, want := range golden {
+		got, err := selectCommittee(addr, nodes, "S OR R OR V", len(want))
+		if err != nil {
+			t.Fatalf("selectCommittee(%s): %v", addr, err)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("committee for %s differs from the client's ranking at "+
+					"position %d: got %s, want %s\n  full: %v",
+					addr, i, got[i], want[i], got)
+			}
+		}
+	}
+}
