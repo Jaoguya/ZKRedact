@@ -402,19 +402,76 @@ func (s *Scheme) Audit(ctx context.Context, q *scheme.AuditQuery) (*scheme.Audit
 	res := &scheme.AuditResult{Semantics: scheme.SemanticsFullScan}
 
 	retrievalStart := time.Now()
-	history, traversed, bytesRead := s.ledger.scanForRedactions(q.TargetTxID)
+	found, traversed, bytesRead := s.ledger.scanForRedactions(q.TargetTxID)
 	res.RetrievalTime = time.Since(retrievalStart)
 	res.BlocksTraversed = traversed
 	res.EvidenceBytes = bytesRead
-	res.History = history
 
-	// Algorithm 1: recompute H_c, H_w and H_tx, and check inclusion against the
-	// block's EMT root.
+	res.History = make([]scheme.ProvenanceRecord, 0, len(found))
+	for _, f := range found {
+		res.History = append(res.History, f.Record)
+	}
+
+	// Algorithm 1 on the target, then on EVERY located redaction transaction.
+	//
+	// The measurement boundary is "all located redaction transactions verified"
+	// (docs/baselines/ref10-emt.md §2), so verification cost must grow with
+	// history depth. Verifying only the target would report depth-independent
+	// verification for a scheme that has no mechanism providing it, and Exp 3's
+	// second plot — ledger fixed, depth growing — would show Ref[10] flat
+	// against ZK-Redact for no reason its design supports.
 	verifyStart := time.Now()
-	res.Verified = s.verifyEMT(q.TargetTxID)
+	res.Verified = s.verifyEMT(q.TargetTxID) && s.verifyRedactionRecords(found)
 	res.VerificationTime = time.Since(verifyStart)
 
 	return res, nil
+}
+
+// verifyRedactionRecords re-verifies each located tx_rdt: its own EMT
+// inclusion, and the committee signatures that authorised it.
+//
+// An auditor has only what the ledger stores, so Sigma is parsed back out of
+// tx_rdt and each signer's key is resolved from the contract's registered
+// committee (Algorithm 3 stores pk_j in con_k). Nothing here reads state that a
+// real auditor would not hold.
+func (s *Scheme) verifyRedactionRecords(found []foundRedaction) bool {
+	for _, f := range found {
+		if !s.verifyEMT(f.RdtTxID) {
+			return false
+		}
+
+		requestID, ok := requestIDFromRedactionTx(f.RdtTxID)
+		if !ok {
+			return false
+		}
+		entries, err := parseSigma(f.Record.AuthEvidence)
+		if err != nil {
+			return false
+		}
+
+		msg := voteMessage(contractAddress(requestID), requestID, true)
+		seen := make(map[string]bool, len(entries))
+		valid := 0
+		for _, e := range entries {
+			if seen[e.NodeID] {
+				return false // one node, one vote
+			}
+			seen[e.NodeID] = true
+
+			m, known := s.registry.lookup(e.NodeID)
+			if !known {
+				return false // a vote from outside N_all
+			}
+			if !m.Key.SchnorrPublicKey.Verify(msg, e.Sig) {
+				return false
+			}
+			valid++
+		}
+		if valid < s.voteThreshold {
+			return false
+		}
+	}
+	return true
 }
 
 // verifyEMT is Algorithm 1 for one transaction.

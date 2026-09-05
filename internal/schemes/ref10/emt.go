@@ -345,6 +345,15 @@ func encodeRedactionCore(rdt *redactionTx) []byte {
 	return out
 }
 
+// foundRedaction is a located tx_rdt together with where it sits, so Audit can
+// verify the record itself and not merely report it.
+type foundRedaction struct {
+	Record  scheme.ProvenanceRecord
+	RdtTxID string
+	Block   int
+	Index   int
+}
+
 // scanForRedactions walks the whole chain looking for redaction transactions
 // naming the target.
 //
@@ -355,11 +364,11 @@ func encodeRedactionCore(rdt *redactionTx) []byte {
 // EvidenceBytes counts what an auditor actually has to read: every block root,
 // plus the content of every redaction transaction encountered — not only the
 // matching ones, since you cannot know which match without reading them.
-func (l *ledger) scanForRedactions(targetTxID string) ([]scheme.ProvenanceRecord, int, int) {
+func (l *ledger) scanForRedactions(targetTxID string) ([]foundRedaction, int, int) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	var out []scheme.ProvenanceRecord
+	var out []foundRedaction
 	bytesRead := 0
 
 	for _, b := range l.blocks {
@@ -372,14 +381,19 @@ func (l *ledger) scanForRedactions(targetTxID string) ([]scheme.ProvenanceRecord
 			if tx.rdt.TargetTxID != targetTxID {
 				continue
 			}
-			out = append(out, scheme.ProvenanceRecord{
-				TxID:         tx.rdt.TargetTxID,
-				FromVersion:  tx.rdt.FromVer,
-				ToVersion:    tx.rdt.ToVer,
-				PolicyID:     tx.rdt.PolicyID,
-				OldDigest:    tx.rdt.OldDigest,
-				NewDigest:    tx.rdt.NewDigest,
-				AuthEvidence: tx.rdt.Evidence,
+			out = append(out, foundRedaction{
+				Record: scheme.ProvenanceRecord{
+					TxID:         tx.rdt.TargetTxID,
+					FromVersion:  tx.rdt.FromVer,
+					ToVersion:    tx.rdt.ToVer,
+					PolicyID:     tx.rdt.PolicyID,
+					OldDigest:    tx.rdt.OldDigest,
+					NewDigest:    tx.rdt.NewDigest,
+					AuthEvidence: tx.rdt.Evidence,
+				},
+				RdtTxID: tx.ID,
+				Block:   b.Height,
+				Index:   0,
 			})
 		}
 	}

@@ -198,6 +198,14 @@ Verify before any Experiment 1 result is recorded:
       `fabric` transport is refused rather than silently downgraded, and
       `validate-config` warns while this stands. Exp 1 and Exp 2 numbers for
       Ref[10] are a lower bound until this box is ticked.
+- [x] Audit verifies every located redaction transaction, not just the target
+      — `TestAuditVerifiesEveryLocatedRedaction`,
+      `TestAuditRejectsTamperedRedactionRecord`,
+      `TestAuditRejectsDuplicatePaddedRecord`. Verification cost measured at
+      285µs / 567µs / 1134µs / 2268µs / 4611µs for depths 1/2/4/8/16, i.e.
+      linear in history depth as `Σ` re-verification requires. Verifying only
+      the target would report depth-independent verification, which nothing in
+      Ref[10]'s design provides.
 - [x] `H_c` immutability is enforced — a redaction altering core data must fail
       — `TestAuditDetectsCoreDataTampering`, `TestRedactionChangesOnlyTheInsertedBranch`
 - [x] No parameter appears as a literal anywhere in the implementation

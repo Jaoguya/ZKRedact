@@ -1,12 +1,14 @@
 package ref10
 
 import (
+	"bytes"
 	"context"
 	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"strings"
 	"time"
@@ -332,16 +334,80 @@ func runVoteRound(ctx context.Context, t transport, r *voteRound) ([]ballot, err
 }
 
 // sigmaBytes serialises Sigma for storage in tx_rdt.
+// The encoding must be PARSEABLE, not merely opaque bytes. An auditor
+// re-verifying a redaction has only what the ledger stores, so Sigma has to be
+// recoverable from tx_rdt alone — node identities and signature scalars
+// included. Hex with explicit separators keeps the scalars unambiguous;
+// concatenating raw big-endian bytes would not, since E and S are
+// variable-length.
 func sigmaBytes(approved []ballot) []byte {
 	var b []byte
 	for _, x := range approved {
 		b = append(b, x.NodeID...)
 		b = append(b, 0x1f)
-		b = append(b, x.Xi.E.Bytes()...)
-		b = append(b, x.Xi.S.Bytes()...)
+		b = append(b, []byte(x.Xi.E.Text(16))...)
+		b = append(b, 0x1f)
+		b = append(b, []byte(x.Xi.S.Text(16))...)
 		b = append(b, 0x1e)
 	}
 	return b
+}
+
+// sigmaEntry is one recovered vote: who signed, and with what.
+type sigmaEntry struct {
+	NodeID string
+	Sig    *crypto.SchnorrSignature
+}
+
+// parseSigma recovers the vote set from a stored tx_rdt.
+//
+// Used by Audit, which must verify every located redaction transaction
+// (docs/baselines/ref10-emt.md §2). A malformed Sigma is an error, not an empty
+// set: silently returning nothing would let a corrupted record verify as though
+// it carried no votes to check.
+func parseSigma(b []byte) ([]sigmaEntry, error) {
+	if len(b) == 0 {
+		return nil, errors.New("ref10: empty Sigma")
+	}
+	var out []sigmaEntry
+	for _, rec := range bytes.Split(b, []byte{0x1e}) {
+		if len(rec) == 0 {
+			continue
+		}
+		parts := bytes.Split(rec, []byte{0x1f})
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("ref10: malformed Sigma entry (%d fields, want 3)", len(parts))
+		}
+		e, ok := new(big.Int).SetString(string(parts[1]), 16)
+		if !ok {
+			return nil, errors.New("ref10: malformed Sigma challenge scalar")
+		}
+		sc, ok := new(big.Int).SetString(string(parts[2]), 16)
+		if !ok {
+			return nil, errors.New("ref10: malformed Sigma response scalar")
+		}
+		out = append(out, sigmaEntry{
+			NodeID: string(parts[0]),
+			Sig:    &crypto.SchnorrSignature{E: e, S: sc},
+		})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("ref10: Sigma contains no votes")
+	}
+	return out, nil
+}
+
+// requestIDFromRedactionTx recovers the request a tx_rdt authorised.
+//
+// The contract address is derived from it, and the address is half of what the
+// vote signatures commit to — so without this an auditor cannot reconstruct the
+// message the committee actually signed.
+func requestIDFromRedactionTx(rdtID string) (string, bool) {
+	const prefix = "tx-rdt-"
+	if !strings.HasPrefix(rdtID, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(rdtID, prefix), true
 }
 
 // verifySigma re-verifies a full vote set, as Algorithm 5 line 4 and Algorithm 1

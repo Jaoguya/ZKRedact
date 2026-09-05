@@ -954,3 +954,146 @@ func TestCertificateSignatureCoversAllThreeConditions(t *testing.T) {
 		})
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Audit must verify every located redaction transaction
+//
+// The Exp 3 measurement boundary is "all located redaction transactions
+// verified via Algorithm 1" (spec §2). Verifying only the target would make
+// Ref[10]'s verification cost independent of history depth — a property it has
+// no mechanism to provide, and one that would show it flat against ZK-Redact on
+// Exp 3's second plot.
+// -----------------------------------------------------------------------------
+
+// redactNTimes drives a target to the requested history depth through the
+// scheme's own Authorize and Redact.
+func redactNTimes(t *testing.T, s *Scheme, target string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		req := request(fmt.Sprintf("h-%s-%d", target, i), eligibleRequester(t, s), target)
+		req.NewContent = []byte(fmt.Sprintf("revision %d", i+1))
+		auth, err := s.Authorize(ctx, req)
+		if err != nil || !auth.Granted {
+			t.Fatalf("Authorize revision %d: %v (%s)", i+1, err, auth.Reason)
+		}
+		r, err := s.Redact(ctx, []*scheme.Authorization{auth})
+		if err != nil || r.Succeeded != 1 {
+			t.Fatalf("Redact revision %d: %v (succeeded=%d)", i+1, err, r.Succeeded)
+		}
+	}
+}
+
+func TestAuditVerifiesEveryLocatedRedaction(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 4)
+
+	res, err := s.Audit(context.Background(), &scheme.AuditQuery{TargetTxID: "tx-00000003"})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if len(res.History) != 4 {
+		t.Fatalf("history has %d entries, want 4", len(res.History))
+	}
+	if !res.Verified {
+		t.Errorf("a genuine history failed verification")
+	}
+}
+
+// If a stored Sigma is tampered with, the audit must fail. Without per-record
+// verification this passes regardless, which is exactly how the gap survived.
+func TestAuditRejectsTamperedRedactionRecord(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 3)
+
+	found, _, _ := s.ledger.scanForRedactions("tx-00000003")
+	if len(found) != 3 {
+		t.Fatalf("expected 3 redaction records, got %d", len(found))
+	}
+
+	// Corrupt one signature scalar in the middle record's stored Sigma.
+	tx, ok := s.ledger.lookup(found[1].RdtTxID)
+	if !ok {
+		t.Fatal("redaction transaction not found")
+	}
+	ev := tx.rdt.Evidence
+	for i := range ev {
+		if ev[i] >= '0' && ev[i] <= '8' {
+			ev[i]++
+			break
+		}
+	}
+
+	res, err := s.Audit(context.Background(), &scheme.AuditQuery{TargetTxID: "tx-00000003"})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if res.Verified {
+		t.Errorf("audit accepted a redaction record whose Sigma was altered")
+	}
+}
+
+// A Sigma padded to threshold with one member's repeated vote must fail.
+func TestAuditRejectsDuplicatePaddedRecord(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000004", 1)
+
+	found, _, _ := s.ledger.scanForRedactions("tx-00000004")
+	tx, _ := s.ledger.lookup(found[0].RdtTxID)
+
+	entries, err := parseSigma(tx.rdt.Evidence)
+	if err != nil {
+		t.Fatalf("parseSigma: %v", err)
+	}
+	// Rebuild Sigma from the first entry repeated.
+	var padded []byte
+	for i := 0; i < len(entries); i++ {
+		padded = append(padded, entries[0].NodeID...)
+		padded = append(padded, 0x1f)
+		padded = append(padded, []byte(entries[0].Sig.E.Text(16))...)
+		padded = append(padded, 0x1f)
+		padded = append(padded, []byte(entries[0].Sig.S.Text(16))...)
+		padded = append(padded, 0x1e)
+	}
+	tx.rdt.Evidence = padded
+
+	res, _ := s.Audit(context.Background(), &scheme.AuditQuery{TargetTxID: "tx-00000004"})
+	if res.Verified {
+		t.Errorf("audit accepted a Sigma padded with one member's repeated vote")
+	}
+}
+
+// Sigma must survive the ledger round trip: an auditor has only the stored
+// bytes, so an encoding that cannot be parsed back makes verification
+// impossible regardless of what the signatures say.
+func TestSigmaRoundTrip(t *testing.T) {
+	s := mustSetup(t)
+	req := request("rt-1", eligibleRequester(t, s), "tx-00000003")
+	auth, err := s.Authorize(context.Background(), req)
+	if err != nil || !auth.Granted {
+		t.Fatalf("Authorize: %v", err)
+	}
+
+	entries, err := parseSigma(auth.Evidence)
+	if err != nil {
+		t.Fatalf("parseSigma: %v", err)
+	}
+	rec := s.rounds[req.ID]
+	if len(entries) != len(rec.Approved) {
+		t.Fatalf("recovered %d votes, want %d", len(entries), len(rec.Approved))
+	}
+	for i, e := range entries {
+		if e.NodeID != rec.Approved[i].NodeID {
+			t.Errorf("vote %d: node %s, want %s", i, e.NodeID, rec.Approved[i].NodeID)
+		}
+		if e.Sig.E.Cmp(rec.Approved[i].Xi.E) != 0 || e.Sig.S.Cmp(rec.Approved[i].Xi.S) != 0 {
+			t.Errorf("vote %d: signature scalars did not survive encoding", i)
+		}
+	}
+
+	for _, bad := range [][]byte{nil, {}, []byte("garbage"), []byte("a\x1fzz\x1f01\x1e")} {
+		if _, err := parseSigma(bad); err == nil {
+			t.Errorf("parseSigma accepted malformed input %q", bad)
+		}
+	}
+}

@@ -45,14 +45,29 @@ type member struct {
 // committee that differed between runs would make Exp 1 unrepeatable.
 type registry struct {
 	nodes []*member
+	byID  map[string]*member
 	curve elliptic.Curve
+}
+
+// lookup resolves a node's voting key.
+//
+// Algorithm 3 stores the public keys pk_j of the authorized committee in the
+// contract con_k, so an auditor genuinely has this mapping available when
+// re-verifying a stored Sigma.
+func (r *registry) lookup(id string) (*member, bool) {
+	m, ok := r.byID[id]
+	return m, ok
 }
 
 func newRegistry(identities []scheme.Identity, curve elliptic.Curve, seed int64) (*registry, error) {
 	if len(identities) == 0 {
 		return nil, fmt.Errorf("ref10: dataset has no identities to form N_all")
 	}
-	r := &registry{nodes: make([]*member, 0, len(identities)), curve: curve}
+	r := &registry{
+		nodes: make([]*member, 0, len(identities)),
+		byID:  make(map[string]*member, len(identities)),
+		curve: curve,
+	}
 
 	// A deterministic stream, distinct from the dataset's own streams, so key
 	// material does not shift when unrelated dataset parameters change.
@@ -62,7 +77,9 @@ func newRegistry(identities []scheme.Identity, curve elliptic.Curve, seed int64)
 		if err != nil {
 			return nil, fmt.Errorf("ref10: voting key for %s: %w", id.ID, err)
 		}
-		r.nodes = append(r.nodes, &member{Identity: id, Key: k})
+		m := &member{Identity: id, Key: k}
+		r.nodes = append(r.nodes, m)
+		r.byID[id.ID] = m
 	}
 	return r, nil
 }

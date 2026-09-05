@@ -15,15 +15,33 @@
 # roughly 15 elliptic-curve operations for Ref[10]. That is correct for the real
 # run and useless as a smoke test.
 #
-# KNOWN PILOT ARTIFACT — Exp 3 scaling class is unstable at this scale.
-# Building history adds one block per redaction, so a run with history depths
-# 1,2,4,8,16 adds 31 blocks plus genesis to EVERY ledger. At the sizes above
-# that overhead dominates: a 10 -> 100 sweep is only 42 -> 132 real blocks, a
-# 3.1x span rather than 10x, which compresses the measured cost ratio onto the
-# classifier's linear/sublinear boundary (sizeRatio * 0.5 = 5.0). Ref[10] has
-# been observed at both 5.57 (linear) and 4.80 (sublinear) across identical
-# runs. At the real config's 1000 -> 10000 the same overhead is negligible and
-# the class is stable. Do not "fix" the classifier from a pilot observation.
+# KNOWN PILOT ARTIFACTS — Exp 3 scaling class is not meaningful at this scale.
+#
+# Two effects, both of which vanish at the real config's ledger sizes:
+#
+#   1. Building history adds one block per redaction, so depths 1,2,4,8,16 add
+#      31 blocks plus genesis to EVERY ledger. A 10 -> 100 sweep is only
+#      42 -> 132 real blocks, a 3.1x span rather than 10x.
+#
+#   2. classifyScaling compares TotalTime, which is retrieval PLUS verification.
+#      Ref[10]'s verification cost tracks history depth, not ledger size, so at
+#      these tiny ledgers it is a large constant that swamps the ledger-dependent
+#      part. Measured at depth 1: retrieval 1.9us -> 18.2us across the sweep
+#      (x9.5, cleanly linear in ledger size), against a flat ~290us of
+#      verification. Total therefore reads "flat" while the mechanism underneath
+#      is exactly linear.
+#
+# Do not tune the classifier from either observation. The per-point retrieval and
+# verification times are recorded separately for exactly this reason — decompose
+# before drawing a conclusion.
+#
+# OPEN QUESTION FOR THE REAL RUN. Effect 2 may not fully disappear at
+# 1000 -> 10000 blocks. Extrapolating the pilot's retrieval cost gives roughly
+# 180us -> 1.8ms against a ~290us verification floor, a total ratio near 4.4 —
+# still under the linear threshold of sizeRatio * 0.5 = 5.0. If that holds,
+# Ref[10] will be labelled sublinear despite retrieval being linear, and the
+# headline plot should show the decomposition rather than the total. Decide this
+# from pilot measurements on the real host, not from this file.
 #
 # DRIFT WARNING. This is a copy, so it can fall out of step with
 # experiment.yaml. It is only ever used with -config config/pilot.yaml, and the
