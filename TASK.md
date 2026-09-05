@@ -86,7 +86,7 @@ and the crossover under load is the actual finding.
 |---|---|
 | `pkg/scheme` | The interface all four systems implement — the fairness contract |
 | `pkg/config` | Single config schema, shared by validator and runtime |
-| `pkg/crypto` | Security-level tables (curves, RSA, proof systems) |
+| `pkg/crypto` | Security-level tables (curves, RSA, proof systems) + Schnorr |
 | `pkg/metrics` | Exact percentiles, throughput |
 | `pkg/workload` | Deterministic dataset + trace generation |
 | `pkg/results` | Output with reproducibility metadata |
@@ -95,9 +95,12 @@ and the crossover under load is the actual finding.
 | `experiments/exp1,2,3` | All three runners |
 | `cmd/validate-config` | Config gate |
 | `cmd/run-experiment` | Entry point |
+| `internal/schemes/ref10` | **All five algorithms, 36 tests** — votes not yet networked |
 
-Scheme files in `internal/schemes/*` have real structure and real parameter
-validation, but the cryptography returns `ErrNotImplemented`.
+The other three schemes — `zkredact`, `ref13`, `ref22` — have real structure and
+real parameter validation, but their cryptography still returns
+`ErrNotImplemented`. Only Ref[10] runs end to end today, which is why
+`-schemes ref10_emt` is needed to execute anything.
 
 ---
 
@@ -177,12 +180,19 @@ Two things worth knowing before building on this:
 
 ### 3. Fabric network + chaincode → `network/` ⬅️ **start here**
 
-Also still open from Exp 3: `prepareLedger` re-runs `Setup` per ledger size,
-which is correct but means every scheme must be cheap to re-materialise. Watch
-this when ZK-Redact's setup starts building circuits.
 4 orgs × 2 peers + 3 Raft orderers, per config. Votes must travel over the real
 network; short-circuiting them to in-process calls removes the cost that
 distinguishes Ref[10] from a trapdoor check.
+
+Landing this turns `vote_transport: fabric` from a refused value into a working
+one, and converts Ref[10]'s Exp 1 and Exp 2 figures from a lower bound into its
+actual cost.
+
+> **Carried over from Exp 3.** `prepareLedger` re-runs `Setup` once per ledger
+> size. That is correct — each size needs its own ledger — but it means every
+> scheme must stay cheap to re-materialise. Worth watching when ZK-Redact's
+> setup starts compiling circuits, since a slow `Setup` there multiplies across
+> the whole ledger sweep.
 
 ### 4. ZK circuits → `pkg/zk`
 Groth16 over BLS12-381 via **gnark**. Circuit encodes the Phase 2 statement:
