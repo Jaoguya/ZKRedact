@@ -4,10 +4,10 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~6,700 lines Go across 24 files
-**Compiled:** ✅ 2026-09-05, Go 1.27.1 — `go build ./...` clean, `go vet ./...`
-clean, 76 tests passing in `pkg/ch` and `pkg/merkle`, `make validate-config`
-passing
+**Code:** ~13,000 lines Go across 34 files, plus the Fabric network
+**Compiled:** ✅ Go 1.27.1 — `go build ./...` and `go vet ./...` clean across both
+modules, 133 tests passing, `make validate-config` passing, and the redaction
+chaincode verified on a live Fabric network (`network/scripts/smoke.sh`, 10/10)
 
 ---
 
@@ -44,15 +44,17 @@ something pass.** If a guard fires, it is telling you something true.
 source ~/.bashrc
 
 make build                      # compiles clean
-make test                       # vet + 76 tests in pkg/ch and pkg/merkle
+make test                       # vet + 133 tests
 make validate-config            # passes; one expected WARN, see below
 ```
 
-> **The tree compiles.** Deps are pinned in `go.sum` (yaml.v3 only). The one
-> defect the first compile found was a duplicate `Randomness` symbol in
-> `pkg/ch`; the hand-checking otherwise held. `make validate-config` reports one
-> WARN — the ZK circuit's `constraint_count` / `public_input_count` — which is
-> correct and clears itself once `make build-zk` exists to measure them.
+> **The tree compiles**, and the chaincode runs on a real network. Deps are
+> yaml.v3 plus `fabric-gateway`; the chaincode is a separate module so its
+> Fabric contract API stays out of the main graph. `make validate-config`
+> reports two expected WARNs — the ZK circuit's `constraint_count` /
+> `public_input_count`, which clear once `make build-zk` measures them, and
+> `vote_transport: in_process`, which clears once the network is up with
+> `fabric` selected.
 
 ---
 
@@ -95,7 +97,8 @@ and the crossover under load is the actual finding.
 | `experiments/exp1,2,3` | All three runners |
 | `cmd/validate-config` | Config gate |
 | `cmd/run-experiment` | Entry point |
-| `internal/schemes/ref10` | **All five algorithms, 36 tests** — votes not yet networked |
+| `internal/schemes/ref10` | **All five algorithms, 50 tests** — networked voting wired |
+| `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
 The other three schemes — `zkredact`, `ref13`, `ref22` — have real structure and
 real parameter validation, but their cryptography still returns
@@ -130,7 +133,7 @@ Negative tests were mutation-checked: an always-accept `Verify`, a dropped key
 prefix, a fixed nonce, and a `VerifyVotes` that skips verification each make the
 suite fail.
 
-### 2. Ref[10] EMT ✅ algorithms done, ⚠️ not yet networked
+### 2. Ref[10] EMT ✅ done
 Spec: [`docs/baselines/ref10-emt.md`](docs/baselines/ref10-emt.md)
 
 All five algorithms are implemented and tested (44 tests, ten mutation checks).
@@ -162,11 +165,10 @@ matching the fraction of identities failing `S OR R OR V`), throughput scaling
 20.6 ms, and Exp 3 audit cost climbing with ledger size exactly as Ref[10]'s
 design requires.
 
-**The one box still unticked is the network.** `vote_transport: in_process`
-means votes are exchanged by function call: the cryptography is real, the wire
-is not. `fabric` is refused rather than silently downgraded, and
-`validate-config` warns while this stands. **Ref[10] numbers from Exp 1 and
-Exp 2 are a lower bound until task 3 lands** — they are not its cost.
+**Networked voting is wired** (task 3). `vote_transport: fabric` runs ballots
+through endorsement and ordering against the deployed contract. The figures
+quoted above came from `in_process`, so they remain a lower bound until a run
+on the full topology with `fabric` selected replaces them.
 
 Two things worth knowing before building on this:
 
@@ -178,15 +180,37 @@ Two things worth knowing before building on this:
   closing on threshold is the recorded deviation (spec §2, favours Ref[10]);
   Σ re-verification in `Redact` and `Audit` must stay exhaustive.
 
-### 3. Fabric network + chaincode → `network/` ⬅️ **start here**
+### 3. Fabric network + chaincode ✅ done
 
-4 orgs × 2 peers + 3 Raft orderers, per config. Votes must travel over the real
-network; short-circuiting them to in-process calls removes the cost that
-distinguishes Ref[10] from a trapdoor check.
+`network/` holds the chaincode, both topologies, and the scripts.
 
-Landing this turns `vote_transport: fabric` from a refused value into a working
-one, and converts Ref[10]'s Exp 1 and Exp 2 figures from a lower bound into its
-actual cost.
+| Piece | State |
+|---|---|
+| Redaction chaincode (Algorithm 3) | ✅ deployed and verified on a live peer |
+| `fabricTransport` + Gateway adapter | ✅ wired into `ref10.Setup` |
+| `compose.minimal.yaml` (1 org) | ✅ verification topology |
+| `compose.yaml` (4 orgs × 2 peers, 3 orderers) | ✅ measurement topology, **not yet run** |
+| `scripts/smoke.sh` | ✅ 10 checks, mutation-verified |
+
+```bash
+./network/scripts/network.sh up minimal   # or: up full
+./network/scripts/network.sh deploy
+./network/scripts/smoke.sh
+```
+
+`vote_transport: fabric` now works, and needs the `gateway:` block in
+`config/experiment.yaml`. Setup refuses `fabric` without it rather than falling
+back to in-process voting, which would report a lower bound as a measurement.
+
+Chaincode is packaged as **ccaas**, not `golang`. The `golang` type makes the
+peer build an image over the Docker socket, which fails under Docker Desktop on
+Windows with a broken pipe naming neither the chaincode nor the socket. Running
+the contract as its own service removes the peer's build step and is what
+production deployments use.
+
+> **Still to do before recording numbers:** bring up `up full` on the EC2 host
+> and set `vote_transport: fabric`. Until then Ref[10]'s Exp 1 and Exp 2 figures
+> remain a lower bound, and `validate-config` warns.
 
 > **Carried over from Exp 3.** `prepareLedger` re-runs `Setup` once per ledger
 > size. That is correct — each size needs its own ledger — but it means every
@@ -194,7 +218,7 @@ actual cost.
 > setup starts compiling circuits, since a slow `Setup` there multiplies across
 > the whole ledger sweep.
 
-### 4. ZK circuits → `pkg/zk`
+### 4. ZK circuits → `pkg/zk` ⬅️ **start here**
 Groth16 over BLS12-381 via **gnark**. Circuit encodes the Phase 2 statement:
 requester satisfies the policy, state version matches, without revealing
 attributes.

@@ -322,7 +322,13 @@ func TestSetupGuards(t *testing.T) {
 	}{
 		{"threshold below majority", func(p map[string]any) { p["vote_threshold"] = 3 }, 128, "not a majority"},
 		{"threshold above committee", func(p map[string]any) { p["vote_threshold"] = 9 }, 128, "exceeds committee size"},
-		{"fabric transport refused", func(p map[string]any) { p["vote_transport"] = transportFabric }, 128, "not implemented"},
+				// The fabric transport is implemented, so the guard is no longer "not
+		// built yet" — it is that a config asking for network-measured votes
+		// must not silently receive in-process ones, which would report a lower
+		// bound as a measurement.
+		{"fabric transport without gateway settings",
+			func(p map[string]any) { p["vote_transport"] = "fabric" }, 128,
+			"no gateway configuration"},
 		{"unknown transport", func(p map[string]any) { p["vote_transport"] = "grpc" }, 128, "unknown vote_transport"},
 		{"weak curve for target", func(p map[string]any) { p["signature_curve"] = "P-256" }, 192, "below the 192-bit target"},
 		{"unimplemented curve", func(p map[string]any) { p["signature_curve"] = "BLS12-381" }, 128, "no standard-library"},

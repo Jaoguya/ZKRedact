@@ -135,6 +135,25 @@ type Ref10 struct {
 	VoteWindowMS    *int    `yaml:"vote_window_ms"`
 	AttributePolicy *string `yaml:"attribute_policy"`
 	VoteTransport   *string `yaml:"vote_transport"`
+	Gateway         *Gateway `yaml:"gateway"`
+}
+
+// Gateway locates the Fabric network for the fabric vote transport.
+//
+// Every field is required when vote_transport is "fabric". None is defaulted:
+// a defaulted endpoint or channel would connect to some network and produce a
+// complete set of results describing a deployment nobody chose, and nothing in
+// the output would reveal it.
+type Gateway struct {
+	PeerEndpoint     *string `yaml:"peer_endpoint"`
+	PeerServerName   *string `yaml:"peer_server_name"`
+	TLSCertPath      *string `yaml:"tls_cert_path"`
+	MSPID            *string `yaml:"msp_id"`
+	CryptoPath       *string `yaml:"crypto_path"`
+	Channel          *string `yaml:"channel"`
+	Chaincode        *string `yaml:"chaincode"`
+	EndorseTimeoutMS *int    `yaml:"endorse_timeout_ms"`
+	CommitTimeoutMS  *int    `yaml:"commit_timeout_ms"`
 }
 
 type Ref13 struct {
@@ -375,7 +394,7 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 		if c.Environment.Network.BlockMaxTransactions == nil {
 			return nil, fmt.Errorf("environment.network.block_max_transactions is not set, required by ref10_emt")
 		}
-		return map[string]any{
+		params := map[string]any{
 			"committee_size":         *b.CommitteeSize,
 			"vote_threshold":         *b.VoteThreshold,
 			"vote_window_ms":         *b.VoteWindowMS,
@@ -384,7 +403,34 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 			"signature_curve":        *c.Security.SignatureCurve,
 			"hash":                   c.Security.Hash,
 			"block_max_transactions": *c.Environment.Network.BlockMaxTransactions,
-		}, nil
+		}
+		// Gateway settings are forwarded only when present. Setup refuses the
+		// fabric transport without them rather than falling back to in-process
+		// voting, which would report a lower bound as a measurement.
+		if gw := b.Gateway; gw != nil {
+			m := map[string]any{}
+			put := func(k string, v *string) {
+				if v != nil {
+					m[k] = *v
+				}
+			}
+			putInt := func(k string, v *int) {
+				if v != nil {
+					m[k] = *v
+				}
+			}
+			put("peer_endpoint", gw.PeerEndpoint)
+			put("peer_server_name", gw.PeerServerName)
+			put("tls_cert_path", gw.TLSCertPath)
+			put("msp_id", gw.MSPID)
+			put("crypto_path", gw.CryptoPath)
+			put("channel", gw.Channel)
+			put("chaincode", gw.Chaincode)
+			putInt("endorse_timeout_ms", gw.EndorseTimeoutMS)
+			putInt("commit_timeout_ms", gw.CommitTimeoutMS)
+			params["gateway"] = m
+		}
+		return params, nil
 
 	case "ref13_vrbc":
 		b := c.Baselines.Ref13

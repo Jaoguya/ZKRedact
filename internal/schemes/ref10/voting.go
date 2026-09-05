@@ -266,18 +266,25 @@ func (localTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, erro
 
 // newTransport resolves the configured transport.
 //
-// "fabric" is refused rather than silently downgraded: a config asking for
-// network-measured votes must not quietly get in-process ones.
-func newTransport(name string) (transport, error) {
+// "fabric" without gateway settings is refused rather than silently downgraded:
+// a config asking for network-measured votes must not quietly get in-process
+// ones, because the resulting numbers would be a lower bound reported as a
+// measurement.
+func newTransport(name string, gw *GatewayConfig) (transport, error) {
 	switch name {
 	case transportInProcess:
 		return localTransport{}, nil
+
 	case transportFabric:
-		return nil, fmt.Errorf(
-			"ref10: vote_transport=%q is not implemented yet (see TASK.md task 3, "+
-				"network/); refusing to fall back to %q, which would report in-process "+
-				"latency as though votes had crossed the network",
-			transportFabric, transportInProcess)
+		if gw == nil {
+			return nil, ErrGatewayUnconfigured
+		}
+		factory, err := newGatewayFactory(*gw)
+		if err != nil {
+			return nil, err
+		}
+		return newFabricTransport(factory), nil
+
 	default:
 		return nil, fmt.Errorf(
 			"ref10: unknown vote_transport %q; want %q or %q",

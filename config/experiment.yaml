@@ -346,12 +346,42 @@ baselines:
     #                that cost. Not publishable as a Ref[10] result.
     #   fabric      — votes travel over the real network, which is the cost that
     #                distinguishes a committee protocol from a trapdoor check.
-    #                Requires network/ (TASK.md task 3); Setup refuses this
-    #                value until then rather than silently downgrading.
+    #                Requires a running network: bring one up with
+    #                network/scripts/network.sh, then set the gateway settings
+    #                below. Setup refuses "fabric" without them rather than
+    #                silently downgrading to in_process.
     #
     # Set to fabric before recording any Exp 1 or Exp 2 number for this
     # baseline. validate-config warns while this reads in_process.
     vote_transport: "in_process"
+
+    # [DECIDE] Gateway settings — required when vote_transport is "fabric",
+    # ignored otherwise.
+    #
+    # Nothing here is defaulted. A defaulted endpoint or channel would connect
+    # to some network and produce a complete set of results describing a
+    # deployment nobody chose, which nothing in the output would reveal.
+    #
+    # The values below match network/compose.minimal.yaml, which is for
+    # VERIFICATION ONLY — one endorser and one orderer, so no cross-org
+    # endorsement and no Raft replication. Point these at the measurement
+    # topology before recording anything.
+    gateway:
+      peer_endpoint: "localhost:7051"
+      # Must match the peer certificate's CN, or the TLS handshake fails with an
+      # error that reads as a network fault rather than a naming one.
+      peer_server_name: "peer0.org1.example.com"
+      tls_cert_path: "network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt"
+      msp_id: "Org1MSP"
+      crypto_path: "network/organizations/peerOrganizations/org1.example.com"
+      channel: "redaction"
+      chaincode: "redaction"
+      # Endorsement and commit are timed separately because they fail
+      # differently: endorsement failing means the peers disagree, commit
+      # failing means ordering did not deliver. Both are set well above the
+      # channel's 2s BatchTimeout so a slow block is not read as a fault.
+      endorse_timeout_ms: 30000
+      commit_timeout_ms: 60000
 
   # ---------------------------------------------------------------------------
   # Ref[13] — VRBC (Tian et al., IEEE TC 2023)

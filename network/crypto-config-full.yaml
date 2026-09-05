@@ -1,0 +1,67 @@
+# Identity material for the MEASUREMENT topology.
+#
+# 4 organisations x 2 peers plus a 3-node Raft orderer set, matching
+# environment.network in config/experiment.yaml. scripts/network.sh checks the
+# two agree before generating anything.
+#
+# Users per org: the committee members that vote. Ref[10] draws N_auth from the
+# registered node set, and each member submits its ballot under its own Fabric
+# identity, so there must be at least committee_size identities in total.
+
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer0
+        SANS: [localhost]
+      - Hostname: orderer1
+        SANS: [localhost]
+      - Hostname: orderer2
+        SANS: [localhost]
+
+PeerOrgs:
+  - Name: Org1
+    Domain: org1.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+      SANS: [localhost]
+    Users:
+      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
+      # committee the fault assumption requires.
+      Count: 4
+
+  - Name: Org2
+    Domain: org2.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+      SANS: [localhost]
+    Users:
+      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
+      # committee the fault assumption requires.
+      Count: 4
+
+  - Name: Org3
+    Domain: org3.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+      SANS: [localhost]
+    Users:
+      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
+      # committee the fault assumption requires.
+      Count: 4
+
+  - Name: Org4
+    Domain: org4.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+      SANS: [localhost]
+    Users:
+      # 4 orgs x 4 users = 16 identities, comfortably above the 7-member
+      # committee the fault assumption requires.
+      Count: 4
+

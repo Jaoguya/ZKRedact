@@ -174,7 +174,11 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	if !ok {
 		return fmt.Errorf("ref10: missing parameter vote_transport")
 	}
-	if s.transport, err = newTransport(transportName); err != nil {
+	gw, err := gatewayConfigFrom(p.Params)
+	if err != nil {
+		return err
+	}
+	if s.transport, err = newTransport(transportName, gw); err != nil {
 		return err
 	}
 
@@ -563,6 +567,14 @@ func (s *Scheme) Teardown(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ready = false
+
+	// The fabric transport holds gRPC connections and one gateway per committee
+	// member. Leaking them across a sweep would exhaust the peer's connection
+	// limit partway through, which surfaces as rising latency rather than as a
+	// resource error.
+	if c, ok := s.transport.(interface{ Close() error }); ok {
+		return c.Close()
+	}
 	return nil
 }
 
