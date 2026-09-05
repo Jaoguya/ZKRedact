@@ -73,6 +73,18 @@ security:
   # consistent with signature_curve and with Ref[22]'s stated construction.
   chameleon_hash_curve: "P-256"
 
+  # [DERIVED] RSA-3072 for Ref[22]'s trapdoorless universal accumulator.
+  #
+  # NIST SP 800-57 Part 1 Rev. 5 Table 2 places 3072-bit RSA/DH at the 128-bit
+  # security strength, the same level target_bits sets for every other
+  # primitive here. Ref[22] states this level for its own construction.
+  # Anything smaller would make that baseline faster for a reason unrelated to
+  # its design, which is the exact failure this file exists to prevent.
+  #
+  # This is the single source of truth; baselines.ref22_shen.accumulator_bits
+  # must equal it, and validate-config refuses a mismatch.
+  accumulator_bits: 3072
+
   # [PROPOSED] Groth16 over BLS12-381, implemented with gnark / gnark-crypto.
   #
   # The library choice follows from the curve: gnark-crypto provides BLS12-381

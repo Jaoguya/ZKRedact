@@ -225,6 +225,15 @@ func checkSecurityUniformity(c *config.Config, r *report) {
 			r.errf("security.accumulator_bits", err.Error(),
 				"Ref[22] would be measured at a weaker level than the other systems")
 		}
+		// The baseline block declares its own copy, and that copy is what
+		// ref22.Setup actually reads. If the two drift apart, the security
+		// level enforced at runtime is not the one this file documents.
+		if b := c.Baselines.Ref22.AccumulatorBits; b != nil && *b != *c.Security.AccumulatorBits {
+			r.errf("baselines.ref22_shen.accumulator_bits",
+				fmt.Sprintf("%d does not match security.accumulator_bits=%d",
+					*b, *c.Security.AccumulatorBits),
+				"the baseline copy is what ref22.Setup reads, so a mismatch means Ref[22] runs at a level this config does not state")
+		}
 	} else if c.Baselines.Ref22.Enabled {
 		r.errf("security.accumulator_bits", "not set but ref22_shen is enabled", "")
 	}

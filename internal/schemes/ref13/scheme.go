@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"sync"
 
+	"zkredact/pkg/ch"
 	"zkredact/pkg/scheme"
 )
 
@@ -67,6 +68,13 @@ func (s *Scheme) Capabilities() scheme.Capabilities {
 func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Refuse to run on a chameleon hash construction other than the one this
+	// scheme's paper specifies. A substituted construction changes CryptoTime,
+	// which Exp 2 reports as a headline metric, and would fail no other check.
+	if err := ch.CheckRequired(s.Name()); err != nil {
+		return fmt.Errorf("%s: %w", s.Name(), err)
+	}
 
 	if p.Dataset == nil {
 		return fmt.Errorf("ref13: setup requires a dataset")
