@@ -1,0 +1,102 @@
+# Minimal Fabric topology — VERIFICATION ONLY.
+#
+# One org, one peer, one orderer. Enough to answer "does the chaincode deploy,
+# does the SDK connect, do votes actually pass through endorsement and
+# ordering" on a machine that cannot host the measurement topology.
+#
+# NOT VALID FOR RESULTS. With a single endorser there is no cross-organisation
+# endorsement, and with a single orderer there is no Raft leader election or
+# follower replication. Those are precisely the costs Exp 1 measures, so a
+# number taken here would understate Ref[10] in the same way the in-process
+# transport does — just less obviously.
+#
+# scripts/network.sh writes a marker file when this topology is up, and the
+# harness refuses to record results while it exists.
+
+name: zkredact-minimal
+
+networks:
+  fabric:
+    name: zkredact_fabric
+
+volumes:
+  orderer0:
+  peer0:
+
+services:
+  orderer0:
+    container_name: orderer0.example.com
+    image: hyperledger/fabric-orderer:2.5.9
+    environment:
+      - FABRIC_LOGGING_SPEC=INFO
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=7050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_GENERAL_TLS_ENABLED=true
+      - ORDERER_GENERAL_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:7053
+      - ORDERER_ADMIN_TLS_ENABLED=true
+      - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_ADMIN_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+    volumes:
+      - ./organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/msp:/var/hyperledger/orderer/msp
+      - ./organizations/ordererOrganizations/example.com/orderers/orderer0.example.com/tls:/var/hyperledger/orderer/tls
+      - orderer0:/var/hyperledger/production/orderer
+    ports:
+      - "7050:7050"
+      - "7053:7053"
+    networks:
+      - fabric
+    # Bounded so a runaway container cannot take the host down. The measurement
+    # topology sets these from config; here they only need to be survivable.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  peer0org1:
+    container_name: peer0.org1.example.com
+    image: hyperledger/fabric-peer:2.5.9
+    environment:
+      - FABRIC_LOGGING_SPEC=INFO
+      - CORE_PEER_ID=peer0.org1.example.com
+      - CORE_PEER_ADDRESS=peer0.org1.example.com:7051
+      - CORE_PEER_LISTENADDRESS=0.0.0.0:7051
+      - CORE_PEER_CHAINCODEADDRESS=peer0.org1.example.com:7052
+      - CORE_PEER_CHAINCODELISTENADDRESS=0.0.0.0:7052
+      - CORE_PEER_GOSSIP_BOOTSTRAP=peer0.org1.example.com:7051
+      - CORE_PEER_GOSSIP_EXTERNALENDPOINT=peer0.org1.example.com:7051
+      - CORE_PEER_LOCALMSPID=Org1MSP
+      - CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/msp
+      - CORE_PEER_TLS_ENABLED=true
+      - CORE_PEER_TLS_CERT_FILE=/etc/hyperledger/fabric/tls/server.crt
+      - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
+      - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
+      # The gateway is what internal/schemes/ref10/fabric.go connects through.
+      - CORE_PEER_GATEWAY_ENABLED=true
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=zkredact_fabric
+      - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
+      - CORE_CHAINCODE_EXECUTETIMEOUT=300s
+    volumes:
+      - ./organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/msp:/etc/hyperledger/fabric/msp
+      - ./organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls:/etc/hyperledger/fabric/tls
+      - peer0:/var/hyperledger/production
+      - /var/run/docker.sock:/host/var/run/docker.sock
+    ports:
+      - "7051:7051"
+    depends_on:
+      - orderer0
+    networks:
+      - fabric
+    deploy:
+      resources:
+        limits:
+          memory: 768M

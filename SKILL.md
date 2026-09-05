@@ -15,7 +15,7 @@ Evaluation framework for **ZK-Redact** — a privacy-preserving scheme for scala
 |---|---|
 | **OS** | Ubuntu 22.04 LTS (AWS EC2) |
 | **Instance** | `c6i.8xlarge` — 32 vCPU, 64 GB, 200 GB gp3 |
-| **Runtime** | Go >= 1.21 (single language across all components) |
+| **Runtime** | Go >= 1.25 (single language across all components) |
 | **ZK** | `gnark` / `gnark-crypto` — Groth16 over BLS12-381 |
 | **Blockchain** | Docker & Docker Compose, Hyperledger Fabric 2.5 |
 | **Build tools** | Make, `protoc` >= 3.21 |
