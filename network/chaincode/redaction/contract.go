@@ -35,8 +35,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"sort"
 
+	"github.com/hyperledger/fabric-chaincode-go/shim"
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
@@ -614,11 +616,46 @@ func findNode(all []Node, id string) (Node, bool) {
 // mirror.
 func hexPoint(v *big.Int) string { return hex.EncodeToString(v.Bytes()) }
 
+// main runs the contract either as a peer-launched chaincode or as a chaincode
+// service (ccaas), selected by CHAINCODE_SERVER_ADDRESS.
+//
+// The service mode exists because the peer-launched mode asks the peer to build
+// a container image through the Docker socket, which does not work under Docker
+// Desktop on Windows: the proxy closes the connection mid-build and the error
+// surfaces as "broken pipe" from the peer rather than as anything about the
+// chaincode. Running the contract as its own container removes the peer's build
+// step entirely.
+//
+// It is also what production Fabric deployments use, so this is not a
+// workaround the evaluation carries as debt — the same packaging works on the
+// Linux target.
 func main() {
 	cc, err := contractapi.NewChaincode(&SmartContract{})
 	if err != nil {
 		panic(fmt.Sprintf("redaction: create chaincode: %v", err))
 	}
+
+	if addr := os.Getenv("CHAINCODE_SERVER_ADDRESS"); addr != "" {
+		ccid := os.Getenv("CHAINCODE_ID")
+		if ccid == "" {
+			panic("redaction: CHAINCODE_SERVER_ADDRESS is set but CHAINCODE_ID is not; " +
+				"the peer matches a chaincode service by its package id")
+		}
+		server := &shim.ChaincodeServer{
+			CCID:    ccid,
+			Address: addr,
+			CC:      cc,
+			// TLS is disabled on the chaincode link only. The channel, the
+			// gateway and every client connection remain TLS-protected; this is
+			// the peer-to-chaincode hop inside the compose network.
+			TLSProps: shim.TLSProperties{Disabled: true},
+		}
+		if err := server.Start(); err != nil {
+			panic(fmt.Sprintf("redaction: start chaincode server: %v", err))
+		}
+		return
+	}
+
 	if err := cc.Start(); err != nil {
 		panic(fmt.Sprintf("redaction: start chaincode: %v", err))
 	}

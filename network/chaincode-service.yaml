@@ -1,0 +1,25 @@
+# The redaction chaincode running as a service (ccaas).
+#
+# Started after `network.sh deploy` has computed the package id, which the peer
+# uses to match this container to the installed chaincode definition.
+name: zkredact-chaincode
+
+networks:
+  fabric:
+    name: zkredact_fabric
+    external: true
+
+services:
+  redaction-cc:
+    container_name: redaction-cc
+    build:
+      context: ./chaincode/redaction
+    environment:
+      - CHAINCODE_ID=${CHAINCODE_ID}
+      - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999
+    networks:
+      - fabric
+    deploy:
+      resources:
+        limits:
+          memory: 256M

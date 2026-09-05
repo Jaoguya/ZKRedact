@@ -1,0 +1,37 @@
+# Identity material for the MINIMAL topology (verification only).
+#
+# One orderer organisation, one peer organisation, one peer. See
+# network/README.md for why this cannot produce measurements.
+#
+# Users: the committee members that vote. Ref[10] draws N_auth from the
+# registered node set, and each member submits its ballot under its own Fabric
+# identity — a shared identity would make the contract's membership check
+# validate the wrong thing. Count must be at least the configured
+# committee_size, which scripts/network.sh verifies before deploying.
+
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer0
+        SANS:
+          # The harness and the CLI reach the orderer as localhost from the
+          # host, while containers reach it by hostname. Without localhost in
+          # the SAN the TLS handshake fails with a certificate error that reads
+          # like a network fault rather than a naming one.
+          - localhost
+
+PeerOrgs:
+  - Name: Org1
+    Domain: org1.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+    Users:
+      # Enough identities for a 7-member committee plus the requester.
+      # cryptogen names them User1@... through User8@..., which
+      # scripts/network.sh maps onto the harness's id-000.. member ids.
+      Count: 8
