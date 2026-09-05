@@ -2,6 +2,7 @@ package ch
 
 import (
 	"crypto/elliptic"
+	"fmt"
 	"io"
 	"math/big"
 )
@@ -115,45 +116,51 @@ func (pk *PublicKey) HasTrapdoor() bool { return false }
 func (sk *PrivateKey) HasTrapdoor() bool { return sk != nil && sk.D != nil }
 
 // -----------------------------------------------------------------------------
-// Constructions still required
+// Baseline constructions
 // -----------------------------------------------------------------------------
 
-// EphemeralTrapdoor is Ref[13]'s construction (Ref[13].md Eq. 5):
+// Both constructions the baselines require are implemented:
 //
-//	ch = (X * Y)^H1(h_{i-1} || m_i, Y) * g^r  =  g^(H1(...)(x+y) + r)
+//	ephemeral.go        Ref[13], Eq. 5 - two-component key with per-block Y
+//	doubletrapdoor.go   Ref[22], §II-A - Chen et al. (KGen, HGen, RHGen,
+//	                    Verify, Adapt), key-exposure free
 //
-// The key has two secret components (x, y). Redaction derives a fresh ephemeral
-// y' per block, so Y' = g^y' changes with every adaptation and the verification
-// equation must be checked against the new Y'.
-//
-// NOT YET IMPLEMENTED. Wiring Ref[13] to the classic construction instead would
-// omit the per-redaction ephemeral key derivation, making that baseline's
-// CryptoTime lower than its design permits - a silent, invisible advantage in
-// Exp 2.
-//
-// TODO(ref13): implement over the configured pairing curve and register here.
+// Their cost profiles differ, which is the reason the mapping is enforced
+// rather than documented: Ref[13] derives a fresh key component and curve point
+// on every adaptation, and Ref[22] samples a fresh k' and recomputes the
+// checking string. Neither cost exists in the classic construction.
 
-// DoubleTrapdoor is Ref[22]'s construction: the key-exposure resistant double
-// trapdoor family of Chen et al. (Ref[22].md §II-A), with algorithms
-// KGen, HGen, RHGen, Verify, Adapt.
+// Implemented lists the constructions available, keyed by the name used in
+// Required. Consulted at Setup: a scheme whose required construction is absent
+// must fail there rather than falling back to another, since a fallback would
+// be indistinguishable from correct behaviour in every result the harness
+// produces.
 //
-// NOT YET IMPLEMENTED. Ref[22] adopts it specifically to escape the key exposure
-// of the classic scheme (Ref[22].md:69), so substituting the classic one would
-// implement the very weakness the paper exists to remove, and would understate
-// that baseline's cost.
-//
-// TODO(ref22): implement over P-256 and register here.
+// The Scheme interface adapters are deliberately not wired yet. Each
+// construction has a different natural signature - Ref[13] carries an ephemeral
+// point through its randomness, Ref[22] separates a public checking string from
+// a secret per-hash trapdoor - and forcing them through one signature before
+// the schemes that use them exist would shape the interface around guesses
+// rather than around the two call sites that will actually consume it.
+var Implemented = map[string]bool{
+	"classic":            true, // chameleon.go
+	"ephemeral_trapdoor": true, // ephemeral.go
+	"double_trapdoor":    true, // doubletrapdoor.go
+}
 
-// Registry maps a construction name to its implementation.
-//
-// Empty entries are deliberate. A scheme that cannot find its required
-// construction must fail at Setup rather than silently falling back to the
-// classic one - a fallback here would be indistinguishable from correct
-// behaviour in every result the harness produces.
-var Registry = map[string]Scheme{
-	// "classic":            &classicScheme{},   // TODO: adapter over chameleon.go
-	// "ephemeral_trapdoor": nil,                // TODO(ref13)
-	// "double_trapdoor":    nil,                // TODO(ref22)
+// CheckRequired reports whether the construction a scheme needs is available.
+func CheckRequired(schemeName string) error {
+	want, ok := Required[schemeName]
+	if !ok {
+		return nil // scheme uses no chameleon hash
+	}
+	if !Implemented[want] {
+		return fmt.Errorf(
+			"ch: %s requires the %q construction, which is not implemented; "+
+				"substituting another would change the per-redaction cost that Exp 2 measures",
+			schemeName, want)
+	}
+	return nil
 }
 
 // Required names the construction each system must use. Consulted at Setup so a
