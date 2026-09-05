@@ -34,6 +34,16 @@ import (
 
 const liveNetworkRoot = "../../../network"
 
+// liveRunID makes request ids unique per run.
+//
+// The contract address derives from the request id, and a round cannot be
+// reopened — so fixed ids pass on a fresh ledger and fail on every rerun with
+// "round already exists". That reads as a contract defect rather than as test
+// state, and it means the suite could only ever be run once per network.
+var liveRunID = time.Now().UTC().Format("150405.000")
+
+func liveReq(name string) string { return fmt.Sprintf("live-%s-%s", liveRunID, name) }
+
 func liveGatewayParams(t *testing.T) map[string]any {
 	t.Helper()
 
@@ -139,7 +149,7 @@ func TestLiveAuthorizeRunsVotesThroughTheLedger(t *testing.T) {
 	// protocol rejected it rather than the fixture being wrong.
 	requester := eligibleRequester(t, s)
 
-	auth, err := s.Authorize(ctx, request("live-req-1", requester, "tx-00000003"))
+	auth, err := s.Authorize(ctx, request(liveReq("single"), requester, "tx-00000003"))
 	if err != nil {
 		t.Fatalf("Authorize over the fabric transport: %v", err)
 	}
@@ -214,7 +224,7 @@ func TestLiveConcurrentAuthorize(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		go func(n int) {
 			auth, err := s.Authorize(ctx,
-				request(fmt.Sprintf("live-conc-%d", n), requester, "tx-00000003"))
+				request(liveReq(fmt.Sprintf("conc-%d", n)), requester, "tx-00000003"))
 			if err != nil {
 				results <- outcome{err: err}
 				return
