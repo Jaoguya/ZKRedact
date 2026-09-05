@@ -143,7 +143,7 @@ Already enforced in code:
 | 1 EMT Verification | `H_tx = H(H_c ‖ H_w)`; `H_c` unchanged after redaction | 🔶 |
 | 2 Redaction Request | CA validation, `T_rdbl = T_all \ (T_gen ∪ T_rdt ∪ T_con)` | 🔶 |
 | 3 Smart Contract | `RS_SHA256(addr, N_all, A_r) → N_auth`, voting | 🔶 |
-| 4 Redaction Voting | Schnorr signature per vote | 🔶 |
+| 4 Redaction Voting | Schnorr signature per vote | ✅ primitive (`pkg/crypto/schnorr.go`); 🔶 wiring |
 | 5 Local Redaction | verify `Σ`, replace `d_w` with a reference | 🔶 |
 
 Already enforced:
@@ -151,6 +151,10 @@ Already enforced:
 | Claim | Where |
 |---|---|
 | Threshold must be a real majority | `Setup` rejects `thr ≤ size/2` |
+| Votes carry real signatures that are actually verified | `crypto.VerifyVotes`; `TestVerifyVotesCountsOnlyValidSignatures` proves a forged or misattributed vote is not counted |
+| Vote signatures are **not** cryptographically aggregated | The paper's `Σ = {ξ_1,…,ξ_j}` is a collection, and Algorithm 3 verifies each ([Ref[10].md:348](../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L348)). `VerifyVotes` is linear with no early exit, so committee size costs what Ref[10]'s design says it costs |
+| Signature curve meets the uniform security level | `crypto.SignatureCurve` resolves and range-checks in one call; `TestSignatureCurveResolvesAndEnforcesLevel` covers the BN254 trap |
+| Configured hash matches the implemented one | `crypto.RequireHash` refuses a `security.hash` the challenge does not use |
 | Committee sized from a fault assumption | validator checks `3f+1` / `2f+1` |
 | Committee must fit available peers | validator |
 | Policy `{S ∨ R ∨ V}` is the paper's own default | `config`, `attribute_policy` |

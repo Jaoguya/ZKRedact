@@ -107,12 +107,27 @@ validation, but the cryptography returns `ErrNotImplemented`.
 `go build ./...` and `go vet ./...` are clean and both test packages pass.
 Re-run `make test` after every change — it is now a real gate, not an aspiration.
 
-### 1. Schnorr signatures → `pkg/crypto` ⬅️ **start here**
-Needed by Ref[10] voting (Algorithm 4). Curve comes from
-`security.signature_curve` (P-256). Follow the style of `pkg/ch`: real code,
-table tests, and a negative test proving verification actually rejects.
+### 1. Schnorr signatures → `pkg/crypto` ✅ done
+`pkg/crypto/schnorr.go`, 20 tests. Curve is resolved *and* level-checked in one
+call — `crypto.SignatureCurve(security.signature_curve, security.target_bits)` —
+so there is no path that picks a curve without checking it. `crypto.RequireHash`
+refuses a `security.hash` the challenge does not implement.
 
-### 2. Ref[10] EMT — the first real numbers 🎯
+Two things to keep in mind when wiring it:
+
+- **`VerifyVotes` is deliberately linear, with no early exit.** Ref[10]'s
+  `Σ = {ξ_1,…,ξ_j}` is a collection, not a cryptographic aggregate; Algorithm 3
+  verifies each vote. A real aggregate scheme would make verification sublinear
+  in committee size and hand Ref[10] a speedup its design does not provide.
+- **The challenge binds the public key** (`e = H(R ‖ P ‖ m)`), which Schnorr'89
+  does not. Recorded as a deviation in the Ref[10] spec and pinned by
+  `TestChallengeBindsPublicKey` — the only test that detects its absence.
+
+Negative tests were mutation-checked: an always-accept `Verify`, a dropped key
+prefix, a fixed nonce, and a `VerifyVotes` that skips verification each make the
+suite fail.
+
+### 2. Ref[10] EMT — the first real numbers 🎯 ⬅️ **start here**
 Spec: [`docs/baselines/ref10-emt.md`](docs/baselines/ref10-emt.md)
 
 Uses **no chameleon hash** — only Merkle (done) plus Schnorr. Highest value per

@@ -168,6 +168,7 @@ the shared dataset) or an unrelated comparison.
 | Voting round closes on threshold, not on full window `t` | See §2 note | **Favours Ref[10]** — reduces its measured latency |
 | Redaction consensus **is** included | The paper explicitly excluded it ([Ref[10].md:466](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L466)): *"the consensus mechanism for redaction operations was not included"* | **Raises** Ref[10]'s measured cost vs. its published figures — but is required, since ZK-Redact's batching amortizes exactly this cost. Excluding it would hide the effect we are measuring. |
 | Our network topology, not theirs | One shared environment across all systems | Absolute numbers differ from published; relative comparison is valid |
+| Schnorr challenge binds the public key: `e = H(R ‖ P ‖ m)` | Schnorr's 1989 formulation ([Ref[10].md:492](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L492), ref. [43]) hashes only `(R, m)`. Key prefixing is the modern standard (RFC 8032, BIP-340) and closes related-key attacks in the multi-key setting — which is Ref[10]'s setting exactly, since `vote()` verifies many keys against one message. | **Marginally against Ref[10]** — one extra point hashed per sign and per verify. Negligible beside the two scalar multiplications, and it errs in the safe direction. Pinned by `TestChallengeBindsPublicKey`. |
 
 > Because of the second row, **our Ref[10] numbers are not comparable to the numbers
 > printed in the paper**, and must never be presented as such. They are comparable
