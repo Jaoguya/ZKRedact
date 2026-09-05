@@ -14,9 +14,25 @@ Evaluation framework for **ZK-Redact** — a privacy-preserving scheme for scala
 | Item | Spec |
 |---|---|
 | **OS** | Ubuntu 22.04 LTS (AWS EC2) |
-| **Runtime** | Go >= 1.21, Rust >= 1.75 (ZK circuits), Node.js >= 18 (gateway) |
-| **Blockchain** | Docker & Docker Compose (permissioned network) |
+| **Instance** | `c6i.8xlarge` — 32 vCPU, 64 GB, 200 GB gp3 |
+| **Runtime** | Go >= 1.21 (single language across all components) |
+| **ZK** | `gnark` / `gnark-crypto` — Groth16 over BLS12-381 |
+| **Blockchain** | Docker & Docker Compose, Hyperledger Fabric 2.5 |
 | **Build tools** | Make, `protoc` >= 3.21 |
+
+> [!NOTE]
+> **Go only — no Rust or Node.js.** `gnark-crypto` supplies both the Groth16
+> prover/verifier and the BLS12-381 pairings that the Ref[13] baseline needs,
+> so one dependency covers the scheme and a baseline. Keeping the stack in one
+> language also removes any FFI boundary from the measured path, where its cost
+> would be attributable to neither design.
+
+> [!IMPORTANT]
+> Instance sizing follows a **CPU budget**, not a headline core count. Fabric
+> peers, orderers, and the load generator leave roughly 20 of the 32 vCPUs to
+> the system under test. A 16-vCPU host would leave about 4, so Exp 1 would
+> saturate at 4 and look like a scaling limit of sharding when it is really CPU
+> contention — clean, plausible, and wrong.
 
 > [!IMPORTANT]
 > If any component requires an additional library or system dependency beyond the list above, it **must** be documented in that component's README and flagged during review.

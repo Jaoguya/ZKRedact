@@ -73,7 +73,15 @@ security:
   # consistent with signature_curve and with Ref[22]'s stated construction.
   chameleon_hash_curve: "P-256"
 
-  # [PROPOSED] Groth16 over BLS12-381.
+  # [PROPOSED] Groth16 over BLS12-381, implemented with gnark / gnark-crypto.
+  #
+  # The library choice follows from the curve: gnark-crypto provides BLS12-381
+  # pairings, which Ref[13]'s verification equations also require. One
+  # dependency serves both the scheme and the baseline, and keeps the whole
+  # stack in Go alongside the Fabric chaincode — no FFI boundary inside the
+  # measured path, where it would add cost attributable to nothing in either
+  # design.
+  #
   # Three reasons, in order of weight:
   #   1. Verification is 3 pairings + O(public inputs) — the fastest verifier
   #      available, and Exp 1 measures verification throughput.
@@ -91,15 +99,28 @@ security:
 # ENVIRONMENT — identical for every run in a comparison
 # -----------------------------------------------------------------------------
 environment:
-  # [PROPOSED] c6i.4xlarge — 16 vCPU, 32 GB, Ubuntu 22.04.
+  # [PROPOSED] c6i.8xlarge — 32 vCPU, 64 GB, Ubuntu 22.04.
   # Compute-optimised because this workload is CPU-bound cryptography.
-  # 16 vCPU is the operative choice: it lets the sharding sweep run 1 -> 32,
-  # i.e. past the core count, so saturation appears inside the plot. Fewer
-  # cores would truncate the curve before the knee and hide the Exp 1 result.
-  # 32 GB comfortably holds the Fabric network plus a 10k-block ledger.
-  instance_type: "c6i.4xlarge"
-  vcpus: 16
-  memory_gb: 32
+  #
+  # Sized from a CPU BUDGET, not from the headline core count. Everything on
+  # this host competes for the same cores:
+  #
+  #   8 Fabric peers x peer_cpu_limit 1.0   ~  8 vCPU
+  #   3 orderers                            ~  2 vCPU
+  #   load generator                        ~  2 vCPU
+  #   ------------------------------------------------
+  #   available to the system under test    ~ 20 vCPU
+  #
+  # This is why 16 vCPU is NOT enough: it would leave roughly 4 cores for
+  # verification, so the Exp 1 curve would saturate at 4 and look like a
+  # genuine scaling limit of sharding. It would in fact be CPU contention —
+  # a result that is clean, plausible, and wrong.
+  #
+  # If the pilot shows contention even at this size, split the network and the
+  # system under test onto separate instances in the same placement group.
+  instance_type: "c6i.8xlarge"
+  vcpus: 32
+  memory_gb: 64
 
   # [PROPOSED] Explicit per-peer limits so results do not drift with host load.
   # Reproducibility requires bounded, declared resources, not "whatever was
@@ -215,12 +236,19 @@ workload:
 # -----------------------------------------------------------------------------
 zkredact:
   sharding:
-    # [DERIVED from environment.vcpus = 16] Geometric 1 -> 32.
-    # Reaching 2x the core count is the point: 32 shards on 16 vCPUs MUST show
-    # saturation. If throughput kept rising past 16, the measurement is wrong,
-    # so this sweep is also a correctness check on the harness.
-    # N=1 is mandatory — it is the sharding-disabled ablation.
-    counts: [1, 2, 4, 8, 16, 32]
+    # [DERIVED from environment.vcpus = 32] Geometric 1 -> 64.
+    #
+    # The sweep must exceed the ~20 cores actually available to the system
+    # under test (see the CPU budget under environment.instance_type), so
+    # saturation is DEMONSTRATED rather than assumed. Running to 64 puts the
+    # knee well inside the plot.
+    #
+    # This doubles as a correctness check on the harness: throughput MUST stop
+    # rising somewhere below 64. If it does not, the measurement is wrong —
+    # most likely the shards are not doing real verification work.
+    #
+    # N=1 is mandatory — it is the sharding-disabled ablation baseline.
+    counts: [1, 2, 4, 8, 16, 32, 64]
 
   proof_batch:
     # [METHOD] Geometric, including 1 (batching disabled). Upper bound 64 is a
