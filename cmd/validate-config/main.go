@@ -7,6 +7,11 @@
 // curve below the declared security level, or a baseline swept over a different
 // range than ZK-Redact, produces perfectly clean numbers that mean nothing.
 //
+// The schema and the security tables live in pkg/config and pkg/crypto, shared
+// with the runtime. Local copies would drift, and a drifted schema silently
+// ignores fields — so a parameter the researcher set is not the one the run
+// used.
+//
 // Usage:
 //
 //	validate-config [path]      # default: config/experiment.yaml
@@ -19,13 +24,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"zkredact/pkg/config"
+	"zkredact/pkg/crypto"
 )
 
 // -----------------------------------------------------------------------------
@@ -58,18 +65,14 @@ type finding struct {
 	why   string // why this matters — omitted when self-evident
 }
 
-type report struct {
-	findings []finding
-}
+type report struct{ findings []finding }
 
 func (r *report) errf(field, msg, why string) {
 	r.findings = append(r.findings, finding{sevError, field, msg, why})
 }
-
 func (r *report) warnf(field, msg, why string) {
 	r.findings = append(r.findings, finding{sevWarn, field, msg, why})
 }
-
 func (r *report) infof(field, msg string) {
 	r.findings = append(r.findings, finding{sevInfo, field, msg, ""})
 }
@@ -84,195 +87,6 @@ func (r *report) counts() (errs, warns int) {
 		}
 	}
 	return
-}
-
-// -----------------------------------------------------------------------------
-// Config schema
-//
-// Pointer types are deliberate: they distinguish "absent or null" from a valid
-// zero value. A shard count of 0 and a missing shard count are different bugs.
-// -----------------------------------------------------------------------------
-
-type Config struct {
-	Meta struct {
-		ConfigVersion string `yaml:"config_version"`
-		Seed          *int   `yaml:"seed"`
-		Repetitions   *int   `yaml:"repetitions"`
-	} `yaml:"meta"`
-
-	Security struct {
-		TargetBits         *int    `yaml:"target_bits"`
-		Hash               string  `yaml:"hash"`
-		SignatureCurve     *string `yaml:"signature_curve"`
-		PairingCurve       *string `yaml:"pairing_curve"`
-		ChameleonHashCurve *string `yaml:"chameleon_hash_curve"`
-		AccumulatorBits    *int    `yaml:"accumulator_bits"`
-		ZKProofSystem      *string `yaml:"zk_proof_system"`
-	} `yaml:"security"`
-
-	Environment struct {
-		InstanceType    string  `yaml:"instance_type"`
-		VCPUs           *int    `yaml:"vcpus"`
-		MemoryGB        *int    `yaml:"memory_gb"`
-		PeerCPULimit    *string `yaml:"peer_cpu_limit"`
-		PeerMemoryLimit *string `yaml:"peer_memory_limit"`
-		Network         struct {
-			Organizations        *int   `yaml:"organizations"`
-			PeersPerOrg          *int   `yaml:"peers_per_org"`
-			OrdererNodes         *int   `yaml:"orderer_nodes"`
-			Consensus            string `yaml:"consensus"`
-			BlockMaxTransactions *int   `yaml:"block_max_transactions"`
-			BlockTimeoutMS       *int   `yaml:"block_timeout_ms"`
-		} `yaml:"network"`
-	} `yaml:"environment"`
-
-	Dataset struct {
-		BaseTransactions *int `yaml:"base_transactions"`
-		Transaction      struct {
-			CorePayloadBytes      *int `yaml:"core_payload_bytes"`
-			RedactablePayloadByte *int `yaml:"redactable_payload_bytes"`
-		} `yaml:"transaction"`
-		Identities struct {
-			Count      *int     `yaml:"count"`
-			Attributes []string `yaml:"attributes"`
-		} `yaml:"identities"`
-		Policies struct {
-			Count          *int `yaml:"count"`
-			PredicateDepth *int `yaml:"predicate_depth"`
-		} `yaml:"policies"`
-	} `yaml:"dataset"`
-
-	Workload struct {
-		TotalRequests      *int      `yaml:"total_requests"`
-		TargetDistribution string    `yaml:"target_distribution"`
-		ZipfS              *float64  `yaml:"zipf_s"`
-		ConflictRatios     []float64 `yaml:"conflict_ratios"`
-		Arrival            string    `yaml:"arrival"`
-	} `yaml:"workload"`
-
-	ZKRedact struct {
-		Sharding struct {
-			Counts []int `yaml:"counts"`
-		} `yaml:"sharding"`
-		ProofBatch struct {
-			Sizes             []int  `yaml:"sizes"`
-			WaitBoundMS       []int  `yaml:"wait_bound_ms"`
-			NativeBatchVerify []bool `yaml:"native_batch_verify"`
-		} `yaml:"proof_batch"`
-		RedactionBatch struct {
-			Sizes         []int `yaml:"sizes"`
-			WaitBoundsMS  []int `yaml:"wait_bounds_ms"`
-		} `yaml:"redaction_batch"`
-		Circuit struct {
-			ConstraintCount  *int `yaml:"constraint_count"`
-			PublicInputCount *int `yaml:"public_input_count"`
-		} `yaml:"circuit"`
-	} `yaml:"zkredact"`
-
-	Baselines struct {
-		Ref10 struct {
-			Enabled         bool    `yaml:"enabled"`
-			CommitteeSize   *int    `yaml:"committee_size"`
-			VoteThreshold   *int    `yaml:"vote_threshold"`
-			FaultToleranceF *int    `yaml:"fault_tolerance_f"`
-			VoteWindowMS    *int    `yaml:"vote_window_ms"`
-			AttributePolicy *string `yaml:"attribute_policy"`
-		} `yaml:"ref10_emt"`
-		Ref13 struct {
-			Enabled                 bool      `yaml:"enabled"`
-			ArityQ                  []int     `yaml:"arity_q"`
-			VectorDimensionFormula  *string   `yaml:"vector_dimension_formula"`
-			ChallengedBlocks        []int     `yaml:"challenged_blocks"`
-			CorruptedBlockRate      *float64  `yaml:"corrupted_block_rate"`
-			DetectionPrecision      []float64 `yaml:"detection_precision"`
-			OptimizedAuditing       *bool     `yaml:"optimized_auditing"`
-			DelayedRedaction        *bool     `yaml:"delayed_redaction"`
-		} `yaml:"ref13_vrbc"`
-		Ref22 struct {
-			Enabled              bool     `yaml:"enabled"`
-			AccumulatorBits      *int     `yaml:"accumulator_bits"`
-			DeleteSetSizes       []int    `yaml:"delete_set_sizes"`
-			DeleteSetStructures  []string `yaml:"delete_set_structures"`
-			ImplementInsert      *bool    `yaml:"implement_insert"`
-		} `yaml:"ref22_shen"`
-	} `yaml:"baselines"`
-
-	Experiments struct {
-		VerificationThroughput struct {
-			Enabled           bool     `yaml:"enabled"`
-			ConcurrencyLevels []int    `yaml:"concurrency_levels"`
-			Systems           []string `yaml:"systems"`
-			Metrics           []string `yaml:"metrics"`
-		} `yaml:"verification_throughput"`
-		RedactionThroughput struct {
-			Enabled        bool     `yaml:"enabled"`
-			Systems        []string `yaml:"systems"`
-			DecomposeCost  *bool    `yaml:"decompose_cost"`
-			Metrics        []string `yaml:"metrics"`
-		} `yaml:"redaction_throughput"`
-		ProvenanceAudit struct {
-			Enabled       bool     `yaml:"enabled"`
-			Systems       []string `yaml:"systems"`
-			LedgerSizes   []int    `yaml:"ledger_sizes"`
-			HistoryDepths []int    `yaml:"history_depths"`
-			Metrics       []string `yaml:"metrics"`
-		} `yaml:"provenance_audit"`
-	} `yaml:"experiments"`
-
-	Output struct {
-		ResultsDir string   `yaml:"results_dir"`
-		PlotsDir   string   `yaml:"plots_dir"`
-		Formats    []string `yaml:"formats"`
-		Record     struct {
-			ResolvedConfig         *bool `yaml:"resolved_config"`
-			Seed                   *bool `yaml:"seed"`
-			DatasetID              *bool `yaml:"dataset_id"`
-			GitCommit              *bool `yaml:"git_commit"`
-			EnvironmentFingerprint *bool `yaml:"environment_fingerprint"`
-			Timestamp              *bool `yaml:"timestamp"`
-		} `yaml:"record"`
-		AllowPublishedNumbers *bool `yaml:"allow_published_numbers_in_tables"`
-	} `yaml:"output"`
-}
-
-// -----------------------------------------------------------------------------
-// Security level tables
-// -----------------------------------------------------------------------------
-
-// curveSecurity maps a curve name to its effective security level in bits.
-//
-// BN254 is the entry that matters. It was widely quoted at 128-bit until the
-// Kim-Barbulescu exTNFS improvements (2016) reduced it to roughly 100-110 bits.
-// Much existing ZK tooling still defaults to it, so an accidental BN254 is easy
-// to introduce and impossible to see in the results — it just makes whichever
-// system uses it look faster than a fair comparison allows.
-var curveSecurity = map[string]int{
-	"P-256":     128,
-	"P-384":     192,
-	"secp256k1": 128,
-	"Ed25519":   128,
-	"BLS12-381": 128,
-	"BLS12-377": 128,
-	"BN254":     100,
-	"BN128":     100, // alias for BN254
-	"BN382":     128,
-}
-
-// rsaSecurity maps RSA/accumulator modulus size to approximate security bits
-// (NIST SP 800-57 equivalences).
-func rsaSecurity(bits int) int {
-	switch {
-	case bits >= 15360:
-		return 256
-	case bits >= 7680:
-		return 192
-	case bits >= 3072:
-		return 128
-	case bits >= 2048:
-		return 112
-	default:
-		return 80
-	}
 }
 
 // -----------------------------------------------------------------------------
@@ -300,6 +114,15 @@ func minInt(xs []int) int {
 }
 
 func contains(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStr(xs []string, v string) bool {
 	for _, x := range xs {
 		if x == v {
 			return true
@@ -336,7 +159,7 @@ func fmtInts(xs []int) string {
 // Checks
 // -----------------------------------------------------------------------------
 
-func checkMeta(c *Config, r *report) {
+func checkMeta(c *config.Config, r *report) {
 	if c.Meta.Seed == nil {
 		r.errf("meta.seed", "not set",
 			"without a fixed seed, runs are not reproducible and results cannot be regenerated")
@@ -354,7 +177,7 @@ func checkMeta(c *Config, r *report) {
 //
 // A mismatch here does not crash anything. It produces clean, plausible numbers
 // in which one system is faster purely because it was given weaker parameters.
-func checkSecurityUniformity(c *Config, r *report) {
+func checkSecurityUniformity(c *config.Config, r *report) {
 	if c.Security.TargetBits == nil {
 		r.errf("security.target_bits", "not set",
 			"every other security check is relative to this value")
@@ -362,44 +185,44 @@ func checkSecurityUniformity(c *Config, r *report) {
 	}
 	target := *c.Security.TargetBits
 
-	check := func(field string, name *string, required bool) {
+	check := func(field string, name *string, required, pairing bool) {
 		if name == nil {
 			if required {
 				r.errf(field, "not set", "")
 			}
 			return
 		}
-		bits, known := curveSecurity[*name]
-		if !known {
-			r.warnf(field, fmt.Sprintf("unknown curve %q — security level unverified", *name),
-				"add it to curveSecurity so uniformity can be enforced")
+		var err error
+		if pairing {
+			err = crypto.RequirePairingCurve(*name, target)
+		} else {
+			err = crypto.RequireCurve(*name, target)
+		}
+		if err == nil {
+			// Over-provisioning is not an error, but it penalises the scheme
+			// relative to the others, so it is worth surfacing.
+			if bits, e := crypto.CurveBits(*name); e == nil && bits > target {
+				r.warnf(field, fmt.Sprintf("%s is ~%d-bit, above target_bits=%d", *name, bits, target),
+					"over-provisioning penalises this system relative to the others")
+			}
 			return
 		}
-		if bits < target {
-			why := fmt.Sprintf(
-				"declared target is %d-bit; this curve delivers ~%d-bit, so whichever system uses it gains speed from weaker parameters and the comparison is void",
-				target, bits)
-			if strings.HasPrefix(*name, "BN") {
-				why += ". BN curves were quoted at 128-bit before the Kim-Barbulescu exTNFS attack (2016); BLS12-381 is the standard 128-bit replacement"
-			}
-			r.errf(field, fmt.Sprintf("%s is ~%d-bit, below target_bits=%d", *name, bits, target), why)
+		var unknown crypto.ErrUnknownCurve
+		if errors.As(err, &unknown) {
+			r.warnf(field, err.Error(),
+				"add it to pkg/crypto so uniformity can be enforced")
+			return
 		}
-		if bits > target {
-			r.warnf(field, fmt.Sprintf("%s is ~%d-bit, above target_bits=%d", *name, bits, target),
-				"over-provisioning penalises this system relative to the others")
-		}
+		r.errf(field, err.Error(), "")
 	}
 
-	check("security.signature_curve", c.Security.SignatureCurve, true)
-	check("security.chameleon_hash_curve", c.Security.ChameleonHashCurve, true)
-	check("security.pairing_curve", c.Security.PairingCurve, c.Baselines.Ref13.Enabled)
+	check("security.signature_curve", c.Security.SignatureCurve, true, false)
+	check("security.chameleon_hash_curve", c.Security.ChameleonHashCurve, true, false)
+	check("security.pairing_curve", c.Security.PairingCurve, c.Baselines.Ref13.Enabled, true)
 
 	if c.Security.AccumulatorBits != nil {
-		got := rsaSecurity(*c.Security.AccumulatorBits)
-		if got < target {
-			r.errf("security.accumulator_bits",
-				fmt.Sprintf("%d bits gives ~%d-bit security, below target_bits=%d",
-					*c.Security.AccumulatorBits, got, target),
+		if err := crypto.RequireRSA(*c.Security.AccumulatorBits, target); err != nil {
+			r.errf("security.accumulator_bits", err.Error(),
 				"Ref[22] would be measured at a weaker level than the other systems")
 		}
 	} else if c.Baselines.Ref22.Enabled {
@@ -409,14 +232,34 @@ func checkSecurityUniformity(c *Config, r *report) {
 	if c.Security.ZKProofSystem == nil {
 		r.errf("security.zk_proof_system", "not set",
 			"this determines the Exp 1 verification floor")
+		return
+	}
+	ps := crypto.ProofSystem(*c.Security.ZKProofSystem)
+	if !ps.Valid() {
+		r.errf("security.zk_proof_system",
+			fmt.Sprintf("unknown proof system %q", *c.Security.ZKProofSystem), "")
+		return
+	}
+	// The Exp 1 ablation grid sweeps native batch verification on and off. A
+	// backend without batch support leaves half that grid unmeasurable, which
+	// is better caught now than mid-sweep.
+	wantsBatch := false
+	for _, v := range c.ZKRedact.ProofBatch.NativeBatchVerify {
+		if v {
+			wantsBatch = true
+		}
+	}
+	if wantsBatch && !ps.SupportsBatchVerification() {
+		r.errf("security.zk_proof_system",
+			fmt.Sprintf("%s does not support batch verification, but native_batch_verify includes true", ps),
+			"the Phase 3 independence claim cannot be tested without both settings")
 	}
 }
 
-func checkEnvironment(c *Config, r *report) {
+func checkEnvironment(c *config.Config, r *report) {
 	n := c.Environment.Network
 	if c.Environment.VCPUs == nil {
-		r.errf("environment.vcpus", "not set",
-			"the sharding sweep is derived from this")
+		r.errf("environment.vcpus", "not set", "the sharding sweep is derived from this")
 	}
 	if n.Organizations == nil || n.PeersPerOrg == nil {
 		r.errf("environment.network", "organizations/peers_per_org not set", "")
@@ -436,7 +279,7 @@ func checkEnvironment(c *Config, r *report) {
 // cores. Sharding is CPU parallelism: if the sweep never exceeds the core
 // count, the saturation knee falls outside the plot and Exp 1's central result
 // is simply not visible.
-func checkSharding(c *Config, r *report) {
+func checkSharding(c *config.Config, r *report) {
 	counts := c.ZKRedact.Sharding.Counts
 	if len(counts) == 0 {
 		r.errf("zkredact.sharding.counts", "empty", "")
@@ -467,7 +310,7 @@ func checkSharding(c *Config, r *report) {
 	}
 }
 
-func checkBatching(c *Config, r *report) {
+func checkBatching(c *config.Config, r *report) {
 	pb := c.ZKRedact.ProofBatch
 	rb := c.ZKRedact.RedactionBatch
 
@@ -500,7 +343,7 @@ func checkBatching(c *Config, r *report) {
 // checkBaselineAlignment catches the silent failure mode: baselines swept over
 // ranges that do not line up with ZK-Redact's, producing curves that cannot be
 // plotted against each other.
-func checkBaselineAlignment(c *Config, r *report) {
+func checkBaselineAlignment(c *config.Config, r *report) {
 	if c.Baselines.Ref22.Enabled {
 		rb := c.ZKRedact.RedactionBatch.Sizes
 		ds := c.Baselines.Ref22.DeleteSetSizes
@@ -513,7 +356,9 @@ func checkBaselineAlignment(c *Config, r *report) {
 
 	if c.Baselines.Ref13.Enabled {
 		q := c.Baselines.Ref13.ArityQ
-		if len(q) == 1 {
+		if len(q) == 0 {
+			r.errf("baselines.ref13_vrbc.arity_q", "empty", "")
+		} else if len(q) == 1 {
 			r.warnf("baselines.ref13_vrbc.arity_q",
 				fmt.Sprintf("single value %d", q[0]),
 				"q moves append cost and audit cost in opposite directions, so one fixed value lets that choice decide the outcome of Exp 2 and Exp 3 — sweep it, or justify the value explicitly in the paper")
@@ -528,7 +373,7 @@ func checkBaselineAlignment(c *Config, r *report) {
 // checkRef10Committee verifies the fault assumption is internally consistent.
 // An undersized committee makes Ref[10] — the primary Exp 1 competitor — look
 // artificially fast, which is the easiest objection for a reviewer to raise.
-func checkRef10Committee(c *Config, r *report) {
+func checkRef10Committee(c *config.Config, r *report) {
 	b := c.Baselines.Ref10
 	if !b.Enabled {
 		return
@@ -575,7 +420,7 @@ func checkRef10Committee(c *Config, r *report) {
 
 // checkRef13AuditDerivation guards the one value legitimately reused from a
 // paper. Its justification is a derivation, and the derivation has a premise.
-func checkRef13AuditDerivation(c *Config, r *report) {
+func checkRef13AuditDerivation(c *config.Config, r *report) {
 	b := c.Baselines.Ref13
 	if !b.Enabled || b.CorruptedBlockRate == nil {
 		return
@@ -589,7 +434,7 @@ func checkRef13AuditDerivation(c *Config, r *report) {
 	}
 }
 
-func checkDatasetCapacity(c *Config, r *report) {
+func checkDatasetCapacity(c *config.Config, r *report) {
 	ls := c.Experiments.ProvenanceAudit.LedgerSizes
 	bt := c.Environment.Network.BlockMaxTransactions
 	base := c.Dataset.BaseTransactions
@@ -605,7 +450,7 @@ func checkDatasetCapacity(c *Config, r *report) {
 	}
 }
 
-func checkExperiments(c *Config, r *report) {
+func checkExperiments(c *config.Config, r *report) {
 	// Exp 1
 	if e := c.Experiments.VerificationThroughput; e.Enabled {
 		if len(e.ConcurrencyLevels) == 0 {
@@ -622,6 +467,11 @@ func checkExperiments(c *Config, r *report) {
 					"the crossover where sharding overtakes a single serialization point must fall inside the plot")
 			}
 		}
+		if len(e.Ablations) < 4 {
+			r.warnf("experiments.verification_throughput.ablations",
+				fmt.Sprintf("%d cells configured, expected 4", len(e.Ablations)),
+				"sharding and batching must be separable to evaluate the Phase 3 independence claim")
+		}
 	}
 
 	// Exp 2
@@ -630,16 +480,8 @@ func checkExperiments(c *Config, r *report) {
 			r.errf("experiments.redaction_throughput.decompose_cost", "must be true",
 				"CH.Adapt is per-request and cannot be amortised; only blockchain-side cost can. A single aggregate timing cannot show which improved, and invites the paper to imply batching speeds up redaction cryptography")
 		}
-		need := []string{"ch_adapt_time", "blockchain_time_per_batch", "stale_exclusion_rate"}
-		for _, m := range need {
-			found := false
-			for _, have := range e.Metrics {
-				if have == m {
-					found = true
-					break
-				}
-			}
-			if !found {
+		for _, m := range []string{"ch_adapt_time", "blockchain_time_per_batch", "stale_exclusion_rate"} {
+			if !containsStr(e.Metrics, m) {
 				r.errf("experiments.redaction_throughput.metrics",
 					fmt.Sprintf("missing %q", m),
 					"required to separate the amortisable cost from the floor, and to price the staleness trade-off")
@@ -660,10 +502,15 @@ func checkExperiments(c *Config, r *report) {
 					"separating O(1) from O(n) convincingly needs at least one order of magnitude")
 			}
 		}
+		if len(e.HistoryDepths) < 2 {
+			r.warnf("experiments.provenance_audit.history_depths",
+				"needs at least two depths",
+				"the second plot shows cost scaling with the target's own history")
+		}
 	}
 }
 
-func checkWorkload(c *Config, r *report) {
+func checkWorkload(c *config.Config, r *report) {
 	if c.Workload.TotalRequests == nil {
 		r.errf("workload.total_requests", "not set", "")
 	} else if *c.Workload.TotalRequests < 10000 {
@@ -673,6 +520,10 @@ func checkWorkload(c *Config, r *report) {
 	}
 	if c.Workload.TargetDistribution == "zipf" && c.Workload.ZipfS == nil {
 		r.errf("workload.zipf_s", "required when target_distribution is zipf", "")
+	}
+	if c.Workload.TargetDistribution != "uniform" && c.Workload.TargetDistribution != "zipf" {
+		r.errf("workload.target_distribution",
+			fmt.Sprintf("unknown value %q", c.Workload.TargetDistribution), "")
 	}
 	if len(c.Workload.ConflictRatios) > 0 {
 		hasZero := false
@@ -692,7 +543,7 @@ func checkWorkload(c *Config, r *report) {
 	}
 }
 
-func checkOutput(c *Config, r *report) {
+func checkOutput(c *config.Config, r *report) {
 	rec := c.Output.Record
 	required := map[string]*bool{
 		"resolved_config":         rec.ResolvedConfig,
@@ -719,7 +570,7 @@ func checkOutput(c *Config, r *report) {
 	}
 }
 
-func checkPendingMeasurements(c *Config, r *report) {
+func checkPendingMeasurements(c *config.Config, r *report) {
 	if c.ZKRedact.Circuit.ConstraintCount == nil || c.ZKRedact.Circuit.PublicInputCount == nil {
 		r.warnf("zkredact.circuit", "constraint_count/public_input_count not yet recorded",
 			"these are outputs of `make build-zk`, not choices — fill them in after building so the Exp 1 verification floor stays reproducible")
@@ -731,39 +582,31 @@ func checkPendingMeasurements(c *Config, r *report) {
 // -----------------------------------------------------------------------------
 
 func main() {
-	path := "config/experiment.yaml"
+	path := config.DefaultPath
 	if len(os.Args) > 1 {
 		path = os.Args[1]
 	}
 
-	raw, err := os.ReadFile(path)
+	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot read %s: %v\n", path, err)
-		os.Exit(2)
-	}
-
-	var cfg Config
-	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
-	dec.KnownFields(false) // tolerate documentation-only keys
-	if err := dec.Decode(&cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "cannot parse %s: %v\n", path, err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
 	r := &report{}
-	checkMeta(&cfg, r)
-	checkSecurityUniformity(&cfg, r)
-	checkEnvironment(&cfg, r)
-	checkSharding(&cfg, r)
-	checkBatching(&cfg, r)
-	checkBaselineAlignment(&cfg, r)
-	checkRef10Committee(&cfg, r)
-	checkRef13AuditDerivation(&cfg, r)
-	checkDatasetCapacity(&cfg, r)
-	checkExperiments(&cfg, r)
-	checkWorkload(&cfg, r)
-	checkOutput(&cfg, r)
-	checkPendingMeasurements(&cfg, r)
+	checkMeta(cfg, r)
+	checkSecurityUniformity(cfg, r)
+	checkEnvironment(cfg, r)
+	checkSharding(cfg, r)
+	checkBatching(cfg, r)
+	checkBaselineAlignment(cfg, r)
+	checkRef10Committee(cfg, r)
+	checkRef13AuditDerivation(cfg, r)
+	checkDatasetCapacity(cfg, r)
+	checkExperiments(cfg, r)
+	checkWorkload(cfg, r)
+	checkOutput(cfg, r)
+	checkPendingMeasurements(cfg, r)
 
 	fmt.Printf("validate-config: %s (version %s)\n\n", path, cfg.Meta.ConfigVersion)
 

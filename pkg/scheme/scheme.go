@@ -178,7 +178,7 @@ type Dataset struct {
 type Transaction struct {
 	ID        string
 	Core      []byte // immutable
-	Redactabl []byte // redaction target
+	Redactable []byte // redaction target
 }
 
 // Identity is a registered requester.

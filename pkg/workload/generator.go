@@ -32,7 +32,7 @@ type Config struct {
 	// Dataset
 	BaseTransactions      int
 	CorePayloadBytes      int
-	RedactablePayloadByte int
+	RedactablePayloadBytes int
 	IdentityCount         int
 	IdentityAttributes    []string
 	PolicyCount           int
@@ -50,7 +50,7 @@ func (c Config) Validate() error {
 	switch {
 	case c.BaseTransactions <= 0:
 		return fmt.Errorf("base_transactions must be positive, got %d", c.BaseTransactions)
-	case c.CorePayloadBytes <= 0 || c.RedactablePayloadByte <= 0:
+	case c.CorePayloadBytes <= 0 || c.RedactablePayloadBytes <= 0:
 		return fmt.Errorf("payload sizes must be positive")
 	case c.IdentityCount <= 0:
 		return fmt.Errorf("identity count must be positive, got %d", c.IdentityCount)
@@ -123,7 +123,7 @@ func GenerateDataset(c Config) (*scheme.Dataset, error) {
 		ds.Transactions[i] = scheme.Transaction{
 			ID:        fmt.Sprintf("tx-%08d", i),
 			Core:      randomBytes(txRNG, c.CorePayloadBytes),
-			Redactabl: randomBytes(txRNG, c.RedactablePayloadByte),
+			Redactable: randomBytes(txRNG, c.RedactablePayloadBytes),
 		}
 	}
 
@@ -171,7 +171,7 @@ func datasetID(c Config) string {
 	write(c.Seed,
 		int64(c.BaseTransactions),
 		int64(c.CorePayloadBytes),
-		int64(c.RedactablePayloadByte),
+		int64(c.RedactablePayloadBytes),
 		int64(c.IdentityCount),
 		int64(c.PolicyCount),
 		int64(c.PredicateDepth))
@@ -220,7 +220,7 @@ func GenerateTrace(c Config, ds *scheme.Dataset) ([]*scheme.Request, error) {
 			ID:          fmt.Sprintf("req-%08d", i),
 			RequesterID: ds.Identities[r.Intn(len(ds.Identities))].ID,
 			TargetTxID:  ds.Transactions[txIdx].ID,
-			NewContent:  randomBytes(r, c.RedactablePayloadByte),
+			NewContent:  randomBytes(r, c.RedactablePayloadBytes),
 			PolicyID:    ds.Policies[r.Intn(len(ds.Policies))].ID,
 			Timestamp:   base.Add(time.Duration(i) * time.Millisecond),
 			Nonce:       randomBytes(r, 16),

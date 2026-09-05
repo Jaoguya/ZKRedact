@@ -136,7 +136,14 @@ build-baseline-ref22: proto
 # -----------------------------------------------------------------------------
 .PHONY: test
 test:
+	@$(GO) vet ./...
 	@$(GO) test ./...
+
+# Compiles every package without running anything - the fastest way to find out
+# whether the tree is consistent after an edit.
+.PHONY: build
+build:
+	@$(GO) build ./...
 
 # Baseline fidelity: every verification path must actually REJECT invalid input.
 # A commitment scheme that never rejects anything benchmarks beautifully and is
@@ -159,32 +166,28 @@ fidelity-check:
 # ranges. Run this before the real experiments.
 .PHONY: pilot
 pilot: validate-config
-	@echo "==> pilot run"
-	@echo "TODO: measure variance and locate saturation, then update $(CONFIG)"
-	@false
+	@echo "==> pilot: builds dataset and trace, executes nothing"
+	$(GO) run ./cmd/run-experiment -config $(CONFIG) -exp verification -dry-run
 
 .PHONY: experiments
-experiments: experiment-verification-throughput \
-             experiment-redaction-throughput \
-             experiment-provenance-audit
+experiments: validate-config
+	@mkdir -p $(RESULTS_DIR)
+	$(GO) run ./cmd/run-experiment -config $(CONFIG) -exp all
 
 .PHONY: experiment-verification-throughput
 experiment-verification-throughput: validate-config
-	@echo "==> Exp 1: Verification Throughput"
 	@mkdir -p $(RESULTS_DIR)
-	@false
+	$(GO) run ./cmd/run-experiment -config $(CONFIG) -exp verification
 
 .PHONY: experiment-redaction-throughput
 experiment-redaction-throughput: validate-config
-	@echo "==> Exp 2: Redaction Throughput"
 	@mkdir -p $(RESULTS_DIR)
-	@false
+	$(GO) run ./cmd/run-experiment -config $(CONFIG) -exp redaction
 
 .PHONY: experiment-provenance-audit
 experiment-provenance-audit: validate-config
-	@echo "==> Exp 3: Provenance Retrieval and Audit Cost"
 	@mkdir -p $(RESULTS_DIR)
-	@false
+	$(GO) run ./cmd/run-experiment -config $(CONFIG) -exp audit
 
 .PHONY: experiment-e2e
 experiment-e2e: validate-config
