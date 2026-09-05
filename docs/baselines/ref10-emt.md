@@ -180,11 +180,34 @@ the shared dataset) or an unrelated comparison.
 
 Verify before any Experiment 1 result is recorded:
 
-- [ ] Committee selection is genuinely hash-based over the full node set, not a fixed list
-- [ ] Every vote carries a real signature that is actually verified
-- [ ] Threshold logic matches Algorithm 3, including rejection below threshold
-- [ ] `T_rdbl` exclusions (genesis, prior redactions, contract transactions) are enforced
-- [ ] Attribute policy `A_r` is genuinely evaluated per requester
-- [ ] Votes travel over the real network, not in-process function calls
-- [ ] `H_c` immutability is enforced — a redaction altering core data must fail
-- [ ] No parameter appears as a literal anywhere in the implementation
+- [x] Committee selection is genuinely hash-based over the full node set, not a fixed list
+      — `TestCommitteeIsHashBasedOverFullNodeSet`, `TestCommitteeMembersAllSatisfyPolicy`
+- [x] Every vote carries a real signature that is actually verified
+      — `TestVoteRoundVerifiesBeforeCounting` drives forged ballots through a stub
+      transport and requires the tally to exclude them
+- [x] Threshold logic matches Algorithm 3, including rejection below threshold
+      — `TestVerifySigmaRejectsForgedSets` (below threshold, duplicate-padded,
+      replayed onto another request, replayed onto another contract)
+- [x] `T_rdbl` exclusions (genesis, prior redactions, contract transactions) are enforced
+      — `TestAuthorizeDenials`, `TestRedactionTransactionsAreNotRedactable`
+- [x] Attribute policy `A_r` is genuinely evaluated per requester
+      — `TestEvalPolicy`, `TestEvalPolicyRejectsMalformed`,
+      `TestCommitteeMemberRederivesTheDecision`
+- [ ] **Votes travel over the real network, not in-process function calls**
+      — NOT YET. `vote_transport: in_process` is the only implementation; the
+      `fabric` transport is refused rather than silently downgraded, and
+      `validate-config` warns while this stands. Exp 1 and Exp 2 numbers for
+      Ref[10] are a lower bound until this box is ticked.
+- [x] `H_c` immutability is enforced — a redaction altering core data must fail
+      — `TestAuditDetectsCoreDataTampering`, `TestRedactionChangesOnlyTheInsertedBranch`
+- [x] No parameter appears as a literal anywhere in the implementation
+      — every value arrives through `SetupParams.Params`; `TestSetupGuards`
+      covers each missing or invalid one
+
+> **Mutation-checked.** Each box above was verified by breaking the property in
+> a scratch copy and confirming the suite fails: an always-granting policy, an
+> always-true `evalPolicy`, an always-true `verifySigma`, a `verifyEMT` without
+> the `H_c` check, address-independent committee selection, an indexed audit, a
+> vote round that counts without verifying, a member that rubber-stamps, a
+> member that skips the CA signature check, and a `fabric` transport that falls
+> back to in-process. All ten fail the suite.

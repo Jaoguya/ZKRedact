@@ -127,24 +127,36 @@ Negative tests were mutation-checked: an always-accept `Verify`, a dropped key
 prefix, a fixed nonce, and a `VerifyVotes` that skips verification each make the
 suite fail.
 
-### 2. Ref[10] EMT — the first real numbers 🎯 ⬅️ **start here**
+### 2. Ref[10] EMT ✅ algorithms done, ⚠️ not yet networked
 Spec: [`docs/baselines/ref10-emt.md`](docs/baselines/ref10-emt.md)
 
-Uses **no chameleon hash** — only Merkle (done) plus Schnorr. Highest value per
-unit of effort: it is the Exp 1 competitor, already on Fabric, and finishing it
-proves the whole harness works end to end even while the other three are stubs.
+All five algorithms are implemented and tested (44 tests, ten mutation checks).
 
-| Algorithm | What |
+| Algorithm | Where |
 |---|---|
-| 1 | EMT verification, `H_tx = H(H_c ‖ H_w)` |
-| 2 | CA validation, policy `P_C` |
-| 3 | Committee selection `RS_SHA256`, voting |
-| 4 | Schnorr vote signatures |
-| 5 | Local redaction |
+| 1 EMT verification, `H_tx = H(H_c ‖ H_w)` | `emt.go`, `Scheme.verifyEMT` |
+| 2 CA validation, policy `P_C`, Eq. 6 | `voting.go`, `certAuthority.validate` |
+| 3 Committee selection `RS_SHA256`, voting | `committee.go`, `runVoteRound` |
+| 4 Schnorr vote signatures | `pkg/crypto` + `localTransport` |
+| 5 Local redaction | `Scheme.Redact`, `ledger.applyRedaction` |
 
-Measurement boundary is pinned in the spec §2 — read it before timing anything.
+**The one box still unticked is the network.** `vote_transport: in_process`
+means votes are exchanged by function call: the cryptography is real, the wire
+is not. `fabric` is refused rather than silently downgraded, and
+`validate-config` warns while this stands. **Ref[10] numbers from Exp 1 and
+Exp 2 are a lower bound until task 3 lands** — they are not its cost.
 
-### 3. Fabric network + chaincode → `network/`
+Two things worth knowing before building on this:
+
+- **`Audit` must never read `emtTx.RedactedBy`.** That field exists so the
+  harness can build history of known depth during untimed setup. Reading it
+  would hand Ref[10] the per-transaction index its design lacks, and Exp 3
+  compares exactly that absence.
+- **`crypto.VerifyVotes` has no early exit, but the vote round does.** The round
+  closing on threshold is the recorded deviation (spec §2, favours Ref[10]);
+  Σ re-verification in `Redact` and `Audit` must stay exhaustive.
+
+### 3. Fabric network + chaincode → `network/` ⬅️ **start here**
 4 orgs × 2 peers + 3 Raft orderers, per config. Votes must travel over the real
 network; short-circuiting them to in-process calls removes the cost that
 distinguishes Ref[10] from a trapdoor check.
@@ -252,6 +264,9 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Claims `LedgerIndependentAudit` but traverses the ledger → fail | `exp3` | a scheme contradicting its own capability declaration |
 | Non-batching scheme swept over batch sizes → refused | `exp2` | fabricating a curve the scheme cannot produce |
 | Ref[10] threshold not a real majority → `Setup` fails | `ref10` | an undersized committee making the main competitor look fast |
+| Ref[10] `vote_transport: fabric` before the network exists → `Setup` fails | `ref10` | in-process latency being recorded as a distributed protocol's cost |
+| Ref[10] `vote_transport: in_process` → validator WARN | `validate-config` | publishing a lower bound as Ref[10]'s Exp 1 result |
+| Ref[10] eligible pool smaller than `committee_size` → `Setup` fails | `ref10` | a silently shrunken committee weakening the threshold |
 | Ref[13] corruption rate ≠ 0.01 → `Setup` fails | `ref13` | `challenged_blocks` silently losing its 95%/99% meaning |
 | Ref[22] accumulator < 3072 bits → `Setup` fails | `ref22` | a baseline benchmarked below the shared security level |
 | CH construction a scheme needs not implemented → `Setup` fails | all four schemes, via `ch.CheckRequired` | a baseline silently given a cheaper chameleon hash than its paper specifies |

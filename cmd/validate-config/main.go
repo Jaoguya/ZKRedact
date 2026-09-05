@@ -391,6 +391,25 @@ func checkRef10Committee(c *config.Config, r *report) {
 		r.errf("baselines.ref10_emt", "committee_size/vote_threshold not set", "")
 		return
 	}
+
+	// Votes that never cross the wire cost almost nothing. Ref[10] is the Exp 1
+	// competitor precisely because its authorization is a distributed protocol,
+	// so measuring it in-process understates the one thing it is here to
+	// contribute. A warning rather than an error: in-process is the right
+	// setting for developing and testing the scheme, and wrong only for
+	// recording results.
+	switch {
+	case b.VoteTransport == nil:
+		r.errf("baselines.ref10_emt.vote_transport", "not set",
+			"Ref[10] must state whether votes cross the network; leaving it implicit is how in-process latency gets published as a protocol cost")
+	case *b.VoteTransport == "in_process":
+		r.warnf("baselines.ref10_emt.vote_transport", "in_process — votes do not cross the network",
+			"Exp 1 and Exp 2 numbers for Ref[10] are a LOWER BOUND, not its cost; set fabric before recording results")
+	case *b.VoteTransport != "fabric":
+		r.errf("baselines.ref10_emt.vote_transport",
+			fmt.Sprintf("unknown value %q", *b.VoteTransport),
+			"want in_process or fabric")
+	}
 	size, thr := *b.CommitteeSize, *b.VoteThreshold
 
 	if thr > size {

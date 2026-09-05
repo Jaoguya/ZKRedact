@@ -337,6 +337,22 @@ baselines:
     # shrink the eligible committee and tilt the comparison in our favour.
     attribute_policy: "S OR R OR V"
 
+    # [CONFIRM] How committee votes are carried.
+    #
+    #   in_process — votes are exchanged by function call. The cryptography is
+    #                real (CA signature verified, genuine Schnorr vote per
+    #                member), but no packet is sent. Exp 1 latency measured this
+    #                way is a LOWER BOUND on Ref[10]'s authorization cost, not
+    #                that cost. Not publishable as a Ref[10] result.
+    #   fabric      — votes travel over the real network, which is the cost that
+    #                distinguishes a committee protocol from a trapdoor check.
+    #                Requires network/ (TASK.md task 3); Setup refuses this
+    #                value until then rather than silently downgrading.
+    #
+    # Set to fabric before recording any Exp 1 or Exp 2 number for this
+    # baseline. validate-config warns while this reads in_process.
+    vote_transport: "in_process"
+
   # ---------------------------------------------------------------------------
   # Ref[13] — VRBC (Tian et al., IEEE TC 2023)
   # Primary competitor for Exp 3. docs/baselines/ref13-vrbc.md

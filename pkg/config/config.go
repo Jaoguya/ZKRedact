@@ -134,6 +134,7 @@ type Ref10 struct {
 	FaultToleranceF *int    `yaml:"fault_tolerance_f"`
 	VoteWindowMS    *int    `yaml:"vote_window_ms"`
 	AttributePolicy *string `yaml:"attribute_policy"`
+	VoteTransport   *string `yaml:"vote_transport"`
 }
 
 type Ref13 struct {
@@ -359,14 +360,30 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 	case "ref10_emt":
 		b := c.Baselines.Ref10
 		if b.CommitteeSize == nil || b.VoteThreshold == nil ||
-			b.VoteWindowMS == nil || b.AttributePolicy == nil {
+			b.VoteWindowMS == nil || b.AttributePolicy == nil ||
+			b.VoteTransport == nil {
 			return nil, fmt.Errorf("baselines.ref10_emt is incompletely configured")
 		}
+		// signature_curve, hash and block_max_transactions are SHARED
+		// parameters, passed in from the security and environment blocks rather
+		// than duplicated under this baseline. A per-baseline copy could drift
+		// and would let one system run at a different level or block cadence
+		// than the others.
+		if c.Security.SignatureCurve == nil {
+			return nil, fmt.Errorf("security.signature_curve is not set, required by ref10_emt")
+		}
+		if c.Environment.Network.BlockMaxTransactions == nil {
+			return nil, fmt.Errorf("environment.network.block_max_transactions is not set, required by ref10_emt")
+		}
 		return map[string]any{
-			"committee_size":   *b.CommitteeSize,
-			"vote_threshold":   *b.VoteThreshold,
-			"vote_window_ms":   *b.VoteWindowMS,
-			"attribute_policy": *b.AttributePolicy,
+			"committee_size":         *b.CommitteeSize,
+			"vote_threshold":         *b.VoteThreshold,
+			"vote_window_ms":         *b.VoteWindowMS,
+			"attribute_policy":       *b.AttributePolicy,
+			"vote_transport":         *b.VoteTransport,
+			"signature_curve":        *c.Security.SignatureCurve,
+			"hash":                   c.Security.Hash,
+			"block_max_transactions": *c.Environment.Network.BlockMaxTransactions,
 		}, nil
 
 	case "ref13_vrbc":
