@@ -4,6 +4,7 @@ package ref10
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,4 +169,79 @@ func TestLiveRefusesWhenIdentitiesAreShort(t *testing.T) {
 		t.Fatal("Setup accepted more members than there are Fabric identities")
 	}
 	t.Logf("refused as expected: %v", err)
+}
+
+// TestLiveConcurrentAuthorize drives the fabric transport the way Exp 1 does.
+//
+// Everything before this exercised one request at a time. Exp 1 runs up to 1024
+// concurrent authorizations, and the transport caches a gateway per member
+// behind a mutex while the contract enforces one ballot per member per round —
+// neither of which a single-request test can exercise.
+//
+// Two failures would be invisible in aggregate numbers rather than loud:
+//
+//   - A data race in the session cache. Under -race it is a test failure; in a
+//     measured run it is a crash partway through a sweep, or worse, silent
+//     corruption of the ballots.
+//   - Rounds interfering with each other. Each request has its own contract
+//     address, so concurrent rounds must not see each other's ballots. If they
+//     did, approvals would leak across requests and the approval rate would
+//     rise with concurrency — which reads as a throughput result.
+func TestLiveConcurrentAuthorize(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	s := New()
+	if err := s.Setup(ctx, scheme.SetupParams{
+		Dataset:      liveDataset(t, 6),
+		Seed:         42,
+		SecurityBits: 128,
+		Params:       liveGatewayParams(t),
+	}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Teardown(context.Background()) })
+
+	requester := eligibleRequester(t, s)
+
+	const concurrency = 4
+	type outcome struct {
+		granted bool
+		err     error
+	}
+	results := make(chan outcome, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(n int) {
+			auth, err := s.Authorize(ctx,
+				request(fmt.Sprintf("live-conc-%d", n), requester, "tx-00000003"))
+			if err != nil {
+				results <- outcome{err: err}
+				return
+			}
+			results <- outcome{granted: auth.Granted}
+		}(i)
+	}
+
+	granted, denied := 0, 0
+	for i := 0; i < concurrency; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Errorf("concurrent authorization failed: %v", r.err)
+			continue
+		}
+		if r.granted {
+			granted++
+		} else {
+			denied++
+		}
+	}
+
+	// Every request is the same eligible requester on the same transaction, so
+	// all should be granted. A denial under concurrency that does not occur
+	// serially means rounds are interfering.
+	if granted != concurrency {
+		t.Errorf("%d of %d concurrent authorizations granted; the same request "+
+			"succeeds on its own, so rounds are interfering", granted, concurrency)
+	}
 }

@@ -97,10 +97,21 @@ func run(configPath, expName string, dryRun bool, only string) error {
 	//
 	// Checked before the dataset is built so the failure costs seconds rather
 	// than a sweep.
+	// A dry run measures nothing: it builds the dataset and trace and reports
+	// what would execute. Blocking it would make the dataset unbuildable on
+	// every development machine, for a property none of its output depends on.
+	// The warning still prints, so the limitation is visible before anyone
+	// attempts a real run here.
 	if err := metrics.RequireUsableClock(); err != nil {
-		return fmt.Errorf("this host cannot be measured on: %w", err)
+		if !dryRun {
+			return fmt.Errorf("this host cannot be measured on: %w", err)
+		}
+		fmt.Printf("clock       %v resolution — TOO COARSE TO MEASURE\n", metrics.ClockResolution())
+		fmt.Println("            dry run permitted; a real run on this host is refused")
+		fmt.Println()
+	} else {
+		fmt.Printf("clock       %v resolution\n\n", metrics.ClockResolution())
 	}
-	fmt.Printf("clock       %v resolution\n\n", metrics.ClockResolution())
 
 	// -------------------------------------------------------------------------
 	// Shared workload — generated once, used by every scheme
