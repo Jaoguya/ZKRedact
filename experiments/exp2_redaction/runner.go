@@ -58,7 +58,13 @@ type Point struct {
 	// Decomposed cost. CryptoTime grows linearly with batch size and is the
 	// floor batching cannot go below; LedgerTime is roughly constant per batch
 	// and is the only part that amortises.
-	CryptoTime time.Duration `json:"ch_adapt_time_ns"`
+	//
+	// Named crypto_time_ns, not ch_adapt_time_ns: Ref[10] uses no chameleon
+	// hash at all, so a CH-specific name would report it as doing work its
+	// design does not contain. What this measures is per-request cryptography,
+	// whatever form each scheme's takes — CH adaptation for ZK-Redact, Ref[13]
+	// and Ref[22]; signature re-verification and hash recomputation for Ref[10].
+	CryptoTime time.Duration `json:"crypto_time_ns"`
 	LedgerTime time.Duration `json:"blockchain_time_per_batch_ns"`
 	TotalTime  time.Duration `json:"total_time_ns"`
 

@@ -140,6 +140,25 @@ All five algorithms are implemented and tested (44 tests, ten mutation checks).
 | 4 Schnorr vote signatures | `pkg/crypto` + `localTransport` |
 | 5 Local redaction | `Scheme.Redact`, `ledger.applyRedaction` |
 
+**End-to-end verified.** All three experiments now run against Ref[10] and
+write results:
+
+```bash
+go run ./cmd/run-experiment -config config/pilot.yaml -exp all -schemes ref10_emt
+```
+
+`config/pilot.yaml` is a scaled-down copy for smoke-testing — the real config is
+a c6i.8xlarge workload (11 concurrency levels x 30 repetitions x 10,000 requests
+is 3.3M authorizations, roughly 15 elliptic-curve operations each for Ref[10]).
+`-schemes` restricts the run to a subset and records the restriction in every
+results file, since the other three systems still fail `Setup`.
+
+What the first real run showed: 441 granted / 59 denied of 500 requests (11.8%,
+matching the fraction of identities failing `S OR R OR V`), throughput scaling
+596 -> 4240 rps to concurrency 8, `CryptoTime` 218 ms against `LedgerTime`
+20.6 ms, and Exp 3 audit cost climbing with ledger size exactly as Ref[10]'s
+design requires.
+
 **The one box still unticked is the network.** `vote_transport: in_process`
 means votes are exchanged by function call: the cryptography is real, the wire
 is not. `fabric` is refused rather than silently downgraded, and
@@ -157,6 +176,10 @@ Two things worth knowing before building on this:
   Σ re-verification in `Redact` and `Audit` must stay exhaustive.
 
 ### 3. Fabric network + chaincode → `network/` ⬅️ **start here**
+
+Also still open from Exp 3: `prepareLedger` re-runs `Setup` per ledger size,
+which is correct but means every scheme must be cheap to re-materialise. Watch
+this when ZK-Redact's setup starts building circuits.
 4 orgs × 2 peers + 3 Raft orderers, per config. Votes must travel over the real
 network; short-circuiting them to in-process calls removes the cost that
 distinguishes Ref[10] from a trapdoor check.

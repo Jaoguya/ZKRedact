@@ -1,0 +1,583 @@
+# =============================================================================
+# PILOT CONFIG — SMOKE TEST ONLY. NOT A SOURCE OF RESULTS.
+# =============================================================================
+#
+# A scaled-down copy of experiment.yaml for exercising the harness end to end on
+# a development machine. Every sweep here is deliberately too small to measure
+# anything: 500 requests cannot support a stable p99 (the real config's comment
+# explains why >= 10,000 is needed), and 3 repetitions cannot establish variance.
+#
+# Numbers produced with this file are for confirming that code RUNS, never for
+# reporting. Results are written to results/pilot/ to keep them separate.
+#
+# WHY THIS FILE EXISTS. The full config is a c6i.8xlarge workload: 11 concurrency
+# levels x 30 repetitions x 10,000 requests is 3.3M authorizations, each costing
+# roughly 15 elliptic-curve operations for Ref[10]. That is correct for the real
+# run and useless as a smoke test.
+#
+# KNOWN PILOT ARTIFACT — Exp 3 scaling class is unstable at this scale.
+# Building history adds one block per redaction, so a run with history depths
+# 1,2,4,8,16 adds 31 blocks plus genesis to EVERY ledger. At the sizes above
+# that overhead dominates: a 10 -> 100 sweep is only 42 -> 132 real blocks, a
+# 3.1x span rather than 10x, which compresses the measured cost ratio onto the
+# classifier's linear/sublinear boundary (sizeRatio * 0.5 = 5.0). Ref[10] has
+# been observed at both 5.57 (linear) and 4.80 (sublinear) across identical
+# runs. At the real config's 1000 -> 10000 the same overhead is negligible and
+# the class is stable. Do not "fix" the classifier from a pilot observation.
+#
+# DRIFT WARNING. This is a copy, so it can fall out of step with
+# experiment.yaml. It is only ever used with -config config/pilot.yaml, and the
+# real config remains the single source of truth for anything reported. If you
+# change a parameter that affects correctness rather than scale, change both.
+#
+# Scaled down from experiment.yaml:
+#   meta.repetitions                30      -> 3
+#   dataset.base_transactions       1000000 -> 20000
+#   workload.total_requests         10000   -> 500
+#   exp1 concurrency_levels         1..1024 -> 1,2,4,8
+#   exp3 ledger_sizes               1k..10k -> 10,20,50,100  (10x span kept)
+#   output.results_dir              results -> results/pilot
+# =============================================================================
+
+# =============================================================================
+# ZK-Redact — Shared Experiment Configuration
+# =============================================================================
+#
+# THE ONLY SOURCE OF PARAMETERS. Every system under test — ZK-Redact and all
+# three baselines — reads from this file. A numeric literal in code is a defect.
+#
+# Rules (SKILL.md §Evaluation Principles):
+#   1. Real execution only. No simulated timings, no analytical models.
+#   2. No hardcoded values. Everything here, nothing in code.
+#   3. No magic numbers. Every value carries its rationale in a comment.
+#   4. One dataset, one config, for all four systems.
+#   5. Reproducible. Same config + same seed -> same results.
+#
+# MARKERS
+#   [DERIVED]  follows necessarily from a stated fact or constraint
+#   [METHOD]   follows from a stated measurement methodology
+#   [PROPOSED] defensible engineering choice with reasoning given.
+#              Change it freely — but keep a rationale when you do.
+#   [MEASURED] an OUTPUT recorded after building; not chosen by hand
+#   [CONFIRM]  proposed, but depends on intent this file cannot settle.
+#              Check these against your research scope:  grep -n CONFIRM
+#
+# Every value below is either derived, methodological, or a reasoned proposal.
+# None is arbitrary. Where a proposal rests on an assumption, the assumption is
+# stated so you can reject it deliberately rather than inherit it silently.
+# =============================================================================
+
+
+meta:
+  config_version: "0.2.0"
+
+  # [METHOD] Fixed seed drives dataset generation, request-trace ordering, and
+  # every randomised protocol choice (committee selection, audit challenges).
+  # Vary ONLY across repetitions, never between systems within one comparison.
+  seed: 20260905
+
+  # [PROPOSED] 30 repetitions per configuration point; report median + p95.
+  # Basis: Ref[13] used 30 for the same class of measurement, and 30 sits above
+  # the conventional n>=10 floor for latency work. Verify against pilot variance
+  # — if the confidence interval is wider than the smallest difference you
+  # intend to claim, raise it and record the measured variance here.
+  repetitions: 3
+
+
+# -----------------------------------------------------------------------------
+# SECURITY LEVEL — uniform across all systems
+# -----------------------------------------------------------------------------
+security:
+  # [DERIVED] 128-bit. Ref[22] explicitly targets it (P-256 + 3072-bit
+  # accumulator); Ref[13] deploys at the same level. Uniformity is mandatory:
+  # a baseline at a different level voids every number in every table.
+  target_bits: 128
+
+  hash: "SHA-256"
+
+  # [PROPOSED] P-256 for Schnorr (Ref[10] committee voting).
+  # Prime order, 128-bit, and already Fabric's native curve — so signature cost
+  # is not inflated by an unusual choice. Also matches Ref[22]'s stated curve,
+  # keeping signature cost identical across baselines.
+  signature_curve: "P-256"
+
+  # [DERIVED] BLS12-381 for Ref[13]'s pairing checks — NOT BN254.
+  #
+  # BN254 was long quoted at 128-bit, but the Kim-Barbulescu exTNFS attack
+  # (2016) reduced it to roughly 100-110 bits. Since target_bits is 128,
+  # BN254 would violate this file's own uniformity rule and hand Ref[13] an
+  # unearned speed advantage from a weaker curve.
+  # BLS12-381 is the standard post-exTNFS 128-bit pairing curve.
+  pairing_curve: "BLS12-381"
+
+  # [PROPOSED] P-256 for the chameleon hash — discrete-log based, 128-bit,
+  # consistent with signature_curve and with Ref[22]'s stated construction.
+  chameleon_hash_curve: "P-256"
+
+  # [DERIVED] RSA-3072 for Ref[22]'s trapdoorless universal accumulator.
+  #
+  # NIST SP 800-57 Part 1 Rev. 5 Table 2 places 3072-bit RSA/DH at the 128-bit
+  # security strength, the same level target_bits sets for every other
+  # primitive here. Ref[22] states this level for its own construction.
+  # Anything smaller would make that baseline faster for a reason unrelated to
+  # its design, which is the exact failure this file exists to prevent.
+  #
+  # This is the single source of truth; baselines.ref22_shen.accumulator_bits
+  # must equal it, and validate-config refuses a mismatch.
+  accumulator_bits: 3072
+
+  # [PROPOSED] Groth16 over BLS12-381, implemented with gnark / gnark-crypto.
+  #
+  # The library choice follows from the curve: gnark-crypto provides BLS12-381
+  # pairings, which Ref[13]'s verification equations also require. One
+  # dependency serves both the scheme and the baseline, and keeps the whole
+  # stack in Go alongside the Fabric chaincode — no FFI boundary inside the
+  # measured path, where it would add cost attributable to nothing in either
+  # design.
+  #
+  # Three reasons, in order of weight:
+  #   1. Verification is 3 pairings + O(public inputs) — the fastest verifier
+  #      available, and Exp 1 measures verification throughput.
+  #   2. It supports batch verification of multiple proofs over the SAME
+  #      circuit via random linear combination. Phase 3's native_batch_verify
+  #      ablation is untestable without this.
+  #   3. Smallest proof size, which matters for Exp 3 evidence size.
+  # Cost: a per-circuit trusted setup. Acceptable for benchmarking, but state
+  # it in the paper. PLONK avoids it at the price of slower verification —
+  # switch only if universal setup becomes a stated requirement.
+  zk_proof_system: "groth16"
+
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENT — identical for every run in a comparison
+# -----------------------------------------------------------------------------
+environment:
+  # [PROPOSED] c6i.8xlarge — 32 vCPU, 64 GB, Ubuntu 22.04.
+  # Compute-optimised because this workload is CPU-bound cryptography.
+  #
+  # Sized from a CPU BUDGET, not from the headline core count. Everything on
+  # this host competes for the same cores:
+  #
+  #   8 Fabric peers x peer_cpu_limit 1.0   ~  8 vCPU
+  #   3 orderers                            ~  2 vCPU
+  #   load generator                        ~  2 vCPU
+  #   ------------------------------------------------
+  #   available to the system under test    ~ 20 vCPU
+  #
+  # This is why 16 vCPU is NOT enough: it would leave roughly 4 cores for
+  # verification, so the Exp 1 curve would saturate at 4 and look like a
+  # genuine scaling limit of sharding. It would in fact be CPU contention —
+  # a result that is clean, plausible, and wrong.
+  #
+  # If the pilot shows contention even at this size, split the network and the
+  # system under test onto separate instances in the same placement group.
+  instance_type: "c6i.8xlarge"
+  vcpus: 32
+  memory_gb: 64
+
+  # [PROPOSED] Explicit per-peer limits so results do not drift with host load.
+  # Reproducibility requires bounded, declared resources, not "whatever was
+  # free at the time". 8 peers x 1 vCPU leaves headroom for orderers and the
+  # load generator on a 16-vCPU host.
+  peer_cpu_limit: "1.0"
+  peer_memory_limit: "2g"
+
+  network:
+    # [PROPOSED] 4 organisations x 2 peers = 8 peers, plus a 3-node Raft
+    # orderer set.
+    # 4 orgs reflects a realistic permissioned consortium and gives Ref[10]'s
+    # {S OR R OR V} policy a meaningful attribute spread. 8 peers supports a
+    # 7-member voting committee (see baselines.ref10_emt) while fitting the
+    # host budget above.
+    #
+    # [CONFIRM] Fix this if network size is NOT a claimed result. If scaling
+    # across network sizes IS a result you want, convert to a sweep — but that
+    # multiplies total runtime by the number of sizes, so decide deliberately.
+    organizations: 4
+    peers_per_org: 2
+    orderer_nodes: 3
+
+    # [DERIVED] Fabric's production consensus. Ref[10] also uses Raft, which
+    # minimises platform-induced difference against the closest baseline.
+    consensus: "raft"
+
+    # [PROPOSED] Fabric block-cutting parameters. Held CONSTANT across all four
+    # systems — block cadence directly affects redaction commit latency, so
+    # varying it between systems would corrupt Exp 2 outright.
+    block_max_transactions: 100
+    block_timeout_ms: 2000
+
+  record_fingerprint: true
+
+
+# -----------------------------------------------------------------------------
+# SOURCE DATASET — generated once, consumed by all four systems
+# -----------------------------------------------------------------------------
+dataset:
+  # [DERIVED] ledger_sizes.max x block_max_transactions = 10000 x 100.
+  # Sized so Exp 3's largest ledger can be built without regenerating source
+  # data, and so no system runs short mid-sweep.
+  base_transactions: 20000
+
+  transaction:
+    # [PROPOSED] A structured business record (identifiers, parties, amounts,
+    # timestamps) carrying a free-text annotation field.
+    #
+    # This is the scenario both Ref[10] and ZK-Redact target: Ref[10] describes
+    # inserted data as "transaction remarks or postscripts", and redaction
+    # exists to remove harmful or personal content from exactly such a field.
+    #
+    # Deliberately NOT Ref[13]'s 660 bytes: that figure came from measuring
+    # 10,000 Ethereum blocks in 2022. The measurement method is sound but the
+    # value describes a public cryptocurrency ledger, not a permissioned
+    # business ledger. Borrowing it would be importing someone else's setting.
+    #
+    # [CONFIRM] If your target application has known record sizes, use those
+    # and cite the source — that is strictly stronger than this proposal.
+    core_payload_bytes: 256       # immutable portion
+    redactable_payload_bytes: 512 # redaction target
+
+  identities:
+    # [PROPOSED] 100 requesters across 4 orgs (~25 per org) — enough that
+    # committee selection and policy evaluation are non-trivial, without
+    # inflating setup cost.
+    count: 100
+
+    # [DERIVED] Ref[10]'s model requires sender/receiver/validator; ZK-Redact
+    # policies additionally bind organisational membership and role.
+    attributes: ["sender", "receiver", "validator", "org", "role"]
+
+  policies:
+    # [PROPOSED] 10 distinct redaction policies — enough that policy binding
+    # is genuinely evaluated rather than degenerating to a single constant.
+    count: 10
+
+    # [PROPOSED] Depth 3, matching a realistic policy such as
+    #   (requester is sender OR receiver) AND role permits AND policy version current
+    # Depth drives ZK circuit size and therefore the Exp 1 verification floor.
+    # Setting it too shallow would flatter ZK-Redact; this is the honest middle.
+    predicate_depth: 3
+
+
+# -----------------------------------------------------------------------------
+# REQUEST TRACE — same trace, same order, for every system
+# -----------------------------------------------------------------------------
+workload:
+  # [DERIVED] p99 latency needs >= 100 samples in the top percentile to be
+  # stable, hence >= 10,000 requests per run. Below this, reported p99 is noise.
+  total_requests: 500
+
+  # [METHOD] "uniform" isolates the mechanism and is the headline setting.
+  # Run "zipf" as a robustness check once headline results are stable.
+  target_distribution: "uniform"
+  zipf_s: 1.1  # [PROPOSED] only used when target_distribution == "zipf";
+               # ~1.1 is the commonly observed web/workload skew exponent
+
+  # [METHOD] Fraction of requests targeting an already-targeted transaction.
+  # 0.0 isolates the fully independent path; higher values exercise ZK-Redact
+  # Phase 4 Step 1 serialization and map onto Ref[22]'s consecutive/
+  # inconsecutive delete-set split.
+  conflict_ratios: [0.0, 0.25, 0.50]
+
+  # [METHOD] Closed-loop (fixed concurrency) makes saturation points
+  # unambiguous — the standard model for throughput-vs-load curves.
+  arrival: "closed_loop"
+
+
+# -----------------------------------------------------------------------------
+# ZK-REDACT PARAMETERS
+# -----------------------------------------------------------------------------
+zkredact:
+  sharding:
+    # [DERIVED from environment.vcpus = 32] Geometric 1 -> 64.
+    #
+    # The sweep must exceed the ~20 cores actually available to the system
+    # under test (see the CPU budget under environment.instance_type), so
+    # saturation is DEMONSTRATED rather than assumed. Running to 64 puts the
+    # knee well inside the plot.
+    #
+    # This doubles as a correctness check on the harness: throughput MUST stop
+    # rising somewhere below 64. If it does not, the measurement is wrong —
+    # most likely the shards are not doing real verification work.
+    #
+    # N=1 is mandatory — it is the sharding-disabled ablation baseline.
+    counts: [1, 2, 4, 8, 16, 32, 64]
+
+  proof_batch:
+    # [METHOD] Geometric, including 1 (batching disabled). Upper bound 64 is a
+    # starting point: extend it if per-doubling gain has not yet fallen into
+    # the noise floor at 64. Where the gain vanishes IS the result.
+    sizes: [1, 2, 4, 8, 16, 32, 64]
+
+    # [DERIVED from environment.network.block_timeout_ms = 2000]
+    # Verification batching must complete well within one block interval, or it
+    # simply pushes work into the next block and the measurement conflates
+    # batching with block cadence. Sweep spans 0.5% to 25% of a block interval.
+    wait_bound_ms: [10, 50, 100, 500]
+
+    # [METHOD] Tests the Phase 3 claim (ZK-Redact.md:508-509) that sharding
+    # provides parallelism INDEPENDENTLY of native batch-verification support.
+    # Both settings required, or that claim goes untested.
+    native_batch_verify: [false, true]
+
+  redaction_batch:
+    # [METHOD] B_R. Must include 1 — the batching-disabled ablation, and the
+    # point where all three baselines sit. Upper bound extends until per-request
+    # cost flattens toward the CH.Adapt floor; locating that flattening is the
+    # purpose of Exp 2. Extend past 64 if it has not flattened.
+    sizes: [1, 2, 4, 8, 16, 32, 64]
+
+    # [DERIVED from block_timeout_ms = 2000] The staleness knob. Spans a
+    # quarter-block to two blocks, so the sweep crosses the boundary where a
+    # batch starts spanning multiple blocks — which is where Fresh_i failures
+    # should begin climbing. A single value would hide the trade-off entirely.
+    wait_bounds_ms: [500, 1000, 2000, 4000]
+
+  circuit:
+    # [MEASURED] NOT chosen — these are outputs of circuit compilation, filled
+    # in from `make build-zk` and then held fixed and reported. Recording them
+    # here keeps the Exp 1 verification floor reproducible.
+    constraint_count: null      # fill from compiler output
+    public_input_count: null    # fill from compiler output
+
+
+# -----------------------------------------------------------------------------
+# BASELINES
+# -----------------------------------------------------------------------------
+# Scope, measurement boundaries, and deviations: docs/baselines/*.md
+baselines:
+
+  # ---------------------------------------------------------------------------
+  # Ref[10] — EMT (Wu et al., IEEE TNSE 2025)
+  # Primary competitor for Exp 1. docs/baselines/ref10-emt.md
+  # ---------------------------------------------------------------------------
+  ref10_emt:
+    enabled: true
+
+    # [DERIVED] Committee of 7, threshold 5, from an explicit fault assumption:
+    # tolerate f = 2 Byzantine members, requiring 3f+1 = 7 members and
+    # 2f+1 = 5 approvals.
+    #
+    # The assumption is what matters, not the digits. A smaller committee would
+    # make Ref[10] look artificially fast and hand a reviewer an easy objection;
+    # a larger one would penalise it beyond its own design. 7 of 8 available
+    # peers keeps selection genuinely non-trivial.
+    committee_size: 7
+    vote_threshold: 5
+    fault_tolerance_f: 2
+
+    # [PROPOSED] 5000 ms, used strictly as a TIMEOUT — the round closes the
+    # instant the threshold is reached (see ref10-emt.md §2).
+    # Set generously so it effectively never fires: a tight window would cap
+    # Ref[10]'s throughput with a number WE chose rather than measuring the
+    # protocol. If this timeout ever triggers during a run, the result is
+    # invalid and must be discarded.
+    vote_window_ms: 5000
+
+    # [DERIVED] Ref[10]'s own stated default policy. Anything stricter would
+    # shrink the eligible committee and tilt the comparison in our favour.
+    attribute_policy: "S OR R OR V"
+
+    # [CONFIRM] How committee votes are carried.
+    #
+    #   in_process — votes are exchanged by function call. The cryptography is
+    #                real (CA signature verified, genuine Schnorr vote per
+    #                member), but no packet is sent. Exp 1 latency measured this
+    #                way is a LOWER BOUND on Ref[10]'s authorization cost, not
+    #                that cost. Not publishable as a Ref[10] result.
+    #   fabric      — votes travel over the real network, which is the cost that
+    #                distinguishes a committee protocol from a trapdoor check.
+    #                Requires network/ (TASK.md task 3); Setup refuses this
+    #                value until then rather than silently downgrading.
+    #
+    # Set to fabric before recording any Exp 1 or Exp 2 number for this
+    # baseline. validate-config warns while this reads in_process.
+    vote_transport: "in_process"
+
+  # ---------------------------------------------------------------------------
+  # Ref[13] — VRBC (Tian et al., IEEE TC 2023)
+  # Primary competitor for Exp 3. docs/baselines/ref13-vrbc.md
+  # ---------------------------------------------------------------------------
+  ref13_vrbc:
+    enabled: true
+
+    # [METHOD] SWEPT, not fixed — deliberately.
+    # q trades costs in OPPOSITE directions: append cost rises with q while
+    # redaction and audit costs fall. Any single value would let our choice
+    # decide the outcome of Exp 2 and Exp 3. Sweeping the paper's own range
+    # removes that discretion and reports the trade-off honestly.
+    arity_q: [2, 5, 10]
+
+    # [DERIVED] N = q + 1, not an independent parameter.
+    # A node commits to its own data plus its q children. The paper's pairs
+    # confirm it: q = 2,5,10 with N = 3,6,11 respectively.
+    vector_dimension_formula: "q + 1"
+
+    # [DERIVED] Audit sample size, from Ateniese et al.'s PDP analysis
+    # (Ref[13].md:639): at 1% block corruption, 300 challenged blocks give 95%
+    # detection precision, 460 give 99%.
+    #
+    # The DERIVATION transfers, not the digits — and it holds ONLY while
+    # corrupted_block_rate stays at the 1% it assumes. Change that rate and
+    # these must be recomputed, never carried over.
+    challenged_blocks: [300, 460]
+    corrupted_block_rate: 0.01
+    detection_precision: [0.95, 0.99]
+
+    # [DERIVED] Enabled: this is the configuration under which the paper
+    # reports its results. Disabling it would weaken the baseline unfairly.
+    optimized_auditing: true
+
+    # [DERIVED] NOT implemented. The paper proposes delayed redaction (§4.1)
+    # but specifies no batch-formation policy, wait bound, or conflict
+    # handling, and never measures it. Building it would mean inventing those
+    # and benchmarking our own design under their name.
+    delayed_redaction: false
+
+  # ---------------------------------------------------------------------------
+  # Ref[22] — Shen et al. (IEEE TIFS 2023)
+  # Multi-item cost curve for Exp 2. docs/baselines/ref22-shen.md
+  # ---------------------------------------------------------------------------
+  ref22_shen:
+    enabled: true
+
+    # [DERIVED] Inherits security.accumulator_bits (RSA-3072 ~ 128-bit).
+    accumulator_bits: 3072
+
+    # [DERIVED] Mirrors zkredact.redaction_batch.sizes exactly. Misaligned
+    # ranges would put the two curves on incomparable axes and quietly break
+    # the Exp 2 comparison. If you change one, change both.
+    delete_set_sizes: [1, 2, 4, 8, 16, 32, 64]
+
+    # [METHOD] The paper's own split, mapping onto ZK-Redact's independent vs
+    # serialized distinction.
+    delete_set_structures: ["consecutive", "inconsecutive"]
+
+    # [DERIVED] Block insertion NOT implemented: it is this paper's distinctive
+    # capability but has no counterpart in the other three schemes, so there is
+    # nothing to compare against. Acknowledge in related work, do not drop
+    # silently.
+    implement_insert: false
+
+
+# -----------------------------------------------------------------------------
+# EXPERIMENTS
+# -----------------------------------------------------------------------------
+experiments:
+
+  # ---------------------------------------------------------------------------
+  # Exp 1 — Verification Throughput
+  # ---------------------------------------------------------------------------
+  verification_throughput:
+    enabled: true
+
+    # [METHOD] Concurrency is the PRIMARY axis, geometric 1 -> 1024.
+    #
+    # Starts at 1 because that is where the trapdoor baselines legitimately
+    # win; reporting only the high-load regime would be selection. Both regimes
+    # are mandatory.
+    #
+    # Extends to 1024 so the expected crossover — where ZK-Redact's sharding
+    # overtakes the baselines' single serialization point — falls INSIDE the
+    # plot. If no crossover appears by 1024, extend rather than concluding
+    # there is none.
+    concurrency_levels: [1, 2, 4, 8]
+
+    systems: ["zkredact", "ref10_emt", "ref13_vrbc", "ref22_shen"]
+
+    metrics:
+      - "authorized_requests_per_second"
+      - "latency_p50"
+      - "latency_p95"
+      - "latency_p99"
+      - "scaling_efficiency"   # speedup / N
+      - "saturation_point"
+
+    # [METHOD] Required ablation grid. Sharding and batching must be separable,
+    # or the Phase 3 independence claim cannot be evaluated at all.
+    ablations:
+      - { sharding: false, batching: false }  # single-verification floor
+      - { sharding: true,  batching: false }  # sharding alone
+      - { sharding: false, batching: true }   # batching alone
+      - { sharding: true,  batching: true }   # combined
+
+  # ---------------------------------------------------------------------------
+  # Exp 2 — Redaction Throughput
+  # ---------------------------------------------------------------------------
+  redaction_throughput:
+    enabled: true
+
+    systems: ["zkredact", "ref10_emt", "ref13_vrbc", "ref22_shen"]
+
+    # [METHOD] Cost MUST be decomposed. A single aggregate timing cannot say
+    # which component improved, and would let the paper imply that batching
+    # accelerates redaction cryptography. It does not, and the scheme does not
+    # claim it does (ZK-Redact.md:645-647).
+    decompose_cost: true
+
+    metrics:
+      - "ch_adapt_time"             # linear in B_R — the irreducible floor
+      - "blockchain_time_per_batch" # ~flat in B_R — the amortised part
+      - "cost_per_request"          # (adapt + blockchain) / successful
+      - "redactions_per_second"
+      - "stale_exclusion_rate"      # Fresh_i == 0; the honest cost of batching
+
+    # [METHOD] Target result: the B_R where marginal amortisation gain equals
+    # marginal staleness loss. Requires both curves over the same sweep.
+    find_optimal_batch_size: true
+
+  # ---------------------------------------------------------------------------
+  # Exp 3 — Provenance Retrieval and Audit Cost
+  # ---------------------------------------------------------------------------
+  provenance_audit:
+    enabled: true
+
+    systems: ["zkredact", "ref13_vrbc", "ref10_emt", "ref22_shen"]
+
+    # [DERIVED] HEADLINE PLOT: history depth fixed, ledger grows.
+    # Spans one full order of magnitude (1k -> 10k blocks), the minimum needed
+    # to separate O(1) from O(n) convincingly. The range also overlaps both
+    # Ref[13] (5k, 10k) and Ref[22] (100-1100), so each baseline is exercised
+    # in the regime its own authors tested.
+    ledger_sizes: [10, 20, 50, 100]
+
+    # [METHOD] SECOND PLOT: ledger fixed, history depth grows. Geometric, since
+    # cost is expected to scale with depth rather than step linearly.
+    history_depths: [1, 2, 4, 8, 16]
+
+    metrics:
+      - "retrieval_latency"
+      - "verification_time"
+      - "proof_size_bytes"
+      - "auditor_authorization_cost"
+
+    # [METHOD] Auditor authentication (signature verify + freshness +
+    # AuditAuth) reported SEPARATELY as a constant adder. No prior scheme has
+    # this step; folding it into the total would penalise ZK-Redact for
+    # providing a capability the baselines simply lack.
+    report_auth_cost_separately: true
+
+
+# -----------------------------------------------------------------------------
+# OUTPUT
+# -----------------------------------------------------------------------------
+output:
+  results_dir: "results/pilot"
+  plots_dir: "results/pilot/plots"
+  formats: ["csv", "json"]
+
+  # [METHOD] Reproducibility requirements. A result missing ANY of these is not
+  # publishable under SKILL.md's reproducibility rule.
+  record:
+    resolved_config: true      # all parameters after defaults are applied
+    seed: true
+    dataset_id: true
+    git_commit: true
+    environment_fingerprint: true
+    timestamp: true
+
+  # [METHOD] Published numbers from the reference papers must NEVER share a
+  # table with ours. Different languages, hardware, and platforms — Ref[22]
+  # especially, which disabled PoW and excluded communication on a 2 GB VM.
+  # Only our re-implementations are admissible in a comparison.
+  allow_published_numbers_in_tables: false

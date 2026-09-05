@@ -23,13 +23,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"zkredact/internal/schemes"
 	exp1 "zkredact/experiments/exp1_verification"
 	exp2 "zkredact/experiments/exp2_redaction"
 	exp3 "zkredact/experiments/exp3_audit"
+	"zkredact/internal/schemes"
 	"zkredact/pkg/config"
 	"zkredact/pkg/results"
 	"zkredact/pkg/scheme"
@@ -41,6 +42,8 @@ func main() {
 		configPath = flag.String("config", config.DefaultPath, "path to experiment.yaml")
 		expName    = flag.String("exp", "", "experiment: verification | redaction | audit | all")
 		dryRun     = flag.Bool("dry-run", false, "prepare and report, but execute nothing")
+		only       = flag.String("schemes", "", "comma-separated subset of enabled systems to run; "+
+			"produces a PARTIAL comparison, recorded as such in results")
 	)
 	flag.Parse()
 
@@ -50,13 +53,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*configPath, *expName, *dryRun); err != nil {
+	if err := run(*configPath, *expName, *dryRun, *only); err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, expName string, dryRun bool) error {
+func run(configPath, expName string, dryRun bool, only string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -130,6 +133,24 @@ func run(configPath, expName string, dryRun bool) error {
 	// Schemes
 	// -------------------------------------------------------------------------
 	names := cfg.EnabledSchemes()
+
+	// Restricting the system set is for developing and smoke-testing a single
+	// scheme. It yields a PARTIAL comparison, so it announces itself here and is
+	// recorded in every results file the run writes — a reader months later has
+	// no other way to know which flags were passed.
+	var partial []string
+	if only != "" {
+		names, err = restrictSchemes(names, only)
+		if err != nil {
+			return err
+		}
+		partial = names
+		fmt.Println()
+		fmt.Println("  ############################################################")
+		fmt.Printf("  # PARTIAL COMPARISON — restricted to %v\n", names)
+		fmt.Println("  # Results are NOT a comparison and must not be plotted as one.")
+		fmt.Println("  ############################################################")
+	}
 	fmt.Printf("schemes     %v\n", names)
 
 	matrix, err := schemes.CapabilityMatrix(names)
@@ -184,15 +205,16 @@ func run(configPath, expName string, dryRun bool) error {
 
 	meta := func(name string) results.Metadata {
 		return results.Metadata{
-			Experiment:     name,
-			Timestamp:      time.Now(),
-			Seed:           seed,
-			DatasetID:      ds.ID,
-			GitCommit:      commit,
-			GitDirty:       dirty,
-			ConfigPath:     configPath,
-			Environment:    results.Fingerprint(),
-			ResolvedConfig: cfg,
+			Experiment:        name,
+			Timestamp:         time.Now(),
+			Seed:              seed,
+			DatasetID:         ds.ID,
+			GitCommit:         commit,
+			GitDirty:          dirty,
+			ConfigPath:        configPath,
+			Environment:       results.Fingerprint(),
+			ResolvedConfig:    cfg,
+			PartialComparison: partial,
 		}
 	}
 
@@ -205,7 +227,7 @@ func run(configPath, expName string, dryRun bool) error {
 	case "redaction":
 		return runExp2(ctx, cfg, reps, systems, trace, writer, meta)
 	case "audit":
-		return runExp3(ctx, cfg, reps, systems, writer, meta)
+		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
 	case "all":
 		if err := runExp1(ctx, cfg, reps, systems, trace, writer, meta); err != nil {
 			return err
@@ -213,7 +235,7 @@ func run(configPath, expName string, dryRun bool) error {
 		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta); err != nil {
 			return err
 		}
-		return runExp3(ctx, cfg, reps, systems, writer, meta)
+		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
 	default:
 		return fmt.Errorf("unknown experiment %q (want verification | redaction | audit | all)", expName)
 	}
@@ -308,6 +330,9 @@ func runExp3(
 	systems []scheme.Scheme,
 	w *results.Writer,
 	meta metaFn,
+	ds *scheme.Dataset,
+	seed int64,
+	targetBits int,
 ) error {
 	e := cfg.Experiments.ProvenanceAudit
 	if !e.Enabled {
@@ -316,14 +341,9 @@ func runExp3(
 	}
 	fmt.Println("\n=== Exp 3: Provenance Retrieval and Audit Cost ===")
 
-	// TODO: build ledgers at each configured size and drive target transactions
-	// to each history depth during setup, then populate this map. Construction
-	// is not timed; only retrieval and verification are.
-	targetsByDepth := map[int][]string{}
-	if len(targetsByDepth) == 0 {
-		return fmt.Errorf(
-			"exp3: no target transactions prepared — ledger construction at the " +
-				"configured sizes and history depths is not implemented yet")
+	blockTx := cfg.Environment.Network.BlockMaxTransactions
+	if blockTx == nil {
+		return fmt.Errorf("exp3: environment.network.block_max_transactions is not set")
 	}
 
 	res, err := exp3.Run(ctx, exp3.Config{
@@ -331,7 +351,10 @@ func runExp3(
 		HistoryDepths: e.HistoryDepths,
 		Repetitions:   reps,
 		AuditorID:     "auditor-0",
-	}, systems, targetsByDepth)
+		Prepare: func(ctx context.Context, s scheme.Scheme, ledgerSize int) (map[int][]string, error) {
+			return prepareLedger(ctx, cfg, ds, seed, targetBits, s, ledgerSize, *blockTx, e.HistoryDepths)
+		},
+	}, systems)
 	if err != nil {
 		return err
 	}
@@ -392,4 +415,169 @@ func printCapabilities(names []string, m map[string]scheme.Capabilities) {
 		fmt.Println()
 	}
 	fmt.Println()
+}
+
+// restrictSchemes narrows the enabled set to the named subset.
+//
+// A name that is not enabled is an error rather than a silent omission: asking
+// for a system and receiving results without it is exactly the kind of quiet
+// gap that survives into a plot.
+func restrictSchemes(enabled []string, csv string) ([]string, error) {
+	want := strings.Split(csv, ",")
+	out := make([]string, 0, len(want))
+	for _, w := range want {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		found := false
+		for _, e := range enabled {
+			if e == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf(
+				"-schemes names %q, which is not among the enabled systems %v", w, enabled)
+		}
+		out = append(out, w)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("-schemes is empty")
+	}
+	return out, nil
+}
+
+// prepareLedger puts one scheme into the state a single Exp 3 ledger size needs.
+//
+// Two things happen here, and NEITHER is timed — Exp 3 measures retrieval and
+// verification only:
+//
+//  1. The scheme is re-Setup over a dataset truncated to exactly ledgerSize
+//     blocks. Ledger size is the swept axis of the headline plot, so it has to
+//     be a real difference in the scheme's state rather than a label on the
+//     x-axis. Setup is the interface's own "materialise the corpus" step, so
+//     re-running it is how a scheme is legitimately resized.
+//
+//  2. Target transactions are driven to each configured history depth using the
+//     scheme's OWN Authorize and Redact. Fabricating provenance records
+//     directly would let a scheme be measured on history it never actually
+//     produced, and would skip whatever indexing its design does or does not
+//     build along the way — which is the whole subject of this experiment.
+//
+// One target per depth is enough for the sweep; exp3 rotates across
+// repetitions, so more targets only spread the same measurement over more
+// transactions.
+func prepareLedger(
+	ctx context.Context,
+	cfg *config.Config,
+	full *scheme.Dataset,
+	seed int64,
+	targetBits int,
+	s scheme.Scheme,
+	ledgerSize, blockTx int,
+	depths []int,
+) (map[int][]string, error) {
+	need := ledgerSize * blockTx
+	if need > len(full.Transactions) {
+		return nil, fmt.Errorf(
+			"ledger of %d blocks needs %d transactions, dataset holds %d",
+			ledgerSize, need, len(full.Transactions))
+	}
+
+	sized := &scheme.Dataset{
+		ID:           fmt.Sprintf("%s-ledger%d", full.ID, ledgerSize),
+		Transactions: full.Transactions[:need],
+		Identities:   full.Identities,
+		Policies:     full.Policies,
+	}
+
+	params, err := cfg.SchemeParams(s.Name())
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Setup(ctx, scheme.SetupParams{
+		Dataset:      sized,
+		Seed:         seed,
+		SecurityBits: targetBits,
+		Params:       params,
+	}); err != nil {
+		return nil, fmt.Errorf("re-setup at ledger %d: %w", ledgerSize, err)
+	}
+
+	// A requester that satisfies the policy, found by asking the scheme rather
+	// than by assuming which identities qualify.
+	requester, err := findGrantedRequester(ctx, s, sized)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[int][]string, len(depths))
+	next := 0
+	for _, depth := range depths {
+		if next >= len(sized.Transactions) {
+			return nil, fmt.Errorf("dataset exhausted while building history depth %d", depth)
+		}
+		target := sized.Transactions[next].ID
+		next++
+
+		for i := 0; i < depth; i++ {
+			req := &scheme.Request{
+				ID:          fmt.Sprintf("hist-%d-%s-%d", ledgerSize, target, i),
+				RequesterID: requester,
+				TargetTxID:  target,
+				NewContent:  []byte(fmt.Sprintf("redacted revision %d", i+1)),
+				PolicyID:    sized.Policies[0].ID,
+				Timestamp:   time.Now(),
+			}
+			auth, err := s.Authorize(ctx, req)
+			if err != nil {
+				return nil, fmt.Errorf("building history for %s: %w", target, err)
+			}
+			if !auth.Granted {
+				return nil, fmt.Errorf(
+					"building history for %s: authorization denied at revision %d (%s); "+
+						"history depth cannot be reached, so the depth axis would be a fiction",
+					target, i+1, auth.Reason)
+			}
+			r, err := s.Redact(ctx, []*scheme.Authorization{auth})
+			if err != nil {
+				return nil, fmt.Errorf("building history for %s: %w", target, err)
+			}
+			if r.Succeeded != 1 {
+				return nil, fmt.Errorf(
+					"building history for %s: revision %d did not commit (%d succeeded, %d stale, %d failed)",
+					target, i+1, r.Succeeded, r.StaleExcluded, r.Failed)
+			}
+		}
+		out[depth] = []string{target}
+	}
+	return out, nil
+}
+
+// findGrantedRequester returns an identity the scheme actually authorizes.
+//
+// Asking rather than assuming: each scheme decides eligibility its own way, and
+// hardcoding an identity here would silently break whichever scheme disagrees.
+func findGrantedRequester(ctx context.Context, s scheme.Scheme, ds *scheme.Dataset) (string, error) {
+	probeTx := ds.Transactions[len(ds.Transactions)-1].ID
+	for i, id := range ds.Identities {
+		auth, err := s.Authorize(ctx, &scheme.Request{
+			ID:          fmt.Sprintf("probe-%d", i),
+			RequesterID: id.ID,
+			TargetTxID:  probeTx,
+			NewContent:  []byte("probe"),
+			PolicyID:    ds.Policies[0].ID,
+			Timestamp:   time.Now(),
+		})
+		if err != nil {
+			return "", err
+		}
+		if auth.Granted {
+			return id.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%s authorized none of the %d identities; history cannot be built",
+		s.Name(), len(ds.Identities))
 }

@@ -33,6 +33,15 @@ type Metadata struct {
 	// ResolvedConfig is the full config after defaults, so a reader never has to
 	// guess which file version produced these numbers.
 	ResolvedConfig any `json:"resolved_config,omitempty"`
+
+	// PartialComparison names the systems a run was restricted to, and is empty
+	// for a full run.
+	//
+	// A results file covering fewer than all enabled systems is not a
+	// comparison, and the difference is invisible once the numbers are in a
+	// plot. Recording it here means a partial run cannot be mistaken for a
+	// complete one later, when nobody remembers which flags were passed.
+	PartialComparison []string `json:"partial_comparison,omitempty"`
 }
 
 // EnvFinger identifies the machine a run happened on.

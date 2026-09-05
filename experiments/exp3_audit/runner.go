@@ -41,6 +41,21 @@ type Config struct {
 	// AuditorID identifies the querying auditor. Schemes without auditor
 	// authentication ignore it.
 	AuditorID string
+
+	// Prepare puts a scheme into the state one measurement point needs: a
+	// ledger of exactly ledgerSize blocks, with target transactions carrying
+	// each configured history depth. It returns those targets by depth.
+	//
+	// WHY A HOOK RATHER THAN A PRE-BUILT MAP. Ledger size is the swept axis of
+	// the headline plot, so the ledger has to be REBUILT at each size. An
+	// earlier signature took one targetsByDepth map for the whole run, which
+	// silently measured every ledger size against whatever ledger the scheme
+	// happened to hold — the sweep would have produced a flat line for every
+	// scheme, including the ones that must climb, and nothing would have
+	// indicated why.
+	//
+	// Construction is NOT timed: only retrieval and verification are.
+	Prepare func(ctx context.Context, s scheme.Scheme, ledgerSize int) (map[int][]string, error)
 }
 
 // Point is one measured configuration.
@@ -105,8 +120,10 @@ func Run(
 	ctx context.Context,
 	cfg Config,
 	schemesUnderTest []scheme.Scheme,
-	targetsByDepth map[int][]string,
 ) (*Result, error) {
+	if cfg.Prepare == nil {
+		return nil, fmt.Errorf("exp3: Prepare is required — the ledger must be rebuilt at each swept size")
+	}
 	if len(cfg.LedgerSizes) < 2 {
 		return nil, fmt.Errorf("exp3: need at least two ledger sizes to distinguish flat from linear")
 	}
@@ -126,6 +143,11 @@ func Run(
 
 	for _, s := range schemesUnderTest {
 		for _, ledger := range cfg.LedgerSizes {
+			// Rebuild at this ledger size before measuring anything at it.
+			targetsByDepth, err := cfg.Prepare(ctx, s, ledger)
+			if err != nil {
+				return nil, fmt.Errorf("exp3: preparing %s at ledger %d: %w", s.Name(), ledger, err)
+			}
 			for _, depth := range cfg.HistoryDepths {
 				targets := targetsByDepth[depth]
 				if len(targets) == 0 {
