@@ -32,3 +32,5 @@ network/organizations/
 network/channel-artifacts/
 network/.topology
 network/chaincode/*/vendor/
+# compiled chaincode binary, produced by `go build` inside the module
+network/chaincode/redaction/redaction

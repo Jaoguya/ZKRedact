@@ -24,7 +24,19 @@ CHANNEL="${CHANNEL:-redaction}"
 CC_NAME="${CC_NAME:-redaction}"
 CC_VERSION="${CC_VERSION:-1.0}"
 CC_SEQUENCE="${CC_SEQUENCE:-1}"
-FABRIC_BIN="${FABRIC_BIN:-/c/fabric/bin}"
+# Where the Fabric binaries live. scripts/setup-ec2.sh installs them to
+# $HOME/fabric/bin, so that is the default; an explicit FABRIC_BIN wins, and a
+# cryptogen already on PATH is left alone. A default pointing anywhere else
+# fails as "cryptogen not found" on the very host the setup script provisioned.
+if [[ -n "${FABRIC_BIN:-}" ]]; then
+  :
+elif [[ -x "$HOME/fabric/bin/cryptogen" ]]; then
+  FABRIC_BIN="$HOME/fabric/bin"
+elif command -v cryptogen >/dev/null 2>&1; then
+  FABRIC_BIN="$(dirname "$(command -v cryptogen)")"
+else
+  FABRIC_BIN="$HOME/fabric/bin"
+fi
 
 MARKER="$NET_DIR/.topology"
 
@@ -73,6 +85,101 @@ check_config_agreement() {
 }
 
 # -----------------------------------------------------------------------------
+# Gateway concurrency agreement
+#
+# The peer rejects gateway calls beyond peer.limits.concurrency.gatewayService
+# (Fabric default 500) with "exceeding concurrency limit". Exp 1 drives up to
+# experiments.verification_throughput.concurrency_levels concurrent
+# authorizations, and each holds up to (1 + committee_size) gateway calls at
+# once: a round's ballots are submitted CONCURRENTLY so they share a block.
+# So the floor is max_concurrency x (1 + committee_size).
+#
+# Measured twice, both times as lost requests rather than as errors anyone would
+# notice: at the default 500, concurrency 512 and 1024 each completed exactly
+# 500 authorizations; at 2048 with concurrent ballots, concurrency 1024 lost 98.
+# A run that swallowed those would record throughput flattening and read it as
+# the saturation point of sharding.
+# -----------------------------------------------------------------------------
+check_gateway_concurrency() {
+  local COMPOSE_FILE="$1"
+  local cfg="$REPO_ROOT/config/experiment.yaml"
+  [[ -r "$cfg" ]] || { warn "cannot read $cfg; skipping gateway-concurrency check"; return 0; }
+
+  # Highest level in the exp1 concurrency sweep, times the calls one
+  # authorization holds at once.
+  local max_conc committee needed
+  max_conc=$(grep -E '^\s*concurrency_levels:' "$cfg" | head -1 \
+             | grep -oE '[0-9]+' | sort -n | tail -1 || true)
+  committee=$(grep -E '^\s*committee_size:' "$cfg" | head -1 | grep -oE '[0-9]+' || true)
+  [[ -n "$committee" ]] || committee=0
+  needed=$(( max_conc * (1 + committee) ))
+
+  local limit
+  limit=$(grep -E 'CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=' "$COMPOSE_FILE" \
+          | head -1 | grep -oE '[0-9]+' || true)
+
+  if [[ -z "$max_conc" ]]; then
+    warn "no concurrency_levels in $cfg; skipping gateway-concurrency check"
+    return 0
+  fi
+  if [[ -z "$limit" ]]; then
+    die "peers in $(basename "$COMPOSE_FILE") do not set
+       CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE, so the Fabric default of 500
+       applies. Exp 1 needs $needed ($max_conc concurrent x (1+committee_size=$committee)),
+       and every call above 500 is rejected — which a run records as throughput
+       flattening at 500."
+  fi
+  if (( limit < needed )); then
+    die "gateway concurrency limit is $limit but Exp 1 needs $needed:
+       $max_conc concurrent authorizations x (1 + committee_size = $committee)
+       gateway calls each, because a round's ballots are submitted together.
+       The peer would reject the excess, and the resulting plateau is
+       indistinguishable from a sharding saturation knee. Raise
+       CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE in $(basename "$COMPOSE_FILE")."
+  fi
+  ok "gateway concurrency limit $limit covers the exp1 sweep (needs $needed = $max_conc x $((1+committee)))"
+}
+
+# -----------------------------------------------------------------------------
+# Gateway endpoint agreement
+#
+# The two topologies expose peers on different host ports: minimal maps
+# peer0.org1 to 7051, full maps the eight peers to 11051-18051 so both can be up
+# without colliding. config/experiment.yaml carries one peer_endpoint, and
+# nothing else reconciles it with the topology that is actually running.
+#
+# Left unchecked, `up full` followed by an experiment dials 7051 — which is
+# either nothing (a connection error that reads as a peer fault) or, worse, a
+# leftover minimal peer still listening, in which case the run completes and
+# reports single-org numbers as the measurement topology's.
+# -----------------------------------------------------------------------------
+check_gateway_endpoint() {
+  local compose_file="$1" topology="$2"
+  local cfg="$REPO_ROOT/config/experiment.yaml"
+  [[ -r "$cfg" ]] || { warn "cannot read $cfg; skipping gateway-endpoint check"; return 0; }
+
+  local endpoint port
+  endpoint=$(grep -E '^\s*peer_endpoint:' "$cfg" | head -1 \
+             | sed -E 's/.*peer_endpoint:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' || true)
+  [[ -n "$endpoint" ]] || { warn "no gateway.peer_endpoint in $cfg; skipping"; return 0; }
+  port="${endpoint##*:}"
+
+  # Every host port this topology maps onto a peer's 7051.
+  local exposed
+  exposed=$(grep -oE '"[0-9]+:7051"' "$compose_file" | tr -d '"' | cut -d: -f1 | sort -un)
+  [[ -n "$exposed" ]] || { warn "no peer ports found in $(basename "$compose_file"); skipping"; return 0; }
+
+  if ! grep -qx "$port" <<< "$exposed"; then
+    die "gateway.peer_endpoint is $endpoint but the $topology topology exposes peers on:
+       $(tr '\n' ' ' <<< "$exposed")
+       Dialing $port would reach nothing, or a leftover peer from the other
+       topology — whose numbers would be recorded as $topology's. Update
+       gateway.peer_endpoint in config/experiment.yaml."
+  fi
+  ok "gateway.peer_endpoint $endpoint matches a $topology peer"
+}
+
+# -----------------------------------------------------------------------------
 # Crypto material
 # -----------------------------------------------------------------------------
 generate_crypto() {
@@ -88,18 +195,44 @@ generate_crypto() {
   ( cd "$NET_DIR" && cryptogen generate --config="$spec" --output=organizations ) \
     || die "cryptogen failed"
 
-  local users
-  users=$(find "$NET_DIR/organizations/peerOrganizations" -type d -name 'User*' 2>/dev/null | wc -l)
-  ok "generated material for $users voting identities"
+  # Count PER ORG, not across the network. The gateway binds to one
+  # organisation's MSP, so committee members are drawn from a single org's
+  # identities; a total that looks sufficient can still leave the org the
+  # harness actually uses short.
+  local smallest_org="" fewest=-1 org users
+  while IFS= read -r org; do
+    users=$(find "$org/users" -maxdepth 1 -type d -name 'User*' 2>/dev/null | wc -l | tr -d ' ')
+    if (( fewest < 0 || users < fewest )); then
+      fewest=$users
+      smallest_org=$(basename "$org")
+    fi
+  done < <(find "$NET_DIR/organizations/peerOrganizations" -mindepth 1 -maxdepth 1 -type d)
 
-  # The committee cannot be formed from fewer identities than it needs, and the
-  # failure would surface at vote time as a missing-identity error rather than
-  # as a setup problem.
-  local committee
+  (( fewest >= 0 )) || die "cryptogen produced no peer organisations"
+  ok "generated material for $fewest voting identities per org (smallest: $smallest_org)"
+
+  # The binding constraint is the size of the registered node set, NOT
+  # committee_size. Ref[10] draws each committee from the whole node set and a
+  # member votes under its own Fabric identity, so ref10.buildIdentityMap needs
+  # one identity per dataset member and refuses a partial mapping.
+  #
+  # Checking committee_size here instead passed at 8 identities against a
+  # 100-member dataset: the network came up "ok" and every fabric-transport run
+  # then failed inside Setup, pointing at the crypto spec rather than at this
+  # check.
+  local members committee
+  members=$(grep -A6 -E '^\s*identities:' "$REPO_ROOT/config/experiment.yaml" \
+            | grep -E '^\s*count:' | head -1 | grep -oE '[0-9]+' || true)
   committee=$(grep -E '^\s*committee_size:' "$REPO_ROOT/config/experiment.yaml" | head -1 | grep -oE '[0-9]+' || true)
-  if [[ -n "$committee" ]] && (( users < committee )); then
-    die "config requires committee_size=$committee but only $users voting identities exist.
-       Raise Users.Count in $spec."
+
+  if [[ -n "$members" ]] && (( fewest < members )); then
+    die "config has dataset.identities.count=$members but $smallest_org has only
+       $fewest voting identities. Committees are drawn from the whole node set,
+       so Setup refuses a partial mapping. Raise Users.Count in $spec."
+  fi
+  if [[ -n "$committee" ]] && (( fewest < committee )); then
+    die "config requires committee_size=$committee but only $fewest voting
+       identities exist in $smallest_org. Raise Users.Count in $spec."
   fi
 }
 
@@ -190,6 +323,8 @@ cmd_up() {
   [[ -r "$compose" ]] || die "missing $compose"
 
   check_config_agreement
+  check_gateway_concurrency "$compose"
+  check_gateway_endpoint "$compose" "$topology"
 
   # Tear down first. generate_crypto issues a NEW CA, and `docker compose up -d`
   # leaves already-running containers alone — so a second `up` gives clients

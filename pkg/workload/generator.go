@@ -30,13 +30,13 @@ type Config struct {
 	Seed int64
 
 	// Dataset
-	BaseTransactions      int
-	CorePayloadBytes      int
+	BaseTransactions       int
+	CorePayloadBytes       int
 	RedactablePayloadBytes int
-	IdentityCount         int
-	IdentityAttributes    []string
-	PolicyCount           int
-	PredicateDepth        int
+	IdentityCount          int
+	IdentityAttributes     []string
+	PolicyCount            int
+	PredicateDepth         int
 
 	// Trace
 	TotalRequests      int
@@ -121,8 +121,8 @@ func GenerateDataset(c Config) (*scheme.Dataset, error) {
 
 	for i := range ds.Transactions {
 		ds.Transactions[i] = scheme.Transaction{
-			ID:        fmt.Sprintf("tx-%08d", i),
-			Core:      randomBytes(txRNG, c.CorePayloadBytes),
+			ID:         fmt.Sprintf("tx-%08d", i),
+			Core:       randomBytes(txRNG, c.CorePayloadBytes),
 			Redactable: randomBytes(txRNG, c.RedactablePayloadBytes),
 		}
 	}

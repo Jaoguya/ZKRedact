@@ -78,11 +78,12 @@ build-ch: proto
 	@false
 
 .PHONY: build-zk
-build-zk: proto
-	@echo "==> ZK circuits and PVL (circuit compilation may take several minutes)"
-	@echo "TODO: build pkg/zk and internal/pvl"
-	@echo "REMINDER: record constraint_count and public_input_count into $(CONFIG)"
-	@false
+build-zk:
+	@echo "==> ZK circuit: compile and measure"
+	@$(GO) run ./cmd/build-zk -config $(CONFIG)
+	@echo ""
+	@echo "REMINDER: constraint_count and public_input_count above are MEASUREMENTS."
+	@echo "If they differ from $(CONFIG), the circuit changed — record the new values."
 
 .PHONY: build-gateway
 build-gateway: proto build-ch build-zk
@@ -135,10 +136,26 @@ build-baseline-ref22: proto
 # -----------------------------------------------------------------------------
 # Test
 # -----------------------------------------------------------------------------
+.PHONY: fmt-check
+fmt-check:
+	@# Vendored trees are not ours to format; everything else must be gofmt-clean.
+	@unformatted=$$(gofmt -l ./cmd ./pkg ./internal ./experiments \
+	                          network/chaincode/redaction/*.go); \
+	if [ -n "$$unformatted" ]; then \
+	  echo "gofmt would change these files:"; \
+	  echo "$$unformatted" | sed 's/^/  /'; \
+	  echo "run: gofmt -w <file>"; \
+	  exit 1; \
+	fi
+
 .PHONY: test
-test:
+test: fmt-check
 	@$(GO) vet ./...
 	@$(GO) test ./...
+	@# The live suite is build-tagged, so `go vet ./...` never type-checks it.
+	@# Without this it can stop compiling and nothing notices until the network
+	@# is up — which is the one moment it is needed.
+	@$(GO) vet -tags live ./internal/schemes/ref10/
 
 # Compiles every package without running anything - the fastest way to find out
 # whether the tree is consistent after an edit.

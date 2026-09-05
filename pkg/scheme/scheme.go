@@ -143,6 +143,45 @@ type Capabilities struct {
 // Setup
 // -----------------------------------------------------------------------------
 
+// Resharder is an OPTIONAL interface for a scheme with logical proof shards.
+//
+// Exp 1 sweeps the shard count, and re-running Setup to do it would recompile
+// the circuit and redo the trusted setup at every point — work that has nothing
+// to do with sharding and would dominate the measurement. The circuit does not
+// depend on N: sharding is runtime dispatch.
+//
+// A scheme without shards does not implement it and is swept only over
+// concurrency, because fabricating a shard-count curve for a system that has no
+// shards is the same error exp2 refuses for batch sizes.
+type Resharder interface {
+	Reshard(shardCount int) error
+}
+
+// TracePreparer is an OPTIONAL interface for per-replay work that is not part
+// of what an experiment measures.
+//
+// WHY IT EXISTS. Exp 1 times Authorize, and for ZK-Redact that must mean
+// verifying a proof, not producing one. Proof generation is the REQUESTER's
+// work — docs/experiments.md §2.2 lists ZK-Redact's authorization work as
+// "verify ZK proof, shard assignment, intra-shard batching" — and Groth16
+// proving costs roughly an order of magnitude more than verification. Folding
+// it into the measured path would not fail any test; it would simply report
+// ZK-Redact as an order of magnitude slower than it is and invert the Exp 1
+// comparison.
+//
+// The same hook resets any per-replay state, which is the in-memory analogue of
+// bringing a baseline's ledger up fresh between replays.
+//
+// A scheme that does not implement it is driven exactly as before, so the
+// baselines are unaffected. A scheme that DOES implement it must fail Authorize
+// loudly for an unprepared request rather than silently doing the work inline —
+// a lazy fallback would put the excluded cost straight back into the
+// measurement with nothing to show it had happened.
+type TracePreparer interface {
+	// PrepareTrace is called before each timed replay, and is NOT timed.
+	PrepareTrace(ctx context.Context, trace []*Request) error
+}
+
 // SetupParams carries the shared substrate. Every scheme receives the identical
 // value in a given run.
 type SetupParams struct {
@@ -176,8 +215,8 @@ type Dataset struct {
 // payload is what makes the corpus usable by every scheme: Ref[10]'s EMT needs
 // the two branches, and redaction targets only the second.
 type Transaction struct {
-	ID        string
-	Core      []byte // immutable
+	ID         string
+	Core       []byte // immutable
 	Redactable []byte // redaction target
 }
 

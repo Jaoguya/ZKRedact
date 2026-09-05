@@ -31,7 +31,15 @@ PeerOrgs:
       SANS:
         - localhost
     Users:
-      # Enough identities for a 7-member committee plus the requester.
-      # cryptogen names them User1@... through User8@..., which
-      # scripts/network.sh maps onto the harness's id-000.. member ids.
-      Count: 8
+      # Must cover dataset.identities.count in config/experiment.yaml (100), not
+      # merely committee_size.
+      #
+      # Ref[10] draws each committee from the WHOLE registered node set, and a
+      # member votes under its own Fabric identity, so any of the 100 dataset
+      # members may be called on. buildIdentityMap refuses a partial mapping —
+      # it would let some committees vote and others not, which appears as a
+      # denial rate that moves with the committee draw.
+      #
+      # 8 covered committee_size=7 and nothing else, so every fabric-transport
+      # experiment failed inside Setup. network.sh now checks this bound.
+      Count: 100

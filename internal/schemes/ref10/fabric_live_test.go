@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"zkredact/pkg/config"
 	"zkredact/pkg/scheme"
 )
 
@@ -181,6 +183,48 @@ func TestLiveRefusesWhenIdentitiesAreShort(t *testing.T) {
 	t.Logf("refused as expected: %v", err)
 }
 
+// liveConcurrencyLevels returns the levels to drive the transport at.
+//
+// They are read from experiments.verification_throughput.concurrency_levels in
+// config/experiment.yaml — the levels Exp 1 actually sweeps — rather than
+// written here as a literal. A constant in this file drifts below what the
+// experiment does, and then the transport is only ever checked at a level no
+// measured run uses.
+//
+// LIVE_CONCURRENCY_LEVELS scopes a run down for a host that cannot carry the
+// full sweep (a laptop peer runs out of connections long before a c6i.8xlarge
+// does). It overrides this check, never the experiment.
+func liveConcurrencyLevels(t *testing.T) []int {
+	t.Helper()
+
+	if raw := os.Getenv("LIVE_CONCURRENCY_LEVELS"); raw != "" {
+		var levels []int
+		for _, f := range strings.Split(raw, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(f))
+			if err != nil || n < 1 {
+				t.Fatalf("LIVE_CONCURRENCY_LEVELS=%q: %q is not a positive integer", raw, f)
+			}
+			levels = append(levels, n)
+		}
+		t.Logf("levels overridden by LIVE_CONCURRENCY_LEVELS: %v", levels)
+		return levels
+	}
+
+	cfgPath, err := filepath.Abs(filepath.Join(liveNetworkRoot, "..", "config", "experiment.yaml"))
+	if err != nil {
+		t.Fatalf("resolve config path: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", cfgPath, err)
+	}
+	levels := cfg.Experiments.VerificationThroughput.ConcurrencyLevels
+	if len(levels) == 0 {
+		t.Fatal("config has no experiments.verification_throughput.concurrency_levels")
+	}
+	return levels
+}
+
 // TestLiveConcurrentAuthorize drives the fabric transport the way Exp 1 does.
 //
 // Everything before this exercised one request at a time. Exp 1 runs up to 1024
@@ -188,7 +232,7 @@ func TestLiveRefusesWhenIdentitiesAreShort(t *testing.T) {
 // behind a mutex while the contract enforces one ballot per member per round —
 // neither of which a single-request test can exercise.
 //
-// Two failures would be invisible in aggregate numbers rather than loud:
+// Three failures would be invisible in aggregate numbers rather than loud:
 //
 //   - A data race in the session cache. Under -race it is a test failure; in a
 //     measured run it is a crash partway through a sweep, or worse, silent
@@ -197,8 +241,17 @@ func TestLiveRefusesWhenIdentitiesAreShort(t *testing.T) {
 //     address, so concurrent rounds must not see each other's ballots. If they
 //     did, approvals would leak across requests and the approval rate would
 //     rise with concurrency — which reads as a throughput result.
+//   - Endorsement timeouts and exhausted gateway connections. Both surface as
+//     an error here; in a measured run they surface as latency, which reads as
+//     the protocol being slow rather than as the harness failing.
+//
+// The approval rate is the invariant: every request is the same eligible
+// requester, so it must be 100% at every level. A rate that moves with
+// concurrency is the signal, whichever direction it moves in.
 func TestLiveConcurrentAuthorize(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	levels := liveConcurrencyLevels(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
 	s := New()
@@ -214,44 +267,207 @@ func TestLiveConcurrentAuthorize(t *testing.T) {
 
 	requester := eligibleRequester(t, s)
 
-	const concurrency = 4
-	type outcome struct {
-		granted bool
-		err     error
-	}
-	results := make(chan outcome, concurrency)
-
-	for i := 0; i < concurrency; i++ {
-		go func(n int) {
-			auth, err := s.Authorize(ctx,
-				request(liveReq(fmt.Sprintf("conc-%d", n)), requester, "tx-00000003"))
-			if err != nil {
-				results <- outcome{err: err}
-				return
+	for _, concurrency := range levels {
+		t.Run(fmt.Sprintf("concurrency=%d", concurrency), func(t *testing.T) {
+			type outcome struct {
+				granted bool
+				err     error
 			}
-			results <- outcome{granted: auth.Granted}
-		}(i)
+			results := make(chan outcome, concurrency)
+
+			started := time.Now()
+			for i := 0; i < concurrency; i++ {
+				go func(n int) {
+					auth, err := s.Authorize(ctx, request(
+						liveReq(fmt.Sprintf("conc-%d-%d", concurrency, n)),
+						requester, "tx-00000003"))
+					if err != nil {
+						results <- outcome{err: err}
+						return
+					}
+					results <- outcome{granted: auth.Granted}
+				}(i)
+			}
+
+			granted, denied, failed := 0, 0, 0
+			var firstErr error
+			for i := 0; i < concurrency; i++ {
+				r := <-results
+				switch {
+				case r.err != nil:
+					failed++
+					if firstErr == nil {
+						firstErr = r.err
+					}
+				case r.granted:
+					granted++
+				default:
+					denied++
+				}
+			}
+			elapsed := time.Since(started)
+
+			// Wall time per level, so an endorsement timeout is legible as a
+			// stall rather than as the protocol's cost.
+			t.Logf("concurrency=%d granted=%d denied=%d failed=%d elapsed=%s",
+				concurrency, granted, denied, failed, elapsed.Round(time.Millisecond))
+
+			if failed > 0 {
+				t.Errorf("%d of %d authorizations returned an error; in a measured "+
+					"run this reads as latency, not as failure. First: %v",
+					failed, concurrency, firstErr)
+			}
+			// Every request is the same eligible requester on the same
+			// transaction, so all should be granted. A denial under concurrency
+			// that does not occur serially means rounds are interfering.
+			if granted != concurrency {
+				t.Errorf("%d of %d concurrent authorizations granted; the same request "+
+					"succeeds on its own, so rounds are interfering", granted, concurrency)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Where the authorization latency actually goes
+// -----------------------------------------------------------------------------
+
+// liveBlockTimeout reads the channel's batch timeout from the config.
+//
+// It is the unit the whole cost model is expressed in, so reading it beats
+// restating it: if the channel is reconfigured, this test re-derives rather
+// than silently comparing against a stale constant.
+func liveBlockTimeout(t *testing.T) time.Duration {
+	t.Helper()
+
+	cfgPath, err := filepath.Abs(filepath.Join(liveNetworkRoot, "..", "config", "experiment.yaml"))
+	if err != nil {
+		t.Fatalf("resolve config path: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", cfgPath, err)
+	}
+	ms := cfg.Environment.Network.BlockTimeoutMS
+	if ms == nil || *ms <= 0 {
+		t.Fatal("config has no environment.network.block_timeout_ms")
+	}
+	return time.Duration(*ms) * time.Millisecond
+}
+
+// TestLiveAuthorizationCostIsBlockTime pins WHY one authorization costs what it
+// does over the fabric transport, and that the cost does not grow with the
+// committee.
+//
+// A round issues three ordered transactions, whatever the committee size:
+//
+//	Init    open the round
+//	Vote    every member's ballot, submitted concurrently, sharing one block
+//	Close   tally the ballots and emit tx_rdt
+//
+// So the cost is 3 x block_timeout and the slope in committee_size is ZERO.
+// That flatness is the property under test. It held only after the tally was
+// split out of Vote: while Vote tallied, it read every member's ballot key,
+// two ballots could not share a block, and a round cost
+// (1 + committee_size) blocks — 16.3 s at size 7 instead of 6.1 s, an inflation
+// of Ref[10]'s latency that biased Exp 1 in ZK-Redact's favour.
+//
+// A non-zero slope here means ballots have stopped sharing a block. The likely
+// cause is a read of another member's ballot creeping back into Vote, which
+// would reintroduce the MVCC conflict that forced serialization.
+func TestLiveAuthorizationCostIsBlockTime(t *testing.T) {
+	block := liveBlockTimeout(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	// Committee sizes to sweep. Each needs a real majority threshold, which
+	// ref10.Setup enforces independently.
+	sizes := []int{3, 5, 7}
+
+	// Init + one shared ballot block + Close.
+	const blocksPerRound = 3
+
+	type sample struct {
+		size    int
+		elapsed time.Duration
+	}
+	var samples []sample
+
+	for _, size := range sizes {
+		params := liveGatewayParams(t)
+		params["committee_size"] = size
+		params["vote_threshold"] = size/2 + 1
+
+		s := New()
+		if err := s.Setup(ctx, scheme.SetupParams{
+			Dataset:      liveDataset(t, 12),
+			Seed:         42,
+			SecurityBits: 128,
+			Params:       params,
+		}); err != nil {
+			t.Fatalf("Setup at committee_size=%d: %v", size, err)
+		}
+
+		requester := eligibleRequester(t, s)
+
+		started := time.Now()
+		auth, err := s.Authorize(ctx,
+			request(liveReq(fmt.Sprintf("cost-%d", size)), requester, "tx-00000003"))
+		elapsed := time.Since(started)
+		_ = s.Teardown(context.Background())
+
+		if err != nil {
+			t.Fatalf("Authorize at committee_size=%d: %v", size, err)
+		}
+		if !auth.Granted {
+			t.Fatalf("committee_size=%d: eligible request denied: %s", size, auth.Reason)
+		}
+
+		predicted := time.Duration(blocksPerRound) * block
+		t.Logf("committee_size=%-2d elapsed=%-8s predicted=%dx%s=%-8s ratio=%.2f",
+			size, elapsed.Round(time.Millisecond), blocksPerRound, block,
+			predicted.Round(time.Millisecond),
+			float64(elapsed)/float64(predicted))
+
+		samples = append(samples, sample{size: size, elapsed: elapsed})
 	}
 
-	granted, denied := 0, 0
-	for i := 0; i < concurrency; i++ {
-		r := <-results
-		if r.err != nil {
-			t.Errorf("concurrent authorization failed: %v", r.err)
-			continue
+	// 35% covers endorsement, the commit-status round trip and scheduling
+	// jitter on top of the block waits; the measured overshoot is ~2%. Wide
+	// enough not to flake, far too tight to admit an extra block.
+	const tolerance = 1.35
+	predicted := time.Duration(blocksPerRound) * block
+
+	for _, s := range samples {
+		if s.elapsed > time.Duration(float64(predicted)*tolerance) {
+			t.Errorf("committee_size=%d took %s against a predicted %s (%d blocks): "+
+				"a round is paying for more than Init, one ballot block and Close",
+				s.size, s.elapsed.Round(time.Millisecond),
+				predicted.Round(time.Millisecond), blocksPerRound)
 		}
-		if r.granted {
-			granted++
-		} else {
-			denied++
+		if s.elapsed < time.Duration(float64(predicted)*0.5) {
+			t.Errorf("committee_size=%d took only %s against a predicted %s: "+
+				"transactions are not waiting for ordering, so this is not "+
+				"measuring the networked protocol",
+				s.size, s.elapsed.Round(time.Millisecond),
+				predicted.Round(time.Millisecond))
 		}
 	}
 
-	// Every request is the same eligible requester on the same transaction, so
-	// all should be granted. A denial under concurrency that does not occur
-	// serially means rounds are interfering.
-	if granted != concurrency {
-		t.Errorf("%d of %d concurrent authorizations granted; the same request "+
-			"succeeds on its own, so rounds are interfering", granted, concurrency)
+	// The headline invariant: cost must not grow with committee size.
+	first, last := samples[0], samples[len(samples)-1]
+	slope := (last.elapsed - first.elapsed) / time.Duration(last.size-first.size)
+	t.Logf("per-member slope=%s across committee_size %d..%d (must be ~0; "+
+		"one block=%s means ballots stopped sharing a block)",
+		slope.Round(time.Millisecond), first.size, last.size, block)
+
+	// Half a block per member is far below the one-block-per-member that
+	// serialization costs, and far above measurement noise.
+	if slope > block/2 {
+		t.Errorf("each extra committee member adds %s: ballots are no longer "+
+			"sharing a block. Check whether Vote reads another member's ballot "+
+			"key again — that is what forces one ballot per block.",
+			slope.Round(time.Millisecond))
 	}
 }

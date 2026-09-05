@@ -159,6 +159,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -197,6 +211,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -235,6 +263,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -273,6 +315,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -311,6 +367,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -349,6 +419,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -387,6 +471,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
@@ -425,6 +523,20 @@ services:
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_PEER_GATEWAY_ENABLED=true
+      # Fabric's default gateway concurrency limit is 500. Exp 1 sweeps to 1024
+      # concurrent authorizations, and each one now holds up to
+      # (1 + committee_size) = 8 gateway calls at a time, because a round's
+      # ballots are submitted CONCURRENTLY (they share a block; see the note in
+      # the chaincode's Vote). So the peer must admit
+      #
+      #     max_concurrency x (1 + committee_size) = 1024 x 8 = 8192
+      #
+      # Above the limit the peer returns "exceeding concurrency limit", which a
+      # measured run records as a throughput plateau -- indistinguishable from a
+      # sharding saturation knee. Measured at 2048: concurrency 1024 lost 98 of
+      # 1024 authorizations exactly this way.
+      # Checked against config/experiment.yaml by network.sh.
+      - CORE_PEER_LIMITS_CONCURRENCY_GATEWAYSERVICE=8192
       - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:

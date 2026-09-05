@@ -65,10 +65,10 @@ type Network struct {
 }
 
 type Dataset struct {
-	BaseTransactions *int              `yaml:"base_transactions"`
-	Transaction      TransactionSizes  `yaml:"transaction"`
-	Identities       IdentitiesConfig  `yaml:"identities"`
-	Policies         PoliciesConfig    `yaml:"policies"`
+	BaseTransactions *int             `yaml:"base_transactions"`
+	Transaction      TransactionSizes `yaml:"transaction"`
+	Identities       IdentitiesConfig `yaml:"identities"`
+	Policies         PoliciesConfig   `yaml:"policies"`
 }
 
 type TransactionSizes struct {
@@ -95,10 +95,15 @@ type Workload struct {
 }
 
 type ZKRedact struct {
+	Gateway        ZKGateway      `yaml:"gateway"`
 	Sharding       Sharding       `yaml:"sharding"`
 	ProofBatch     ProofBatch     `yaml:"proof_batch"`
 	RedactionBatch RedactionBatch `yaml:"redaction_batch"`
 	Circuit        Circuit        `yaml:"circuit"`
+}
+
+type ZKGateway struct {
+	FreshnessWindowMS *int `yaml:"freshness_window_ms"`
 }
 
 type Sharding struct {
@@ -128,13 +133,13 @@ type Baselines struct {
 }
 
 type Ref10 struct {
-	Enabled         bool    `yaml:"enabled"`
-	CommitteeSize   *int    `yaml:"committee_size"`
-	VoteThreshold   *int    `yaml:"vote_threshold"`
-	FaultToleranceF *int    `yaml:"fault_tolerance_f"`
-	VoteWindowMS    *int    `yaml:"vote_window_ms"`
-	AttributePolicy *string `yaml:"attribute_policy"`
-	VoteTransport   *string `yaml:"vote_transport"`
+	Enabled         bool     `yaml:"enabled"`
+	CommitteeSize   *int     `yaml:"committee_size"`
+	VoteThreshold   *int     `yaml:"vote_threshold"`
+	FaultToleranceF *int     `yaml:"fault_tolerance_f"`
+	VoteWindowMS    *int     `yaml:"vote_window_ms"`
+	AttributePolicy *string  `yaml:"attribute_policy"`
+	VoteTransport   *string  `yaml:"vote_transport"`
 	Gateway         *Gateway `yaml:"gateway"`
 }
 
@@ -374,7 +379,41 @@ func (c *Config) WorkloadParams(conflictRatio float64) (WorkloadParams, error) {
 func (c *Config) SchemeParams(name string) (map[string]any, error) {
 	switch name {
 	case "zkredact":
-		return map[string]any{}, nil
+		z := c.ZKRedact
+		if len(z.Sharding.Counts) == 0 || len(z.ProofBatch.Sizes) == 0 ||
+			len(z.ProofBatch.WaitBoundMS) == 0 || len(z.ProofBatch.NativeBatchVerify) == 0 {
+			return nil, fmt.Errorf("zkredact sharding/proof_batch is incompletely configured")
+		}
+		if z.Gateway.FreshnessWindowMS == nil {
+			return nil, fmt.Errorf("zkredact.gateway.freshness_window_ms is not set")
+		}
+		if c.Security.SignatureCurve == nil {
+			return nil, fmt.Errorf("security.signature_curve is not set, required by zkredact")
+		}
+		if c.Dataset.Transaction.RedactablePayloadBytes == nil {
+			return nil, fmt.Errorf("dataset.transaction.redactable_payload_bytes is not set")
+		}
+
+		// The FIRST value of each sweep is the ablation-DISABLED arm: one shard,
+		// batch of one, no native batch verification. Exp 1 reconfigures from
+		// there. Starting at the disabled arm means a runner that forgets to
+		// sweep measures the unsharded, unbatched system — visibly the wrong
+		// answer — rather than silently reporting the best configuration as if
+		// it were the only one.
+		return map[string]any{
+			"shard_count":              z.Sharding.Counts[0],
+			"proof_batch_size":         z.ProofBatch.Sizes[0],
+			"proof_batch_wait_ms":      z.ProofBatch.WaitBoundMS[0],
+			"native_batch_verify":      z.ProofBatch.NativeBatchVerify[0],
+			"freshness_window_ms":      *z.Gateway.FreshnessWindowMS,
+			"signature_curve":          *c.Security.SignatureCurve,
+			"redactable_payload_bytes": *c.Dataset.Transaction.RedactablePayloadBytes,
+
+			// The PVL's per-shard queues must absorb the highest offered load
+			// Exp 1 produces; a shorter queue would block submitters and record
+			// the wait as verification latency.
+			"max_concurrency": maxInt(c.Experiments.VerificationThroughput.ConcurrencyLevels),
+		}, nil
 
 	case "ref10_emt":
 		b := c.Baselines.Ref10
@@ -456,9 +495,16 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 		if b.ImplementInsert != nil {
 			implementInsert = *b.ImplementInsert
 		}
+		// ch_curve is SHARED, from the security block. A per-baseline copy
+		// could drift and let this system run at a different level than the
+		// others, which voids every comparison in every table.
+		if c.Security.ChameleonHashCurve == nil {
+			return nil, fmt.Errorf("security.chameleon_hash_curve is not set, required by ref22_shen")
+		}
 		return map[string]any{
 			"accumulator_bits": *b.AccumulatorBits,
 			"implement_insert": implementInsert,
+			"ch_curve":         *c.Security.ChameleonHashCurve,
 		}, nil
 
 	default:
@@ -479,4 +525,15 @@ func (c *Config) EnabledSchemes() []string {
 		out = append(out, "ref22_shen")
 	}
 	return out
+}
+
+// maxInt returns the largest value, or 1 for an empty slice.
+func maxInt(xs []int) int {
+	m := 1
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
 }

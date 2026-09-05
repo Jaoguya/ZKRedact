@@ -54,14 +54,14 @@ func (s *Scheme) Name() string { return "ref13_vrbc" }
 
 func (s *Scheme) Capabilities() scheme.Capabilities {
 	return scheme.Capabilities{
-		PrivacyPreservingAuth: false, // authority rests on trapdoor possession
-		PolicyBound:           false, // no policy evaluation per request
-		DecentralizedAuth:     false, // single system manager holds the trapdoor
-		ParallelVerification:  false, // that manager is a serialization point
-		BatchRedaction:        false, // delayed redaction proposed but unspecified
-		PerTxProvenance:       false, // audits ledger integrity, not tx history
-		LedgerIndependentAudit: true, // BAT gives sublinear audit cost
-		StateFreshnessCheck:   false,
+		PrivacyPreservingAuth:  false, // authority rests on trapdoor possession
+		PolicyBound:            false, // no policy evaluation per request
+		DecentralizedAuth:      false, // single system manager holds the trapdoor
+		ParallelVerification:   false, // that manager is a serialization point
+		BatchRedaction:         false, // delayed redaction proposed but unspecified
+		PerTxProvenance:        false, // audits ledger integrity, not tx history
+		LedgerIndependentAudit: true,  // BAT gives sublinear audit cost
+		StateFreshnessCheck:    false,
 	}
 }
 

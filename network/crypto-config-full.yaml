@@ -28,17 +28,18 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 8 per org.
-      #
       # The gateway binds to ONE organisation's MSP, so committee members are
       # drawn from a single org's identities — see the deviation note in
-      # docs/baselines/ref10-emt.md. That org alone must therefore cover
-      # committee_size, which config/experiment.yaml sets to 7.
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover the
+      # whole registered node set, not just committee_size: Ref[10] draws each
+      # committee from all of it, and a member votes under its own identity.
       #
-      # 4 was not enough and the shortfall stopped Setup rather than producing
-      # a partial committee, which is the guard working; raising it here is the
-      # fix that guard asks for.
-      Count: 8
+      # So this tracks dataset.identities.count (100) in
+      # config/experiment.yaml. It was 8 — enough for committee_size=7 and
+      # nothing else — which stopped every fabric-transport run inside Setup.
+      # Kept equal across orgs so repointing gateway.crypto_path at another org
+      # does not reintroduce the shortfall. network.sh checks this bound.
+      Count: 100
 
   - Name: Org2
     Domain: org2.example.com
@@ -47,17 +48,18 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 8 per org.
-      #
       # The gateway binds to ONE organisation's MSP, so committee members are
       # drawn from a single org's identities — see the deviation note in
-      # docs/baselines/ref10-emt.md. That org alone must therefore cover
-      # committee_size, which config/experiment.yaml sets to 7.
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover the
+      # whole registered node set, not just committee_size: Ref[10] draws each
+      # committee from all of it, and a member votes under its own identity.
       #
-      # 4 was not enough and the shortfall stopped Setup rather than producing
-      # a partial committee, which is the guard working; raising it here is the
-      # fix that guard asks for.
-      Count: 8
+      # So this tracks dataset.identities.count (100) in
+      # config/experiment.yaml. It was 8 — enough for committee_size=7 and
+      # nothing else — which stopped every fabric-transport run inside Setup.
+      # Kept equal across orgs so repointing gateway.crypto_path at another org
+      # does not reintroduce the shortfall. network.sh checks this bound.
+      Count: 100
 
   - Name: Org3
     Domain: org3.example.com
@@ -66,17 +68,18 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 8 per org.
-      #
       # The gateway binds to ONE organisation's MSP, so committee members are
       # drawn from a single org's identities — see the deviation note in
-      # docs/baselines/ref10-emt.md. That org alone must therefore cover
-      # committee_size, which config/experiment.yaml sets to 7.
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover the
+      # whole registered node set, not just committee_size: Ref[10] draws each
+      # committee from all of it, and a member votes under its own identity.
       #
-      # 4 was not enough and the shortfall stopped Setup rather than producing
-      # a partial committee, which is the guard working; raising it here is the
-      # fix that guard asks for.
-      Count: 8
+      # So this tracks dataset.identities.count (100) in
+      # config/experiment.yaml. It was 8 — enough for committee_size=7 and
+      # nothing else — which stopped every fabric-transport run inside Setup.
+      # Kept equal across orgs so repointing gateway.crypto_path at another org
+      # does not reintroduce the shortfall. network.sh checks this bound.
+      Count: 100
 
   - Name: Org4
     Domain: org4.example.com
@@ -85,15 +88,16 @@ PeerOrgs:
       Count: 2
       SANS: [localhost]
     Users:
-      # 8 per org.
-      #
       # The gateway binds to ONE organisation's MSP, so committee members are
       # drawn from a single org's identities — see the deviation note in
-      # docs/baselines/ref10-emt.md. That org alone must therefore cover
-      # committee_size, which config/experiment.yaml sets to 7.
+      # docs/baselines/ref10-emt.md. That org alone must therefore cover the
+      # whole registered node set, not just committee_size: Ref[10] draws each
+      # committee from all of it, and a member votes under its own identity.
       #
-      # 4 was not enough and the shortfall stopped Setup rather than producing
-      # a partial committee, which is the guard working; raising it here is the
-      # fix that guard asks for.
-      Count: 8
+      # So this tracks dataset.identities.count (100) in
+      # config/experiment.yaml. It was 8 — enough for committee_size=7 and
+      # nothing else — which stopped every fabric-transport run inside Setup.
+      # Kept equal across orgs so repointing gateway.crypto_path at another org
+      # does not reintroduce the shortfall. network.sh checks this bound.
+      Count: 100
 

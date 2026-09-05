@@ -16,17 +16,21 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"zkredact/internal/gateway"
+	"zkredact/internal/pvl"
 	"zkredact/pkg/ch"
 	"zkredact/pkg/scheme"
+	"zkredact/pkg/zk"
 )
 
 // Scheme is the ZK-Redact system under test.
 type Scheme struct {
 	mu sync.RWMutex
 
-	params  scheme.SetupParams
-	ready   bool
+	params scheme.SetupParams
+	ready  bool
 
 	// shardCount is N from config. Authorize distributes proofs across this many
 	// logical shards for parallel verification (Phase 3 Step 1).
@@ -41,6 +45,48 @@ type Scheme struct {
 	// parallelism independently of native batch verification, and one setting
 	// cannot test that claim.
 	nativeBatchVerify bool
+
+	// --- Phase 1 material, built in Setup ---
+
+	zkParams *zk.Params
+	registry *zk.Registry
+
+	policies    map[string]*zk.Policy
+	credentials map[string]*credential
+
+	// txVersions is the ledger state the gateway checks freshness against.
+	txVersions map[string]uint64
+
+	gw  *gateway.Gateway
+	pvl *pvl.PVL
+
+	// pvlSvc is the standing verification layer Authorize submits into.
+	// Verifying one proof per call would make sharding and batching no-ops:
+	// there is never more than one proof in flight to distribute or group.
+	pvlSvc *pvl.Service
+
+	// queueDepth bounds each shard's queue. Sized from the highest offered
+	// load, so a submitter never blocks on the channel — that wait would be
+	// recorded as verification latency.
+	queueDepth int
+
+	// prepared holds requester-side material per request, built by
+	// PrepareTrace. Authorize refuses a request that is absent here rather than
+	// proving inline; see PrepareTrace.
+	prepared map[string]*prepared
+
+	// proofCache keys proofs by statement digest. Identical statements yield
+	// identical proofs, so a replayed request reuses one rather than paying to
+	// generate it again — which is what keeps the untimed preparation
+	// affordable across a sweep.
+	proofCache map[string]*zk.Proof
+
+	// signatureCurve, freshnessWindow, scopeHigh and redactionLoc are shared
+	// parameters from config, not choices made here.
+	signatureCurve  string
+	freshnessWindow time.Duration
+	scopeHigh       uint64
+	redactionLoc    uint64
 }
 
 // New returns an unconfigured ZK-Redact scheme. Setup must be called first.
@@ -104,29 +150,73 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 		return fmt.Errorf("zkredact: shard_count must be >= 1, got %d", s.shardCount)
 	}
 
+	// Shared parameters, passed in from the security and environment blocks
+	// rather than duplicated under this scheme. A per-scheme copy could drift
+	// and would let ZK-Redact run at a different level than the baselines.
+	if s.signatureCurve, err = stringParam(p.Params, "signature_curve"); err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	freshnessMS, err := intParam(p.Params, "freshness_window_ms")
+	if err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	if freshnessMS <= 0 {
+		return fmt.Errorf("zkredact: freshness_window_ms must be positive, got %d", freshnessMS)
+	}
+	s.freshnessWindow = time.Duration(freshnessMS) * time.Millisecond
+
+	// The redactable payload bounds the policy scope, and the redaction
+	// location must lie inside it. Both come from the dataset's configured
+	// payload size; a constant here would reject valid locations on a
+	// differently sized corpus.
+	payload, err := intParam(p.Params, "redactable_payload_bytes")
+	if err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	if payload <= 0 {
+		return fmt.Errorf("zkredact: redactable_payload_bytes must be positive, got %d", payload)
+	}
+	s.scopeHigh = uint64(payload)
+	// Redactions target the start of the redactable region. The location is
+	// bound into the statement and range-checked in-circuit; the workload does
+	// not vary it, so varying it here would invent a dimension the corpus does
+	// not have.
+	s.redactionLoc = 0
+
+	// Each shard's queue must hold the whole offered load, or a submitter
+	// blocks on the channel and that wait is recorded as verification latency.
+	// Exp 1's highest concurrency level is the bound.
+	depth, err := intParam(p.Params, "max_concurrency")
+	if err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	if depth < 1 {
+		return fmt.Errorf("zkredact: max_concurrency must be >= 1, got %d", depth)
+	}
+	s.queueDepth = depth
+
+	s.proofCache = make(map[string]*zk.Proof)
 	s.params = p
 
-	// TODO(phase1): generate CH keys, compile/load the circuit, derive the
-	// proving and verifying keys, initialise proof shards and the PAI state.
-	// TODO(phase1): materialise p.Dataset into the ledger. Not timed.
-	return fmt.Errorf("zkredact.Setup: %w", scheme.ErrNotImplemented)
+	if err := s.buildAuthorization(p); err != nil {
+		return err
+	}
+
+	s.ready = true
+	return nil
 }
 
-// Authorize implements Phases 2 and 3: statement construction, proof
-// generation, shard assignment, and verification.
-//
-// This is the operation Exp 1 measures. The measured boundary starts when the
-// request is admitted and ends when the authorization decision is final.
-func (s *Scheme) Authorize(ctx context.Context, req *scheme.Request) (*scheme.Authorization, error) {
-	if err := s.check(); err != nil {
-		return nil, err
+// stringParam reads a required string parameter.
+func stringParam(params map[string]any, key string) (string, error) {
+	v, ok := params[key]
+	if !ok {
+		return "", fmt.Errorf("missing parameter %s", key)
 	}
-	// TODO(phase2): build statement x_i binding policy, state version and
-	// requester credential; produce proof pi_i.
-	// TODO(phase3): assign to shard via H(request) mod N; form intra-shard
-	// batch; verify (native batch verifier when nativeBatchVerify is set,
-	// otherwise individually).
-	return nil, fmt.Errorf("zkredact.Authorize: %w", scheme.ErrNotImplemented)
+	sv, ok := v.(string)
+	if !ok || sv == "" {
+		return "", fmt.Errorf("parameter %s must be a non-empty string", key)
+	}
+	return sv, nil
 }
 
 // Redact implements Phase 4 and the record generation of Phase 5.

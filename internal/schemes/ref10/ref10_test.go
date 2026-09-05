@@ -322,7 +322,7 @@ func TestSetupGuards(t *testing.T) {
 	}{
 		{"threshold below majority", func(p map[string]any) { p["vote_threshold"] = 3 }, 128, "not a majority"},
 		{"threshold above committee", func(p map[string]any) { p["vote_threshold"] = 9 }, 128, "exceeds committee size"},
-				// The fabric transport is implemented, so the guard is no longer "not
+		// The fabric transport is implemented, so the guard is no longer "not
 		// built yet" — it is that a config asking for network-measured votes
 		// must not silently receive in-process ones, which would report a lower
 		// bound as a measurement.

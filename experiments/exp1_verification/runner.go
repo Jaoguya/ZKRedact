@@ -55,18 +55,18 @@ type Ablation struct {
 
 // Point is one measured configuration: a scheme at a concurrency level.
 type Point struct {
-	Scheme      string          `json:"scheme"`
-	Concurrency int             `json:"concurrency"`
-	ShardCount  int             `json:"shard_count,omitempty"`
-	Ablation    *Ablation       `json:"ablation,omitempty"`
-	Repetition  int             `json:"repetition"`
+	Scheme      string    `json:"scheme"`
+	Concurrency int       `json:"concurrency"`
+	ShardCount  int       `json:"shard_count,omitempty"`
+	Ablation    *Ablation `json:"ablation,omitempty"`
+	Repetition  int       `json:"repetition"`
 
-	Throughput  float64         `json:"authorized_requests_per_second"`
-	Latency     metrics.Summary `json:"latency"`
+	Throughput float64         `json:"authorized_requests_per_second"`
+	Latency    metrics.Summary `json:"latency"`
 
-	Granted     int64           `json:"granted"`
-	Denied      int64           `json:"denied"`
-	Errors      int64           `json:"errors"`
+	Granted int64 `json:"granted"`
+	Denied  int64 `json:"denied"`
+	Errors  int64 `json:"errors"`
 
 	// ScalingEfficiency is speedup over the N=1 run divided by N. Zero for
 	// schemes without a shard knob. A value near 1 means near-ideal
@@ -111,29 +111,122 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 	res := &Result{SaturationPoint: make(map[string]int)}
 
 	for _, s := range schemesUnderTest {
-		// Baseline throughput at N=1, used to compute scaling efficiency.
-		var baseThroughput float64
+		// Every scaling-efficiency number for this scheme is divided by its
+		// single-worker throughput, so that denominator is measured with ALL
+		// the repetitions and averaged.
+		//
+		// Taking it from repetition 0 alone made one unreplicated measurement
+		// the reference for the whole curve: an outlier there shifted every
+		// point, and running more repetitions could not correct it, because the
+		// others were never consulted. The sweep is required to start at 1
+		// (checked above) precisely so this baseline exists.
+		var baseSamples []float64
+		schemeStart := len(res.Points)
 
-		for _, conc := range cfg.ConcurrencyLevels {
-			for rep := 0; rep < cfg.Repetitions; rep++ {
-				p, err := runOne(ctx, s, trace, conc)
-				if err != nil {
-					return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
-				}
-				p.Repetition = rep
+		// Shard counts apply only to a scheme that HAS shards. A baseline has
+		// none, so it runs once per concurrency level; sweeping it over shard
+		// counts would fabricate a curve its design cannot produce, which is
+		// the same failure exp2 refuses for batch sizes.
+		shardCounts := []int{0} // 0 means "not applicable"
+		resharder, sharded := s.(scheme.Resharder)
+		if sharded && len(cfg.ShardCounts) > 0 {
+			shardCounts = cfg.ShardCounts
+		}
 
-				if conc == 1 && rep == 0 {
-					baseThroughput = p.Throughput
+		for _, shards := range shardCounts {
+			if sharded && shards > 0 {
+				if err := resharder.Reshard(shards); err != nil {
+					return nil, fmt.Errorf("exp1: %s reshard to %d: %w", s.Name(), shards, err)
 				}
-				if baseThroughput > 0 && conc > 1 {
-					p.ScalingEfficiency = (p.Throughput / baseThroughput) / float64(conc)
+			}
+
+			for _, conc := range cfg.ConcurrencyLevels {
+				for rep := 0; rep < cfg.Repetitions; rep++ {
+					replay := replayTrace(trace, conc, rep)
+
+					// Requester-side work and per-replay state resets happen
+					// here, OUTSIDE the timed region. For ZK-Redact that is
+					// proof generation, which costs an order of magnitude more
+					// than the verification Exp 1 measures.
+					if prep, ok := s.(scheme.TracePreparer); ok {
+						if err := prep.PrepareTrace(ctx, replay); err != nil {
+							return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+						}
+					}
+
+					p, err := runOne(ctx, s, replay, conc)
+					if err != nil {
+						return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
+					}
+					p.Repetition = rep
+					p.ShardCount = shards
+
+					// The scaling baseline is per shard count: comparing a
+					// 64-shard run against a 1-shard single-worker measurement
+					// would report the sharding speedup as scaling efficiency.
+					if conc == 1 && shards == baselineShards(shardCounts) {
+						baseSamples = append(baseSamples, p.Throughput)
+					}
+					res.Points = append(res.Points, p)
 				}
-				res.Points = append(res.Points, p)
 			}
 		}
+
+		// Filled in after the sweep, since the baseline is not complete until
+		// every concurrency-1 repetition has run.
+		baseThroughput := mean(baseSamples)
+		if baseThroughput > 0 {
+			for i := schemeStart; i < len(res.Points); i++ {
+				if res.Points[i].Concurrency > 1 {
+					res.Points[i].ScalingEfficiency =
+						(res.Points[i].Throughput / baseThroughput) / float64(res.Points[i].Concurrency)
+				}
+			}
+		}
+		_ = shardCounts
+
 		res.SaturationPoint[s.Name()] = findSaturation(res.Points, s.Name())
 	}
 	return res, nil
+}
+
+// mean returns the arithmetic mean, or 0 for an empty sample.
+func mean(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, x := range xs {
+		sum += x
+	}
+	return sum / float64(len(xs))
+}
+
+// replayTrace returns the trace with each request id tagged by the replay it
+// belongs to.
+//
+// Exp 1 replays one trace at every concurrency level and repetition — 330 times
+// at the configured sweep. Ref[10] derives its on-ledger contract address from
+// the request id (Algorithm 3, addr(con_k)), so an untagged replay reopens a
+// round that already exists and the run dies on the second one. The ledger is
+// not reset between replays, and resetting it would erase the growth Exp 3
+// measures.
+//
+// The tag goes on the IDENTIFIER only. Requester, target transaction, content
+// and policy are untouched, so the workload each scheme sees is unchanged and
+// every scheme receives the same tags in the same order — the shared-trace
+// fairness contract is preserved. Tagging here rather than inside a scheme
+// keeps addr = f(request id) exactly as Ref[10] specifies, and keeps the
+// committee draw deterministic: it depends on the id, not on the order
+// goroutines happened to pick requests up.
+func replayTrace(trace []*scheme.Request, concurrency, rep int) []*scheme.Request {
+	out := make([]*scheme.Request, len(trace))
+	for i, r := range trace {
+		clone := *r
+		clone.ID = fmt.Sprintf("%s#c%d.r%d", r.ID, concurrency, rep)
+		out[i] = &clone
+	}
+	return out
 }
 
 // runOne drives a single scheme at one concurrency level under closed-loop load.
@@ -208,11 +301,40 @@ func runOne(ctx context.Context, s scheme.Scheme, trace []*scheme.Request, concu
 	// A scheme that never denies anything is not evaluating authorization. This
 	// does not prove the logic is correct, but it catches a stub that always
 	// approves — which would otherwise look like excellent performance.
-	if granted > 0 && denied == 0 {
+	//
+	// APPLIED ONLY TO SCHEMES THAT CLAIM POLICY-BOUND AUTHORIZATION. Ref[13] and
+	// Ref[22] declare PolicyBound false because neither paper defines a
+	// per-request authorization protocol — their check is key possession, which
+	// the regulator always passes. Granting everything is the honest outcome
+	// there, and docs/experiments.md §2.2 says so; failing the run for it would
+	// force inventing an authorization protocol for them, which is exactly the
+	// fabrication this project refuses.
+	//
+	// The capability declaration is what makes this safe: a scheme cannot dodge
+	// the guard without also declaring it does not evaluate policy, and that
+	// declaration appears in the capability matrix the results carry.
+	if s.Capabilities().PolicyBound && granted > 0 && denied == 0 {
 		return Point{}, fmt.Errorf(
-			"%s granted all %d requests and denied none; authorization logic is "+
-				"probably not running (a scheme that cannot reject is not verifying)",
+			"%s claims policy-bound authorization but granted all %d requests and "+
+				"denied none; the policy check is probably not running (a scheme that "+
+				"cannot reject is not verifying)",
 			s.Name(), granted)
+	}
+
+	// And the mirror image, which is the FASTER failure of the two: rejecting a
+	// request costs almost nothing, so a scheme that denies everything posts the
+	// best throughput in the study and a perfectly clean scaling curve.
+	//
+	// Observed, not hypothetical. ZK-Redact's gateway checked request freshness
+	// against wall-clock time while pkg/workload stamps the trace from a fixed
+	// epoch, so every request was months stale: 60 of 60 denied at ~13,000
+	// "authorizations" per second. Nothing else in the run looked wrong.
+	if denied > 0 && granted == 0 {
+		return Point{}, fmt.Errorf(
+			"%s denied all %d requests and granted none; it is measuring the cost "+
+				"of rejection, not of authorization, and rejection is the cheapest "+
+				"path through any of these schemes",
+			s.Name(), denied)
 	}
 
 	return Point{
@@ -269,4 +391,17 @@ func findSaturation(points []Point, schemeName string) int {
 		}
 	}
 	return 0
+}
+
+// baselineShards returns the shard count the scaling baseline is taken at.
+//
+// The FIRST swept value, which config/experiment.yaml orders so that it is the
+// sharding-disabled arm. Taking the baseline at whichever shard count happened
+// to run first would fold the sharding speedup into scaling efficiency, which
+// is supposed to measure only the effect of added concurrency.
+func baselineShards(counts []int) int {
+	if len(counts) == 0 {
+		return 0
+	}
+	return counts[0]
 }

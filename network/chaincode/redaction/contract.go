@@ -45,10 +45,10 @@ import (
 // State keys. Namespaced so several concurrent redaction contracts can share a
 // channel without colliding — Exp 1 drives many rounds at once.
 const (
-	keyRound   = "round"    // round/<contractAddr>
-	keyBallot  = "ballot"   // ballot/<contractAddr>/<nodeID>
-	keyRdt     = "rdt"      // rdt/<contractAddr>
-	keyNodeSet = "nodes"    // nodes  (the network's registered nodes)
+	keyRound   = "round"  // round/<contractAddr>
+	keyBallot  = "ballot" // ballot/<contractAddr>/<nodeID>
+	keyRdt     = "rdt"    // rdt/<contractAddr>
+	keyNodeSet = "nodes"  // nodes  (the network's registered nodes)
 )
 
 // SmartContract is the redaction contract con_k.
@@ -371,7 +371,7 @@ func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, contr
 // Algorithm 3: vote
 // -----------------------------------------------------------------------------
 
-// Vote submits one ballot, verifies it, and closes the round on threshold.
+// Vote submits one ballot and verifies it. It does NOT tally.
 //
 // Implements Algorithm 3 vote() together with Algorithm 4's verification step.
 // Three checks make the threshold meaningful, and each corresponds to a way a
@@ -380,6 +380,22 @@ func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, contr
 //	membership   a non-member's vote is rejected, not counted
 //	signature    verified here, so ballots cannot be fabricated for absent members
 //	one-per-node a member cannot pad Sigma to the threshold alone
+//
+// WHY THE TALLY IS NOT HERE. Counting requires reading every committee member's
+// ballot key, which puts all of them in this transaction's read set. Two
+// ballots cut into the same block would then each carry the other's key, and
+// the second would fail validation with MVCC_READ_CONFLICT — so ballots could
+// only ever be submitted one per block, and a round cost
+// (1 + committee_size) blocks.
+//
+// Nothing in Algorithm 3 or 4 requires that. Ref[10]'s committee members are
+// independent nodes and their ballots belong in one block. Keeping the tally
+// out means a Vote reads only round metadata (never written during voting) and
+// writes only its own ballot key, so ballots are conflict-free and concurrent.
+// Close() does the counting afterwards, in its own transaction.
+//
+// Returns nil on success: the ballot is recorded, and whether the round reached
+// threshold is Close()'s answer, not this one's.
 func (s *SmartContract) Vote(ctx contractapi.TransactionContextInterface, contractAddr, ballotJSON string) (*RedactionTx, error) {
 	var bal Ballot
 	if err := json.Unmarshal([]byte(ballotJSON), &bal); err != nil {
@@ -437,6 +453,25 @@ func (s *SmartContract) Vote(ctx contractapi.TransactionContextInterface, contra
 		return nil, fmt.Errorf("redaction: store ballot: %w", err)
 	}
 
+	return nil, nil
+}
+
+// Close tallies the ballots and, on reaching the threshold, emits tx_rdt.
+//
+// Split out of Vote so that ballots can share a block; see the note there. This
+// is the transaction that reads every committee member's ballot, so it is the
+// one that must run alone — which it does, once, after voting.
+//
+// Idempotent: a round already closed returns its existing tx_rdt rather than
+// recomputing, so a retry cannot emit a second result.
+func (s *SmartContract) Close(ctx contractapi.TransactionContextInterface, contractAddr string) (*RedactionTx, error) {
+	round, err := s.Query(ctx, contractAddr)
+	if err != nil {
+		return nil, err
+	}
+	if round.Closed {
+		return s.Result(ctx, contractAddr)
+	}
 	return s.tally(ctx, round)
 }
 

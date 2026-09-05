@@ -410,6 +410,33 @@ func checkRef10Committee(c *config.Config, r *report) {
 			fmt.Sprintf("unknown value %q", *b.VoteTransport),
 			"want in_process or fabric")
 	}
+
+	// Over the fabric transport a round issues one Init plus one Vote per
+	// committee member, submitted serially, and every submit waits for its
+	// transaction to be ordered into a block. So the window has a hard floor of
+	// (1 + committee_size) x block_timeout_ms; below it the round cannot
+	// finish, whatever the protocol does.
+	//
+	// The window is documented as a timeout that "effectively never fires". At
+	// 5000 ms against a 7-member committee and a 2 s block it fired on every
+	// round — and the gateway reports the expired deadline as a gRPC status
+	// error, so it read as a transport fault rather than as the invalid run it
+	// is. This check is the derivation, not a guessed constant.
+	if b.VoteTransport != nil && *b.VoteTransport == "fabric" &&
+		b.VoteWindowMS != nil && b.CommitteeSize != nil &&
+		c.Environment.Network.BlockTimeoutMS != nil {
+
+		floor := (1 + *b.CommitteeSize) * *c.Environment.Network.BlockTimeoutMS
+		if *b.VoteWindowMS < floor {
+			r.errf("baselines.ref10_emt.vote_window_ms",
+				fmt.Sprintf("%d ms is below the %d ms floor for the fabric transport",
+					*b.VoteWindowMS, floor),
+				fmt.Sprintf("a round makes 1+%d serial submits, each waiting up to "+
+					"block_timeout_ms=%d for ordering; the window would expire "+
+					"mid-round and the run would be invalid",
+					*b.CommitteeSize, *c.Environment.Network.BlockTimeoutMS))
+		}
+	}
 	size, thr := *b.CommitteeSize, *b.VoteThreshold
 
 	if thr > size {

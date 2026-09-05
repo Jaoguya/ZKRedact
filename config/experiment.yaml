@@ -247,6 +247,31 @@ workload:
 # ZK-REDACT PARAMETERS
 # -----------------------------------------------------------------------------
 zkredact:
+  # ---------------------------------------------------------------------------
+  # Phase 2 — Redaction Gateway
+  # ---------------------------------------------------------------------------
+  gateway:
+    # [DERIVED] Bounds how old a request may be when the gateway admits it
+    # (Phase 2 Step 3's check on t_i). Used strictly as a TIMEOUT that must
+    # never fire; if it does, the run is invalid and must be discarded.
+    #
+    # In a deployment this would be seconds — a request is stamped at
+    # submission and admitted a network round trip later. In the harness the
+    # WHOLE trace is prepared before a timed replay begins, so the last request
+    # of a replay is admitted one full replay after it was stamped. The window
+    # must therefore cover a replay, not a round trip.
+    #
+    # Derivation: the longest Exp 1 cell is concurrency 1, which admits
+    # workload.total_requests sequentially. At 10,000 requests and the
+    # ~1 ms verification a Groth16 proof costs, that is well under a minute for
+    # ZK-Redact; 3600000 ms leaves the bound far above anything the sweep can
+    # produce while still rejecting a replay from an earlier run.
+    #
+    # A tight window here would surface as a rising denial rate at high
+    # concurrency — which reads as a property of the protocol rather than of
+    # this parameter.
+    freshness_window_ms: 3600000
+
   sharding:
     # [DERIVED from environment.vcpus = 32] Geometric 1 -> 64.
     #
@@ -296,8 +321,31 @@ zkredact:
     # [MEASURED] NOT chosen — these are outputs of circuit compilation, filled
     # in from `make build-zk` and then held fixed and reported. Recording them
     # here keeps the Exp 1 verification floor reproducible.
-    constraint_count: null      # fill from compiler output
-    public_input_count: null    # fill from compiler output
+    #
+    # Measured with gnark 0.16.3, Groth16 over BLS12-381, at
+    # dataset.policies.predicate_depth = 3 and a depth-7 credential registry
+    # (dataset.identities.count = 100). Both dimensions feed the circuit shape,
+    # so changing either changes these numbers and they must be re-measured.
+    #
+    # Where the constraints go: the registry membership proof is 7 MiMC
+    # compressions, and the policy commitment, statement digest and credential
+    # leaf are one each — MiMC over BLS12-381 dominates, as intended. It is the
+    # hash the circuit can afford; a SHA-256 registry would cost tens of
+    # thousands of constraints per level and put the circuit's size somewhere
+    # unrelated to the scheme's design.
+    constraint_count: 16445
+
+    # Exactly two: the statement digest eta_i = H(x_i) and the credential
+    # registry root. Groth16 verification costs one scalar multiplication per
+    # public input, and Exp 1 measures that verification — so everything else
+    # about the request is folded into eta_i, which the verifier recomputes from
+    # the request it already holds. Excludes gnark's constant ONE wire.
+    #
+    # If this ever exceeds 2, check what became public. The attributes turning
+    # public would leave every functional test passing while the scheme stopped
+    # being privacy-preserving; pkg/zk.TestAttributesAreNotPublicInputs is the
+    # test that catches it.
+    public_input_count: 2
 
 
 # -----------------------------------------------------------------------------
@@ -325,13 +373,29 @@ baselines:
     vote_threshold: 5
     fault_tolerance_f: 2
 
-    # [PROPOSED] 5000 ms, used strictly as a TIMEOUT — the round closes the
-    # instant the threshold is reached (see ref10-emt.md §2).
-    # Set generously so it effectively never fires: a tight window would cap
-    # Ref[10]'s throughput with a number WE chose rather than measuring the
-    # protocol. If this timeout ever triggers during a run, the result is
-    # invalid and must be discarded.
-    vote_window_ms: 5000
+    # [DERIVED] Used strictly as a TIMEOUT — the round closes the instant the
+    # threshold is reached (see ref10-emt.md §2). Set generously so it
+    # effectively never fires: a tight window would cap Ref[10]'s throughput
+    # with a number WE chose rather than measuring the protocol. If this
+    # timeout ever triggers during a run, the result is invalid and must be
+    # discarded.
+    #
+    # Derivation. Over vote_transport: fabric a round issues one Init plus one
+    # Vote per committee member, submitted SERIALLY, and each submit waits for
+    # its transaction to be ordered into a block:
+    #
+    #     floor = (1 + committee_size) x block_timeout_ms
+    #           = (1 + 7) x 2000 = 16000 ms
+    #
+    # 2x that floor is the headroom for endorsement and the commit-status round
+    # trip, which measured ~2.1 s per submit against a 2.0 s block timeout.
+    #
+    # It was 5000 — sized for in_process voting, where a round costs
+    # microseconds. Over fabric the window expired mid-round every time, and
+    # because the gateway reports an expired deadline as a gRPC status error
+    # rather than context.DeadlineExceeded, it surfaced as a transport fault
+    # instead of invalidating the run. validate-config now enforces the floor.
+    vote_window_ms: 32000
 
     # [DERIVED] Ref[10]'s own stated default policy. Anything stricter would
     # shrink the eligible committee and tilt the comparison in our favour.
@@ -367,6 +431,12 @@ baselines:
     # endorsement and no Raft replication. Point these at the measurement
     # topology before recording anything.
     gateway:
+      # The two topologies expose peers on different host ports so both can be
+      # up at once: minimal maps peer0.org1 to 7051, full maps its eight peers
+      # to 11051-18051 (peer0.org1 is 11051). network.sh refuses to bring a
+      # topology up whose peers this endpoint does not name, because dialing the
+      # other topology's port either fails as a peer fault or reaches a leftover
+      # peer whose numbers would be recorded as this topology's.
       peer_endpoint: "localhost:7051"
       # Must match the peer certificate's CN, or the TLS handshake fails with an
       # error that reads as a network fault rather than a naming one.

@@ -315,8 +315,17 @@ func runVoteRound(ctx context.Context, t transport, r *voteRound) ([]ballot, err
 
 	ballots, err := t.Collect(ctx, r)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, ErrVoteWindowExpired
+		// The window is checked on the ROUND's context, not on the error.
+		//
+		// errors.Is(err, context.DeadlineExceeded) only matches a transport
+		// that returns the sentinel. The Fabric gateway does not: an expired
+		// deadline comes back as a gRPC status error ("commit status error:
+		// rpc error: code = DeadlineExceeded"), which the sentinel check misses
+		// entirely. The window then looked like a transport fault, and the
+		// "discard the run" path above could never be reached over the one
+		// transport whose rounds are slow enough to reach it.
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w after %s: %v", ErrVoteWindowExpired, r.Window, err)
 		}
 		return nil, err
 	}

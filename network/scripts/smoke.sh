@@ -23,7 +23,17 @@ set -euo pipefail
 NET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHANNEL="${CHANNEL:-redaction}"
 CC_NAME="${CC_NAME:-redaction}"
-FABRIC_BIN="${FABRIC_BIN:-/c/fabric/bin}"
+# Same resolution order as network.sh: an explicit FABRIC_BIN wins, then the
+# location scripts/setup-ec2.sh installs to, then whatever is already on PATH.
+if [[ -n "${FABRIC_BIN:-}" ]]; then
+  :
+elif [[ -x "$HOME/fabric/bin/peer" ]]; then
+  FABRIC_BIN="$HOME/fabric/bin"
+elif command -v peer >/dev/null 2>&1; then
+  FABRIC_BIN="$(dirname "$(command -v peer)")"
+else
+  FABRIC_BIN="$HOME/fabric/bin"
+fi
 
 RED=$'\e[31m'; GRN=$'\e[32m'; BLD=$'\e[1m'; RST=$'\e[0m'
 pass=0; fail=0

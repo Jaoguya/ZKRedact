@@ -129,64 +129,122 @@ func (t *fabricTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, 
 		return nil, fmt.Errorf("ref10: open round %s: %w", r.ContractAddr, err)
 	}
 
-	out := make([]ballot, 0, len(r.Members))
-	for _, m := range r.Members {
-		if err := ctx.Err(); err != nil {
-			return out, err
-		}
-
-		sess, err := t.session(m.Identity.ID)
-		if err != nil {
-			return out, err
-		}
-
-		// Algorithm 4 line 1: read {req, sigma} from the ledger and verify it
-		// there. A member that took the requester's word for the policy would
-		// not be voting on anything.
-		raw, err := sess.Evaluate(ctx, "Query", r.ContractAddr)
-		if err != nil {
-			return out, fmt.Errorf("ref10: query round for %s: %w", m.Identity.ID, err)
-		}
-		var onChain chainRound
-		if err := json.Unmarshal(raw, &onChain); err != nil {
-			return out, fmt.Errorf("ref10: decode round for %s: %w", m.Identity.ID, err)
-		}
-
-		// The CA signature is checked against the local certificate, not against
-		// what the ledger returned, so a tampered on-chain round cannot talk a
-		// member into voting.
-		if !r.CA.verifyCert(r.Cert) {
-			continue
-		}
-
-		// Lines 3-5: decide from the policy just verified.
-		approve := r.Cert.Granted()
-
-		// Line 6: xi_j.
-		msg := voteMessage(r.ContractAddr, r.RequestID, approve)
-		xi, err := m.Key.Sign(msg, nil)
-		if err != nil {
-			return out, fmt.Errorf("ref10: vote signature for %s: %w", m.Identity.ID, err)
-		}
-
-		ballotJSON, err := encodeBallot(m.Identity.ID, approve, xi)
-		if err != nil {
-			return out, err
-		}
-
-		// Line 7: submit. This is the transaction that must be endorsed and
-		// ordered — the cost localTransport does not have.
-		if _, err := sess.Submit(ctx, "Vote", r.ContractAddr, ballotJSON); err != nil {
-			return out, fmt.Errorf("ref10: submit vote for %s: %w", m.Identity.ID, err)
-		}
-
-		out = append(out, ballot{
-			NodeID:  m.Identity.ID,
-			Approve: approve,
-			Key:     &m.Key.SchnorrPublicKey,
-			Xi:      xi,
-		})
+	// Ballots are submitted CONCURRENTLY, because Ref[10]'s committee members
+	// are independent nodes. Algorithm 3 does not serialize them, and a loop
+	// here would cost one block per member — (1 + committee_size) blocks per
+	// round instead of two, inflating Ref[10]'s measured latency by roughly
+	// committee_size and biasing Exp 1 in ZK-Redact's favour.
+	//
+	// This is only safe because the contract's Vote does not tally: it reads
+	// round metadata that voting never writes, and writes only its own ballot
+	// key. Restoring a tally inside Vote would put every member's ballot key in
+	// every ballot's read set and the second ballot in each block would fail
+	// with MVCC_READ_CONFLICT. Close() below does the counting, alone.
+	type voteResult struct {
+		b    ballot
+		cast bool
+		err  error
 	}
+	results := make(chan voteResult, len(r.Members))
+
+	for _, m := range r.Members {
+		go func(m *member) {
+			if err := ctx.Err(); err != nil {
+				results <- voteResult{err: err}
+				return
+			}
+
+			sess, err := t.session(m.Identity.ID)
+			if err != nil {
+				results <- voteResult{err: err}
+				return
+			}
+
+			// Algorithm 4 line 1: read {req, sigma} from the ledger and verify
+			// it there. A member that took the requester's word for the policy
+			// would not be voting on anything.
+			raw, err := sess.Evaluate(ctx, "Query", r.ContractAddr)
+			if err != nil {
+				results <- voteResult{err: fmt.Errorf("ref10: query round for %s: %w", m.Identity.ID, err)}
+				return
+			}
+			var onChain chainRound
+			if err := json.Unmarshal(raw, &onChain); err != nil {
+				results <- voteResult{err: fmt.Errorf("ref10: decode round for %s: %w", m.Identity.ID, err)}
+				return
+			}
+
+			// The CA signature is checked against the local certificate, not
+			// against what the ledger returned, so a tampered on-chain round
+			// cannot talk a member into voting.
+			if !r.CA.verifyCert(r.Cert) {
+				results <- voteResult{}
+				return
+			}
+
+			// Lines 3-5: decide from the policy just verified.
+			approve := r.Cert.Granted()
+
+			// Line 6: xi_j.
+			msg := voteMessage(r.ContractAddr, r.RequestID, approve)
+			xi, err := m.Key.Sign(msg, nil)
+			if err != nil {
+				results <- voteResult{err: fmt.Errorf("ref10: vote signature for %s: %w", m.Identity.ID, err)}
+				return
+			}
+
+			ballotJSON, err := encodeBallot(m.Identity.ID, approve, xi)
+			if err != nil {
+				results <- voteResult{err: err}
+				return
+			}
+
+			// Line 7: submit. This is the transaction that must be endorsed and
+			// ordered — the cost localTransport does not have.
+			if _, err := sess.Submit(ctx, "Vote", r.ContractAddr, ballotJSON); err != nil {
+				results <- voteResult{err: fmt.Errorf("ref10: submit vote for %s: %w", m.Identity.ID, err)}
+				return
+			}
+
+			results <- voteResult{cast: true, b: ballot{
+				NodeID:  m.Identity.ID,
+				Approve: approve,
+				Key:     &m.Key.SchnorrPublicKey,
+				Xi:      xi,
+			}}
+		}(m)
+	}
+
+	// Collect every goroutine before returning, so no ballot is still in flight
+	// when Close tallies. Ordering is by arrival, which Collect's contract
+	// permits; the tally on chain does not depend on it.
+	out := make([]ballot, 0, len(r.Members))
+	var firstErr error
+	for range r.Members {
+		res := <-results
+		switch {
+		case res.err != nil:
+			if firstErr == nil {
+				firstErr = res.err
+			}
+		case res.cast:
+			out = append(out, res.b)
+		}
+	}
+	if firstErr != nil {
+		return out, firstErr
+	}
+
+	// Algorithm 3 close(): the contract counts the ballots and emits tx_rdt.
+	// One transaction, after voting, because it reads every ballot key.
+	closer, err := t.session(r.Members[0].Identity.ID)
+	if err != nil {
+		return out, err
+	}
+	if _, err := closer.Submit(ctx, "Close", r.ContractAddr); err != nil {
+		return out, fmt.Errorf("ref10: close round %s: %w", r.ContractAddr, err)
+	}
+
 	return out, nil
 }
 
@@ -221,16 +279,16 @@ func (t *fabricTransport) Close() error {
 // -----------------------------------------------------------------------------
 
 type chainRound struct {
-	ContractAddr string          `json:"contract_addr"`
-	RequestID    string          `json:"request_id"`
-	TargetTxID   string          `json:"target_tx_id"`
-	RequesterID  string          `json:"requester_id"`
-	Cert         chainPolicyCert `json:"cert"`
-	Committee     []string       `json:"committee"`
-	CommitteeSize int            `json:"committee_size"`
-	Threshold     int            `json:"threshold"`
-	Closed       bool            `json:"closed"`
-	Approved     bool            `json:"approved"`
+	ContractAddr  string          `json:"contract_addr"`
+	RequestID     string          `json:"request_id"`
+	TargetTxID    string          `json:"target_tx_id"`
+	RequesterID   string          `json:"requester_id"`
+	Cert          chainPolicyCert `json:"cert"`
+	Committee     []string        `json:"committee"`
+	CommitteeSize int             `json:"committee_size"`
+	Threshold     int             `json:"threshold"`
+	Closed        bool            `json:"closed"`
+	Approved      bool            `json:"approved"`
 }
 
 type chainPolicyCert struct {

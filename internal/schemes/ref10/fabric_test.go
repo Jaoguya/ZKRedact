@@ -33,11 +33,11 @@ type call struct {
 }
 
 type fakeSession struct {
-	member  string
-	log     *callLog
-	round   string // JSON returned by Query
-	failOn  string // function name that should error
-	closed  bool
+	member string
+	log    *callLog
+	round  string // JSON returned by Query
+	failOn string // function name that should error
+	closed bool
 }
 
 type callLog struct {
@@ -531,4 +531,3 @@ func TestEncodeNodesCarriesVotingKeys(t *testing.T) {
 		}
 	}
 }
-
