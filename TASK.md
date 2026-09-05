@@ -3,9 +3,11 @@
 Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
-**Branch:** `docs/experiment-design` (7 commits, not merged to `main`)
+**Branch:** `main`
 **Code:** ~6,700 lines Go across 24 files
-**Compiled:** ❌ never — the authoring machine had no Go toolchain
+**Compiled:** ✅ 2026-09-05, Go 1.27.1 — `go build ./...` clean, `go vet ./...`
+clean, 76 tests passing in `pkg/ch` and `pkg/merkle`, `make validate-config`
+passing
 
 ---
 
@@ -41,17 +43,16 @@ something pass.** If a guard fires, it is telling you something true.
 ./scripts/setup-ec2.sh          # installs Go, Docker, Fabric 2.5.9, protoc
 source ~/.bashrc
 
-go mod tidy
-make build                      # FIRST REAL COMPILE — expect fixes here
-make test                       # pkg/ch and pkg/merkle have real tests
-make validate-config            # first real run of the config gate
+make build                      # compiles clean
+make test                       # vet + 76 tests in pkg/ch and pkg/merkle
+make validate-config            # passes; one expected WARN, see below
 ```
 
-> **Task 0 is `make build`.** Nothing in this repo has ever been through a
-> compiler. Expect import ordering, unused variables, and similar. The structure
-> was checked by hand — delimiter balance, interface conformance across all four
-> schemes, every cross-package struct literal against its declaration — but that
-> is not a compiler.
+> **The tree compiles.** Deps are pinned in `go.sum` (yaml.v3 only). The one
+> defect the first compile found was a duplicate `Randomness` symbol in
+> `pkg/ch`; the hand-checking otherwise held. `make validate-config` reports one
+> WARN — the ZK circuit's `constraint_count` / `public_input_count` — which is
+> correct and clears itself once `make build-zk` exists to measure them.
 
 ---
 
@@ -102,11 +103,11 @@ validation, but the cryptography returns `ErrNotImplemented`.
 
 ## Remaining tasks, in order
 
-### 0. Compile ⬅️ **start here**
-`make build`, then `make test`. Fix whatever the compiler says. Nothing else is
-verifiable until this passes.
+### 0. Compile ✅ done
+`go build ./...` and `go vet ./...` are clean and both test packages pass.
+Re-run `make test` after every change — it is now a real gate, not an aspiration.
 
-### 1. Schnorr signatures → `pkg/crypto`
+### 1. Schnorr signatures → `pkg/crypto` ⬅️ **start here**
 Needed by Ref[10] voting (Algorithm 4). Curve comes from
 `security.signature_curve` (P-256). Follow the style of `pkg/ch`: real code,
 table tests, and a negative test proving verification actually rejects.
@@ -185,8 +186,11 @@ real run to resolve the values that cannot be guessed:
 ## Findings already made — do not re-derive
 
 ### The three schemes use three different chameleon hashes
-This was nearly a silent error. All three are now implemented and enforced by
-`ch.Required` / `ch.CheckRequired`.
+This was nearly a silent error twice over. All three are implemented, and
+`ch.CheckRequired` is now **called from all four `Setup` methods** — it was
+previously defined but never invoked, so the mapping below was documentation
+rather than enforcement. Verified by flipping an entry in `ch.Implemented` and
+confirming `Setup` refuses.
 
 | Scheme | Construction | Why it matters |
 |---|---|---|
@@ -235,6 +239,8 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Ref[10] threshold not a real majority → `Setup` fails | `ref10` | an undersized committee making the main competitor look fast |
 | Ref[13] corruption rate ≠ 0.01 → `Setup` fails | `ref13` | `challenged_blocks` silently losing its 95%/99% meaning |
 | Ref[22] accumulator < 3072 bits → `Setup` fails | `ref22` | a baseline benchmarked below the shared security level |
+| CH construction a scheme needs not implemented → `Setup` fails | all four schemes, via `ch.CheckRequired` | a baseline silently given a cheaper chameleon hash than its paper specifies |
+| `baselines.ref22_shen.accumulator_bits` ≠ `security.accumulator_bits` → error | `validate-config` | the runtime security level drifting from the documented one — `ref22.Setup` reads the baseline copy |
 | Curve below `target_bits` → validation error | `validate-config` | the BN254 trap |
 | `delete_set_sizes` ≠ `redaction_batch.sizes` → error | `validate-config` | two Exp 2 curves on incomparable axes |
 | Shard sweep not exceeding vCPUs → error | `validate-config` | saturation knee outside the plot |
@@ -252,7 +258,9 @@ meaning *extend the sweep* — not *no optimum exists*.
 | 2 | Network size fixed or swept? | 4 orgs × 2 peers assumes network scaling is not a claimed result. |
 | 3 | Payload sizes | Deliberately not Ref[13]'s 660 B, which measured public Ethereum, not a permissioned ledger. If the target application has known sizes, use and cite those. |
 
-Three `[CONFIRM]` markers in the config track these: `grep -n CONFIRM config/experiment.yaml`
+Two `[CONFIRM]` markers in the config track questions 2 and 3:
+`grep -n CONFIRM config/experiment.yaml`. **Question 1 has no marker** — it is
+tracked only here, so it is the one most likely to be forgotten.
 
 ---
 
