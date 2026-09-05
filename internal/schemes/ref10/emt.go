@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"zkredact/pkg/merkle"
@@ -68,8 +69,16 @@ type emtTx struct {
 	// touches it, and Algorithm 1 fails if it changed.
 	Core []byte
 
-	// Redactable is the inserted data d_w. Algorithm 5 replaces it with a
-	// reference to the redaction transaction that authorised the change.
+	// Redactable is the inserted data d_w. Algorithm 5 REPLACES it with a
+	// reference to the redaction transaction that authorised the change — it
+	// does not overwrite it with new content.
+	//
+	// This is pruning, and it is the mechanism Ref[10] is built on (§V-C: "we
+	// use the pruning technology to delete target data from the local ledger").
+	// The replacement data d_new lives in tx_rdt, reachable through the
+	// reference. Writing d_new into the block instead would make this scheme
+	// look like content replacement, which is what ZK-Redact does and Ref[10]
+	// does not.
 	Redactable []byte
 
 	HC  []byte // H_c
@@ -100,11 +109,17 @@ type emtTx struct {
 type redactionTx struct {
 	ID         string
 	TargetTxID string
-	NewDigest  []byte
-	OldDigest  []byte
-	FromVer    uint64
-	ToVer      uint64
-	PolicyID   string
+
+	// NewContent is d_new. Algorithm 5 line 3 extracts it FROM tx_rdt, which is
+	// where the replacement data lives once the block itself holds only a
+	// reference.
+	NewContent []byte
+
+	NewDigest []byte
+	OldDigest []byte
+	FromVer   uint64
+	ToVer     uint64
+	PolicyID  string
 	// Evidence is the serialised vote set Sigma, re-verifiable by Algorithm 5
 	// and by any auditor.
 	Evidence []byte
@@ -147,6 +162,25 @@ func (b *block) rebuild() error {
 	h.Write(t.Root())
 	b.Hash = h.Sum(nil)
 	return nil
+}
+
+// redactionRefPrefix marks a pruned d_w.
+//
+// The leading control byte keeps it distinguishable from ordinary payload
+// content, which in the shared corpus is arbitrary bytes.
+const redactionRefPrefix = "\x00tx_rdt:"
+
+// redactionReference is what replaces d_w after Algorithm 5.
+func redactionReference(rdtID string) []byte {
+	return []byte(redactionRefPrefix + rdtID)
+}
+
+// parseRedactionReference reports whether d_w has been pruned, and to what.
+func parseRedactionReference(b []byte) (string, bool) {
+	if !strings.HasPrefix(string(b), redactionRefPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(string(b), redactionRefPrefix), true
 }
 
 // hashTx computes H_tx = H(H_c || H_w).
@@ -272,7 +306,7 @@ func (l *ledger) lookup(id string) (*emtTx, bool) {
 // tx_id, replace tx_n.d_w with a reference to tx_rdt, and update the tree.
 //
 // Returns the new H_tx and the number of blocks touched.
-func (l *ledger) applyRedaction(rdt *redactionTx, newContent []byte) (*emtTx, error) {
+func (l *ledger) applyRedaction(rdt *redactionTx) (*emtTx, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -285,7 +319,9 @@ func (l *ledger) applyRedaction(rdt *redactionTx, newContent []byte) (*emtTx, er
 
 	beforeHC := append([]byte(nil), tx.HC...)
 
-	tx.Redactable = newContent
+	// Algorithm 5 line 9: replace d_w with a REFERENCE to tx_rdt. The new data
+	// itself is carried by tx_rdt, not written into the block.
+	tx.Redactable = redactionReference(rdt.ID)
 	tx.HW = merkle.HashLeaf(tx.Redactable)
 	tx.HTx = hashTx(tx.HC, tx.HW)
 	tx.Version++
@@ -341,6 +377,7 @@ func encodeRedactionCore(rdt *redactionTx) []byte {
 	out = append(out, 0x1f)
 	out = append(out, rdt.OldDigest...)
 	out = append(out, rdt.NewDigest...)
+	out = append(out, rdt.NewContent...)
 	out = append(out, rdt.Evidence...)
 	return out
 }

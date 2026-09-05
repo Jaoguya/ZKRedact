@@ -144,7 +144,7 @@ Already enforced in code:
 | 2 Redaction Request | CA validation, `T_rdbl = T_all \ (T_gen ∪ T_rdt ∪ T_con)` | ✅ `voting.go`, `certAuthority.validate` |
 | 3 Smart Contract | `RS_SHA256(addr, N_all, A_r) → N_auth`, voting | ✅ `committee.go`, `runVoteRound` |
 | 4 Redaction Voting | Schnorr signature per vote | ✅ `pkg/crypto/schnorr.go` + `localTransport` |
-| 5 Local Redaction | verify `Σ`, replace `d_w` with a reference | ✅ `Scheme.Redact`, `ledger.applyRedaction` |
+| 5 Local Redaction | verify `Σ`, replace `d_w` with a reference | ✅ `Scheme.Redact`, `ledger.applyRedaction` — `d_w` is pruned to a reference; `d_new` is carried by `tx_rdt` |
 
 ⚠️ **Votes do not yet cross the network.** `vote_transport: in_process` is the
 only implementation; `fabric` is refused rather than downgraded, and
@@ -165,6 +165,8 @@ Already enforced:
 | One node, one vote | `verifySigma` rejects a duplicate-padded Σ (`TestVerifySigmaRejectsForgedSets`) |
 | Σ cannot be replayed across requests or contracts | vote messages bind `addr(con_k)` and the request ID |
 | Audit genuinely walks the chain | `TestAuditCostGrowsWithLedgerSize`; the per-tx `RedactedBy` field exists only for untimed setup and is never read by `Audit` |
+| Redaction prunes rather than overwrites | `redactionReference`; `TestRedactAppliesAndReportsCostSplit` asserts `d_w` holds a reference and not the new content |
+| Algorithm 1 validates against the redaction transaction | four negative tests covering arbitrary content, a reference to another target, a dangling reference, and a reference on a never-redacted transaction |
 | Ref[10] uses no chameleon hash | `ch.Required` has no entry for `ref10_emt`; redaction recomputes one Merkle leaf |
 | Committee sized from a fault assumption | validator checks `3f+1` / `2f+1` |
 | Committee must fit available peers | validator |

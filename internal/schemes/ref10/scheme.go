@@ -362,13 +362,14 @@ func (s *Scheme) Redact(ctx context.Context, batch []*scheme.Authorization) (*sc
 			PolicyID:   a.Request.PolicyID,
 			FromVer:    a.TxVersion,
 			ToVer:      a.TxVersion + 1,
+			NewContent: a.Request.NewContent,
 			NewDigest:  merkle.HashLeaf(a.Request.NewContent),
 			Evidence:   a.Evidence,
 		}
 		if prev, ok := s.ledger.lookup(a.Request.TargetTxID); ok {
 			rdt.OldDigest = append([]byte(nil), prev.HW...)
 		}
-		if _, err := s.ledger.applyRedaction(rdt, a.Request.NewContent); err != nil {
+		if _, err := s.ledger.applyRedaction(rdt); err != nil {
 			res.LedgerTime += time.Since(ledgerStart)
 			res.Failed++
 			continue
@@ -498,6 +499,38 @@ func (s *Scheme) verifyEMT(txID string) bool {
 	}
 	if !bytesEqual(hashTx(tx.HC, tx.HW), tx.HTx) {
 		return false
+	}
+
+	// "For redacted transactions, confirm H_c unchanged, recompute H_tx' with
+	// the new H_w', then validate against the redaction transaction"
+	// (docs/baselines/ref10-emt.md §1.2). The hash checks above cover the first
+	// two; this covers the third.
+	//
+	// Without it, a node could prune a transaction to anything at all and the
+	// audit would still pass, because the recomputed hashes would agree with
+	// whatever it wrote. The whole point of Algorithm 1 is that they must agree
+	// with what the committee authorised.
+	rdtID, pruned := parseRedactionReference(tx.Redactable)
+	switch {
+	case tx.Version > 0 && !pruned:
+		// Redacted, but d_w is not a reference: the block was edited outside
+		// Algorithm 5.
+		return false
+	case tx.Version == 0 && pruned:
+		// Carries a reference without ever having been redacted.
+		return false
+	case pruned:
+		rloc, ok := s.ledger.txLoc[rdtID]
+		if !ok {
+			return false // reference to a redaction transaction that is not on the ledger
+		}
+		rtx := s.ledger.blocks[rloc.Block].Txs[rloc.Index]
+		if rtx.Kind != txRedaction || rtx.rdt == nil {
+			return false
+		}
+		if rtx.rdt.TargetTxID != txID {
+			return false // a real redaction transaction, but for a different target
+		}
 	}
 
 	// Leaves are interleaved per Eq. 4: H_c at 2i, H_w at 2i+1.

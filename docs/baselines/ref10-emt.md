@@ -168,6 +168,7 @@ the shared dataset) or an unrelated comparison.
 | Voting round closes on threshold, not on full window `t` | See §2 note | **Favours Ref[10]** — reduces its measured latency |
 | Redaction consensus **is** included | The paper explicitly excluded it ([Ref[10].md:466](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L466)): *"the consensus mechanism for redaction operations was not included"* | **Raises** Ref[10]'s measured cost vs. its published figures — but is required, since ZK-Redact's batching amortizes exactly this cost. Excluding it would hide the effect we are measuring. |
 | Our network topology, not theirs | One shared environment across all systems | Absolute numbers differ from published; relative comparison is valid |
+| Redaction PRUNES: `d_w` is replaced with a reference to `tx_rdt`, and `d_new` lives in the redaction transaction | Not a deviation — this is Algorithm 5 line 9 and §V-C ("we use the pruning technology to delete target data"). Recorded because the shared harness hands every scheme a `NewContent`, and writing that into the block would silently turn Ref[10] into a content-replacement scheme | **Neutral on cost** (a short reference is hashed instead of a 512-byte payload), but it is a real *capability* difference: Ref[10] deletes where ZK-Redact replaces. Pinned by `TestRedactAppliesAndReportsCostSplit` |
 | Schnorr challenge binds the public key: `e = H(R ‖ P ‖ m)` | Schnorr's 1989 formulation ([Ref[10].md:492](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L492), ref. [43]) hashes only `(R, m)`. Key prefixing is the modern standard (RFC 8032, BIP-340) and closes related-key attacks in the multi-key setting — which is Ref[10]'s setting exactly, since `vote()` verifies many keys against one message. | **Marginally against Ref[10]** — one extra point hashed per sign and per verify. Negligible beside the two scalar multiplications, and it errs in the safe direction. Pinned by `TestChallengeBindsPublicKey`. |
 
 > Because of the second row, **our Ref[10] numbers are not comparable to the numbers
@@ -206,6 +207,14 @@ Verify before any Experiment 1 result is recorded:
       linear in history depth as `Σ` re-verification requires. Verifying only
       the target would report depth-independent verification, which nothing in
       Ref[10]'s design provides.
+- [x] Algorithm 1 validates a redacted transaction AGAINST its redaction
+      transaction, not merely by recomputing hashes
+      — `TestAuditRejectsPrunedContentReplacedByArbitraryData`,
+      `TestAuditRejectsReferenceToWrongTarget`,
+      `TestAuditRejectsDanglingReference`,
+      `TestAuditRejectsUnredactedTransactionCarryingAReference`. Recomputed
+      hashes always agree with whatever a node wrote, so hash checks alone
+      cannot distinguish an authorised redaction from an arbitrary edit.
 - [x] `H_c` immutability is enforced — a redaction altering core data must fail
       — `TestAuditDetectsCoreDataTampering`, `TestRedactionChangesOnlyTheInsertedBranch`
 - [x] No parameter appears as a literal anywhere in the implementation

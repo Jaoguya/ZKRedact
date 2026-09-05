@@ -291,8 +291,8 @@ func TestRedactionChangesOnlyTheInsertedBranch(t *testing.T) {
 	hcBefore := append([]byte(nil), before.HC...)
 	hwBefore := append([]byte(nil), before.HW...)
 
-	rdt := &redactionTx{ID: "tx-rdt-1", TargetTxID: target}
-	after, err := l.applyRedaction(rdt, []byte("new content"))
+	rdt := &redactionTx{ID: "tx-rdt-1", TargetTxID: target, NewContent: []byte("new content")}
+	after, err := l.applyRedaction(rdt)
 	if err != nil {
 		t.Fatalf("applyRedaction: %v", err)
 	}
@@ -540,9 +540,26 @@ func TestRedactAppliesAndReportsCostSplit(t *testing.T) {
 		t.Errorf("LedgerTime is zero after a successful redaction")
 	}
 
+	// Algorithm 5 line 9: d_w is PRUNED to a reference, not overwritten with
+	// the new content. The replacement data lives in tx_rdt.
 	tx, _ := s.ledger.lookup("tx-00000003")
-	if string(tx.Redactable) != "redacted" {
-		t.Errorf("content was not replaced")
+	rdtID, pruned := parseRedactionReference(tx.Redactable)
+	if !pruned {
+		t.Fatalf("d_w was not replaced with a reference to tx_rdt, got %q", tx.Redactable)
+	}
+	if string(tx.Redactable) == "redacted" {
+		t.Errorf("d_w holds the new content; Ref[10] prunes rather than overwriting")
+	}
+	rtx, ok := s.ledger.lookup(rdtID)
+	if !ok || rtx.rdt == nil {
+		t.Fatalf("reference %q does not resolve to a redaction transaction", rdtID)
+	}
+	if string(rtx.rdt.NewContent) != "redacted" {
+		t.Errorf("d_new = %q, want %q; the new data must be reachable through tx_rdt",
+			rtx.rdt.NewContent, "redacted")
+	}
+	if rtx.rdt.TargetTxID != "tx-00000003" {
+		t.Errorf("redaction transaction targets %s", rtx.rdt.TargetTxID)
 	}
 }
 
@@ -1095,5 +1112,101 @@ func TestSigmaRoundTrip(t *testing.T) {
 		if _, err := parseSigma(bad); err == nil {
 			t.Errorf("parseSigma accepted malformed input %q", bad)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Algorithm 1 must validate a redacted transaction AGAINST its redaction
+// transaction (spec §1.2), not merely recompute its hashes.
+//
+// The recomputed hashes always agree with whatever a node wrote, so hash checks
+// alone cannot tell an authorised redaction from an arbitrary edit. These are
+// the tests that make the difference detectable.
+// -----------------------------------------------------------------------------
+
+func TestAuditRejectsPrunedContentReplacedByArbitraryData(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 1)
+
+	tx, _ := s.ledger.lookup("tx-00000003")
+	loc := s.ledger.txLoc["tx-00000003"]
+	b := s.ledger.blocks[loc.Block]
+
+	// A node substitutes its own content for the authorised reference and
+	// rebuilds the block so every hash is internally consistent.
+	tx.Redactable = []byte("content this node preferred")
+	tx.HW = merkle.HashLeaf(tx.Redactable)
+	tx.HTx = hashTx(tx.HC, tx.HW)
+	if err := b.rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if s.verifyEMT("tx-00000003") {
+		t.Errorf("Algorithm 1 accepted a redaction that replaced d_w with unauthorised content")
+	}
+}
+
+func TestAuditRejectsReferenceToWrongTarget(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 1)
+	redactNTimes(t, s, "tx-00000004", 1)
+
+	// Point tx-00000003's d_w at the redaction transaction that authorised a
+	// DIFFERENT transaction's redaction. It is a real, fully signed tx_rdt.
+	other, _, _ := s.ledger.scanForRedactions("tx-00000004")
+	if len(other) != 1 {
+		t.Fatalf("expected one redaction record, got %d", len(other))
+	}
+
+	tx, _ := s.ledger.lookup("tx-00000003")
+	loc := s.ledger.txLoc["tx-00000003"]
+	tx.Redactable = redactionReference(other[0].RdtTxID)
+	tx.HW = merkle.HashLeaf(tx.Redactable)
+	tx.HTx = hashTx(tx.HC, tx.HW)
+	if err := s.ledger.blocks[loc.Block].rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if s.verifyEMT("tx-00000003") {
+		t.Errorf("Algorithm 1 accepted a reference to a redaction transaction for another target")
+	}
+}
+
+func TestAuditRejectsDanglingReference(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 1)
+
+	tx, _ := s.ledger.lookup("tx-00000003")
+	loc := s.ledger.txLoc["tx-00000003"]
+	tx.Redactable = redactionReference("tx-rdt-never-committed")
+	tx.HW = merkle.HashLeaf(tx.Redactable)
+	tx.HTx = hashTx(tx.HC, tx.HW)
+	if err := s.ledger.blocks[loc.Block].rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if s.verifyEMT("tx-00000003") {
+		t.Errorf("Algorithm 1 accepted a reference to a redaction transaction that is not on the ledger")
+	}
+}
+
+func TestAuditRejectsUnredactedTransactionCarryingAReference(t *testing.T) {
+	s := mustSetup(t)
+	redactNTimes(t, s, "tx-00000003", 1)
+	found, _, _ := s.ledger.scanForRedactions("tx-00000003")
+
+	// tx-00000005 was never redacted, so Version is 0. Planting a valid-looking
+	// reference must not make it verify.
+	tx, _ := s.ledger.lookup("tx-00000005")
+	loc := s.ledger.txLoc["tx-00000005"]
+	tx.Redactable = redactionReference(found[0].RdtTxID)
+	tx.HW = merkle.HashLeaf(tx.Redactable)
+	tx.HTx = hashTx(tx.HC, tx.HW)
+	if err := s.ledger.blocks[loc.Block].rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if s.verifyEMT("tx-00000005") {
+		t.Errorf("Algorithm 1 accepted a reference on a transaction that was never redacted")
 	}
 }
