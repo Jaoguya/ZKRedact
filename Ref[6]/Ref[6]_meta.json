@@ -1,0 +1,1940 @@
+{
+  "table_of_contents": [
+    {
+      "title": "Redactable consortium blockchain based on verifiable distributed\nchameleon hash functions",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          37.64200019836426,
+          162.76999999999998
+        ],
+        [
+          427.78866386413574,
+          162.76999999999998
+        ],
+        [
+          427.78866386413574,
+          197.66397285461426
+        ],
+        [
+          37.64200019836426,
+          197.66397285461426
+        ]
+      ]
+    },
+    {
+      "title": "A R T I C L E I N F O A B S T R A C T",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          37.64200401306152,
+          262.02
+        ],
+        [
+          274.3305950164795,
+          262.02
+        ],
+        [
+          274.3305950164795,
+          275.09927558898926
+        ],
+        [
+          37.64200401306152,
+          275.09927558898926
+        ]
+      ]
+    },
+    {
+      "title": "Keywords:",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          37.54635810852051,
+          282.66399999999993
+        ],
+        [
+          139.464,
+          282.66399999999993
+        ],
+        [
+          139.464,
+          294.574
+        ],
+        [
+          37.54635810852051,
+          294.574
+        ]
+      ]
+    },
+    {
+      "title": "",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          200.852,
+          262.02
+        ],
+        [
+          275.35200000000003,
+          262.02
+        ],
+        [
+          275.35200000000003,
+          273.13599999999997
+        ],
+        [
+          200.852,
+          273.13599999999997
+        ]
+      ]
+    },
+    {
+      "title": "1. Introduction",
+      "heading_level": null,
+      "page_id": 0,
+      "polygon": [
+        [
+          37.64200019836426,
+          457.34399999999994
+        ],
+        [
+          101.32000000000001,
+          457.34399999999994
+        ],
+        [
+          101.32000000000001,
+          469.71911811828613
+        ],
+        [
+          37.64200019836426,
+          469.71911811828613
+        ]
+      ]
+    },
+    {
+      "title": "2. Related work",
+      "heading_level": null,
+      "page_id": 1,
+      "polygon": [
+        [
+          302.17199999999997,
+          634.4060000000001
+        ],
+        [
+          368.5620403289795,
+          634.4060000000001
+        ],
+        [
+          368.5620403289795,
+          646.1550006866455
+        ],
+        [
+          302.17199999999997,
+          646.1550006866455
+        ]
+      ]
+    },
+    {
+      "title": "2.1. Non-chameleon-hash-based schemes",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          35.76,
+          55.580000000000005
+        ],
+        [
+          175.224,
+          55.580000000000005
+        ],
+        [
+          175.224,
+          65.902
+        ],
+        [
+          35.76,
+          65.902
+        ]
+      ]
+    },
+    {
+      "title": "2.2. Chameleon-hash-based schemes",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          35.76,
+          273.13599999999997
+        ],
+        [
+          160.324,
+          273.13599999999997
+        ],
+        [
+          160.324,
+          283.45799999999997
+        ],
+        [
+          35.76,
+          283.45799999999997
+        ]
+      ]
+    },
+    {
+      "title": "3. Background",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          302.76800000000003,
+          55.580000000000005
+        ],
+        [
+          363.55999999999995,
+          55.580000000000005
+        ],
+        [
+          363.55999999999995,
+          66.696
+        ],
+        [
+          302.76800000000003,
+          66.696
+        ]
+      ]
+    },
+    {
+      "title": "3.1. Gap Diffie-Hellman group",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          302.76800000000003,
+          77.018
+        ],
+        [
+          410.04799999999994,
+          77.018
+        ],
+        [
+          410.04799999999994,
+          88.134
+        ],
+        [
+          302.76800000000003,
+          88.134
+        ]
+      ]
+    },
+    {
+      "title": "3.2. Chameleon hash function",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          302.76800000000003,
+          324.746
+        ],
+        [
+          408.85600000000005,
+          324.746
+        ],
+        [
+          408.85600000000005,
+          335.86199999999997
+        ],
+        [
+          302.76800000000003,
+          335.86199999999997
+        ]
+      ]
+    },
+    {
+      "title": "3.3. Schnorr non-interactive zero-knowledge proof protocol",
+      "heading_level": null,
+      "page_id": 2,
+      "polygon": [
+        [
+          302.76800000000003,
+          636.788
+        ],
+        [
+          507.7919999999999,
+          636.788
+        ],
+        [
+          507.7919999999999,
+          647.904
+        ],
+        [
+          302.76800000000003,
+          647.904
+        ]
+      ]
+    },
+    {
+      "title": "4. Overview",
+      "heading_level": null,
+      "page_id": 3,
+      "polygon": [
+        [
+          35.76,
+          434.318
+        ],
+        [
+          86.41999999999999,
+          434.318
+        ],
+        [
+          86.41999999999999,
+          444.64000000000004
+        ],
+        [
+          35.76,
+          444.64000000000004
+        ]
+      ]
+    },
+    {
+      "title": "4.1. System model",
+      "heading_level": null,
+      "page_id": 3,
+      "polygon": [
+        [
+          35.76,
+          456.54999999999995
+        ],
+        [
+          101.916,
+          456.54999999999995
+        ],
+        [
+          101.916,
+          467.666
+        ],
+        [
+          35.76,
+          467.666
+        ]
+      ]
+    },
+    {
+      "title": "4.2. Threat assumptions",
+      "heading_level": null,
+      "page_id": 3,
+      "polygon": [
+        [
+          35.76,
+          697.1320000000001
+        ],
+        [
+          120.392,
+          697.1320000000001
+        ],
+        [
+          120.392,
+          709.0419999999999
+        ],
+        [
+          35.76,
+          709.0419999999999
+        ]
+      ]
+    },
+    {
+      "title": "4.3. Definitions of VDCH",
+      "heading_level": null,
+      "page_id": 3,
+      "polygon": [
+        [
+          302.76800000000003,
+          160.388
+        ],
+        [
+          392.168,
+          160.388
+        ],
+        [
+          392.168,
+          171.504
+        ],
+        [
+          302.76800000000003,
+          171.504
+        ]
+      ]
+    },
+    {
+      "title": "4.4. Definitions of verifiable threshold signature scheme in CVTSS",
+      "heading_level": null,
+      "page_id": 3,
+      "polygon": [
+        [
+          302.76800000000003,
+          517.688
+        ],
+        [
+          532.228,
+          517.688
+        ],
+        [
+          532.228,
+          528.804
+        ],
+        [
+          302.76800000000003,
+          528.804
+        ]
+      ]
+    },
+    {
+      "title": "4.5. Security requirements",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          35.76,
+          273.92999999999995
+        ],
+        [
+          127.544,
+          273.92999999999995
+        ],
+        [
+          127.544,
+          285.04599999999994
+        ],
+        [
+          35.76,
+          285.04599999999994
+        ]
+      ]
+    },
+    {
+      "title": "4.5.1. Security requirements of VDCH",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          35.76,
+          324.746
+        ],
+        [
+          166.88,
+          324.746
+        ],
+        [
+          166.88,
+          335.86199999999997
+        ],
+        [
+          35.76,
+          335.86199999999997
+        ]
+      ]
+    },
+    {
+      "title": "4.5.2. Security requirements of VTSS in CVTSS",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          35.76,
+          709.8359999999999
+        ],
+        [
+          197.276,
+          709.8359999999999
+        ],
+        [
+          197.276,
+          720.952
+        ],
+        [
+          35.76,
+          720.952
+        ]
+      ]
+    },
+    {
+      "title": "5. The proposed VDCH and CVTSS",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          302.17199999999997,
+          543.8900000000001
+        ],
+        [
+          438.06,
+          543.8900000000001
+        ],
+        [
+          438.06,
+          555.006
+        ],
+        [
+          302.17199999999997,
+          555.006
+        ]
+      ]
+    },
+    {
+      "title": "5.1. Verifiable distributed chameleon hash functions",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          302.17199999999997,
+          667.7539999999999
+        ],
+        [
+          482.76,
+          667.7539999999999
+        ],
+        [
+          482.76,
+          679.664
+        ],
+        [
+          302.17199999999997,
+          679.664
+        ]
+      ]
+    },
+    {
+      "title": "5.1.1. Construction of VDCH",
+      "heading_level": null,
+      "page_id": 4,
+      "polygon": [
+        [
+          302.17199999999997,
+          688.398
+        ],
+        [
+          405.87600000000003,
+          688.398
+        ],
+        [
+          405.87600000000003,
+          700.308
+        ],
+        [
+          302.17199999999997,
+          700.308
+        ]
+      ]
+    },
+    {
+      "title": "5.1.2. Security analysis",
+      "heading_level": null,
+      "page_id": 5,
+      "polygon": [
+        [
+          302.76800000000003,
+          172.298
+        ],
+        [
+          386.208,
+          172.298
+        ],
+        [
+          386.208,
+          182.62
+        ],
+        [
+          302.76800000000003,
+          182.62
+        ]
+      ]
+    },
+    {
+      "title": "5.2. Consensus protocol based on verifiable threshold signatures",
+      "heading_level": null,
+      "page_id": 6,
+      "polygon": [
+        [
+          35.76,
+          624.878
+        ],
+        [
+          250.916,
+          624.878
+        ],
+        [
+          250.916,
+          636.788
+        ],
+        [
+          35.76,
+          636.788
+        ]
+      ]
+    },
+    {
+      "title": "5.2.1. Construction of VTSS",
+      "heading_level": null,
+      "page_id": 6,
+      "polygon": [
+        [
+          302.17199999999997,
+          118.306
+        ],
+        [
+          402.3,
+          118.306
+        ],
+        [
+          402.3,
+          129.422
+        ],
+        [
+          302.17199999999997,
+          129.422
+        ]
+      ]
+    },
+    {
+      "title": "5.2.2. Consensus messages and their verification methods",
+      "heading_level": null,
+      "page_id": 6,
+      "polygon": [
+        [
+          302.17199999999997,
+          615.3499999999999
+        ],
+        [
+          500.63999999999993,
+          615.3499999999999
+        ],
+        [
+          500.63999999999993,
+          627.26
+        ],
+        [
+          302.17199999999997,
+          627.26
+        ]
+      ]
+    },
+    {
+      "title": "Algorithm 1: Validate request .",
+      "heading_level": null,
+      "page_id": 7,
+      "polygon": [
+        [
+          41.124,
+          150.86
+        ],
+        [
+          151.98,
+          150.86
+        ],
+        [
+          151.98,
+          161.976
+        ],
+        [
+          41.124,
+          161.976
+        ]
+      ]
+    },
+    {
+      "title": "Algorithm 2: Validate prevote .",
+      "heading_level": null,
+      "page_id": 7,
+      "polygon": [
+        [
+          308.132,
+          57.16799999999999
+        ],
+        [
+          421.37199999999996,
+          57.16799999999999
+        ],
+        [
+          421.37199999999996,
+          68.28399999999999
+        ],
+        [
+          308.132,
+          68.28399999999999
+        ]
+      ]
+    },
+    {
+      "title": "Algorithm 3: Validate precommit .",
+      "heading_level": null,
+      "page_id": 7,
+      "polygon": [
+        [
+          308.132,
+          400.176
+        ],
+        [
+          430.908,
+          400.176
+        ],
+        [
+          430.908,
+          411.292
+        ],
+        [
+          308.132,
+          411.292
+        ]
+      ]
+    },
+    {
+      "title": "Algorithm 4: Validate prepare .",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          41.124,
+          366.034
+        ],
+        [
+          153.172,
+          366.034
+        ],
+        [
+          153.172,
+          377.15
+        ],
+        [
+          41.124,
+          377.15
+        ]
+      ]
+    },
+    {
+      "title": "5.2.3. Basic consensus process of CVTSS",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          35.76,
+          698.72
+        ],
+        [
+          175.224,
+          698.72
+        ],
+        [
+          175.224,
+          709.8359999999999
+        ],
+        [
+          35.76,
+          709.8359999999999
+        ]
+      ]
+    },
+    {
+      "title": "Algorithm 5: Validate commit .",
+      "heading_level": null,
+      "page_id": 8,
+      "polygon": [
+        [
+          308.132,
+          57.16799999999999
+        ],
+        [
+          420.77599999999995,
+          57.16799999999999
+        ],
+        [
+          420.77599999999995,
+          68.28399999999999
+        ],
+        [
+          308.132,
+          68.28399999999999
+        ]
+      ]
+    },
+    {
+      "title": "5.2.4. Security analysis",
+      "heading_level": null,
+      "page_id": 9,
+      "polygon": [
+        [
+          302.76800000000003,
+          87.34
+        ],
+        [
+          386.80400000000003,
+          87.34
+        ],
+        [
+          386.80400000000003,
+          98.45599999999999
+        ],
+        [
+          302.76800000000003,
+          98.45599999999999
+        ]
+      ]
+    },
+    {
+      "title": "6. Constructing a redactable consortium chain",
+      "heading_level": null,
+      "page_id": 10,
+      "polygon": [
+        [
+          302.17199999999997,
+          432.73
+        ],
+        [
+          486.33599999999996,
+          432.73
+        ],
+        [
+          486.33599999999996,
+          444.64000000000004
+        ],
+        [
+          302.17199999999997,
+          444.64000000000004
+        ]
+      ]
+    },
+    {
+      "title": "6.1. Redactable block structure",
+      "heading_level": null,
+      "page_id": 10,
+      "polygon": [
+        [
+          302.17199999999997,
+          555.006
+        ],
+        [
+          411.83599999999996,
+          555.006
+        ],
+        [
+          411.83599999999996,
+          566.9159999999999
+        ],
+        [
+          302.17199999999997,
+          566.9159999999999
+        ]
+      ]
+    },
+    {
+      "title": "6.2. Block generation",
+      "heading_level": null,
+      "page_id": 11,
+      "polygon": [
+        [
+          37.64200019836426,
+          208.82199999999997
+        ],
+        [
+          115.02799999999999,
+          208.82199999999997
+        ],
+        [
+          115.02799999999999,
+          220.16922187805176
+        ],
+        [
+          37.64200019836426,
+          220.16922187805176
+        ]
+      ]
+    },
+    {
+      "title": "6.3. Block redaction",
+      "heading_level": null,
+      "page_id": 11,
+      "polygon": [
+        [
+          37.64200019836426,
+          412.08599999999996
+        ],
+        [
+          111.452,
+          412.08599999999996
+        ],
+        [
+          111.452,
+          423.1190814971924
+        ],
+        [
+          37.64200019836426,
+          423.1190814971924
+        ]
+      ]
+    },
+    {
+      "title": "6.4. Tamper-proof features",
+      "heading_level": null,
+      "page_id": 11,
+      "polygon": [
+        [
+          37.64200019836426,
+          593.1179999999999
+        ],
+        [
+          132.90800000000002,
+          593.1179999999999
+        ],
+        [
+          132.90800000000002,
+          605.0090503692627
+        ],
+        [
+          37.64200019836426,
+          605.0090503692627
+        ]
+      ]
+    },
+    {
+      "title": "7. Evaluation",
+      "heading_level": null,
+      "page_id": 11,
+      "polygon": [
+        [
+          302.17199999999997,
+          420.81999999999994
+        ],
+        [
+          358.75008964538574,
+          420.81999999999994
+        ],
+        [
+          358.75008964538574,
+          433.05313301086426
+        ],
+        [
+          302.17199999999997,
+          433.05313301086426
+        ]
+      ]
+    },
+    {
+      "title": "7.1. Complexity analysis",
+      "heading_level": null,
+      "page_id": 11,
+      "polygon": [
+        [
+          302.17199999999997,
+          493.86799999999994
+        ],
+        [
+          390.25362968444824,
+          493.86799999999994
+        ],
+        [
+          390.25362968444824,
+          504.73120307922363
+        ],
+        [
+          302.17199999999997,
+          504.73120307922363
+        ]
+      ]
+    },
+    {
+      "title": "7.2. Simulation experiments",
+      "heading_level": null,
+      "page_id": 12,
+      "polygon": [
+        [
+          35.76,
+          403.352
+        ],
+        [
+          132.90800000000002,
+          403.352
+        ],
+        [
+          132.90800000000002,
+          414.468
+        ],
+        [
+          35.76,
+          414.468
+        ]
+      ]
+    },
+    {
+      "title": "7.2.1. Experimental setup",
+      "heading_level": null,
+      "page_id": 12,
+      "polygon": [
+        [
+          35.76,
+          423.202
+        ],
+        [
+          125.15999999999998,
+          423.202
+        ],
+        [
+          125.15999999999998,
+          434.318
+        ],
+        [
+          35.76,
+          434.318
+        ]
+      ]
+    },
+    {
+      "title": "7.2.2. Timecost of key generation",
+      "heading_level": null,
+      "page_id": 12,
+      "polygon": [
+        [
+          35.76,
+          576.444
+        ],
+        [
+          151.38400000000001,
+          576.444
+        ],
+        [
+          151.38400000000001,
+          587.56
+        ],
+        [
+          35.76,
+          587.56
+        ]
+      ]
+    },
+    {
+      "title": "7.2.3. Consensus latency",
+      "heading_level": null,
+      "page_id": 12,
+      "polygon": [
+        [
+          302.76800000000003,
+          646.3159999999999
+        ],
+        [
+          391.572,
+          646.3159999999999
+        ],
+        [
+          391.572,
+          658.226
+        ],
+        [
+          302.76800000000003,
+          658.226
+        ]
+      ]
+    },
+    {
+      "title": "7.2.4. Comparison with classic blockchains",
+      "heading_level": null,
+      "page_id": 13,
+      "polygon": [
+        [
+          302.17199999999997,
+          597.8820000000001
+        ],
+        [
+          452.96000000000004,
+          597.8820000000001
+        ],
+        [
+          452.96000000000004,
+          608.9979999999999
+        ],
+        [
+          302.17199999999997,
+          608.9979999999999
+        ]
+      ]
+    },
+    {
+      "title": "8. Conclusion",
+      "heading_level": null,
+      "page_id": 14,
+      "polygon": [
+        [
+          37.64200019836426,
+          366.034
+        ],
+        [
+          95.956,
+          366.034
+        ],
+        [
+          95.956,
+          377.48709297180176
+        ],
+        [
+          37.64200019836426,
+          377.48709297180176
+        ]
+      ]
+    },
+    {
+      "title": "Declaration of competing interest",
+      "heading_level": null,
+      "page_id": 14,
+      "polygon": [
+        [
+          37.64200019836426,
+          689.1919999999999
+        ],
+        [
+          168.66799999999998,
+          689.1919999999999
+        ],
+        [
+          168.66799999999998,
+          701.5771045684814
+        ],
+        [
+          37.64200019836426,
+          701.5771045684814
+        ]
+      ]
+    },
+    {
+      "title": "Data availability",
+      "heading_level": null,
+      "page_id": 14,
+      "polygon": [
+        [
+          303.96,
+          50.815999999999995
+        ],
+        [
+          369.76901054382324,
+          50.815999999999995
+        ],
+        [
+          369.76901054382324,
+          63.42306709289551
+        ],
+        [
+          303.96,
+          63.42306709289551
+        ]
+      ]
+    },
+    {
+      "title": "Acknowledgments",
+      "heading_level": null,
+      "page_id": 14,
+      "polygon": [
+        [
+          303.96,
+          92.104
+        ],
+        [
+          376.23849296569824,
+          92.104
+        ],
+        [
+          376.23849296569824,
+          104.28305244445801
+        ],
+        [
+          303.96,
+          104.28305244445801
+        ]
+      ]
+    },
+    {
+      "title": "References",
+      "heading_level": null,
+      "page_id": 14,
+      "polygon": [
+        [
+          303.96,
+          144.50799999999998
+        ],
+        [
+          347.84020805358887,
+          144.50799999999998
+        ],
+        [
+          347.84020805358887,
+          155.583101272583
+        ],
+        [
+          303.96,
+          155.583101272583
+        ]
+      ]
+    }
+  ],
+  "page_stats": [
+    {
+      "page_id": 0,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          1354
+        ],
+        [
+          "Line",
+          72
+        ],
+        [
+          "Text",
+          10
+        ],
+        [
+          "SectionHeader",
+          5
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Footnote",
+          4
+        ],
+        [
+          "PageFooter",
+          4
+        ],
+        [
+          "Picture",
+          3
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 1,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          1904
+        ],
+        [
+          "Line",
+          110
+        ],
+        [
+          "Text",
+          8
+        ],
+        [
+          "ListItem",
+          3
+        ],
+        [
+          "PageHeader",
+          2
+        ],
+        [
+          "ListGroup",
+          2
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "Table",
+          1
+        ],
+        [
+          "SectionHeader",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "TableGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 2,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          26
+        ],
+        [
+          "SectionHeader",
+          12
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "ListGroup",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 3,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          14
+        ],
+        [
+          "SectionHeader",
+          10
+        ],
+        [
+          "ListGroup",
+          8
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Diagram",
+          2
+        ],
+        [
+          "Caption",
+          2
+        ],
+        [
+          "Equation",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 4,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          40
+        ],
+        [
+          "SectionHeader",
+          12
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Caption",
+          4
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "ListGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 5,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          24
+        ],
+        [
+          "Equation",
+          9
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "SectionHeader",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "ListGroup",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 6,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          14
+        ],
+        [
+          "SectionHeader",
+          6
+        ],
+        [
+          "ListGroup",
+          5
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Footnote",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 7,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          94
+        ],
+        [
+          "SectionHeader",
+          6
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 8,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          9
+        ],
+        [
+          "ListGroup",
+          6
+        ],
+        [
+          "SectionHeader",
+          6
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Diagram",
+          2
+        ],
+        [
+          "Caption",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 9,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          23
+        ],
+        [
+          "Equation",
+          7
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "ListGroup",
+          3
+        ],
+        [
+          "SectionHeader",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 10,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          34
+        ],
+        [
+          "Equation",
+          10
+        ],
+        [
+          "SectionHeader",
+          5
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "ListGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 11,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          1834
+        ],
+        [
+          "Line",
+          96
+        ],
+        [
+          "Text",
+          10
+        ],
+        [
+          "SectionHeader",
+          5
+        ],
+        [
+          "PageHeader",
+          2
+        ],
+        [
+          "Caption",
+          2
+        ],
+        [
+          "Diagram",
+          1
+        ],
+        [
+          "Table",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "TableGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 12,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Text",
+          18
+        ],
+        [
+          "SectionHeader",
+          8
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "Caption",
+          4
+        ],
+        [
+          "Table",
+          2
+        ],
+        [
+          "Figure",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "TableGroup",
+          1
+        ],
+        [
+          "FigureGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 13,
+      "text_extraction_method": "surya",
+      "block_counts": [
+        [
+          "Span",
+          817
+        ],
+        [
+          "Line",
+          44
+        ],
+        [
+          "Caption",
+          12
+        ],
+        [
+          "Figure",
+          8
+        ],
+        [
+          "Text",
+          8
+        ],
+        [
+          "Footnote",
+          6
+        ],
+        [
+          "PageHeader",
+          4
+        ],
+        [
+          "FigureGroup",
+          4
+        ],
+        [
+          "SectionHeader",
+          2
+        ],
+        [
+          "PageFooter",
+          2
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 14,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          2252
+        ],
+        [
+          "Line",
+          122
+        ],
+        [
+          "Text",
+          7
+        ],
+        [
+          "SectionHeader",
+          5
+        ],
+        [
+          "PageHeader",
+          2
+        ],
+        [
+          "Figure",
+          1
+        ],
+        [
+          "Caption",
+          1
+        ],
+        [
+          "ListGroup",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    },
+    {
+      "page_id": 15,
+      "text_extraction_method": "pdftext",
+      "block_counts": [
+        [
+          "Span",
+          1245
+        ],
+        [
+          "Line",
+          72
+        ],
+        [
+          "Picture",
+          4
+        ],
+        [
+          "Caption",
+          4
+        ],
+        [
+          "Text",
+          4
+        ],
+        [
+          "PageHeader",
+          2
+        ],
+        [
+          "ListItem",
+          2
+        ],
+        [
+          "ListGroup",
+          1
+        ],
+        [
+          "PageFooter",
+          1
+        ],
+        [
+          "PictureGroup",
+          1
+        ],
+        [
+          "Reference",
+          1
+        ]
+      ],
+      "block_metadata": {
+        "llm_request_count": 0,
+        "llm_error_count": 0,
+        "llm_tokens_used": 0,
+        "previous_text": "",
+        "previous_type": "",
+        "previous_order": 0
+      }
+    }
+  ],
+  "debug_data_path": "debug_data\\Ref[6]"
+}
