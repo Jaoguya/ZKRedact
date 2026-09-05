@@ -72,12 +72,25 @@ make test   # run full test suite
 All experiments read from the shared config (`config/experiment.yaml`).
 
 ```bash
-make experiments       # run all benchmarks
-make experiment-zkp-throughput   # sharded ZKP verification throughput
-make experiment-batch-latency    # batch redaction latency
-make experiment-audit            # provenance audit efficiency
-make experiment-e2e              # full pipeline under concurrent load
+make validate-config   # check config before running anything
+make pilot             # resolve sweep bounds by measurement
+make experiments       # run all three experiments
+
+make experiment-verification-throughput  # Exp 1 — sharding N is the variable
+make experiment-redaction-throughput     # Exp 2 — batching B_R is the variable
+make experiment-provenance-audit         # Exp 3 — targeted retrieval
+make experiment-e2e                      # full pipeline under concurrent load
 ```
+
+> [!NOTE]
+> Experiments are named after the operation **every** system performs, with
+> ZK-Redact's mechanism as the swept variable. Naming them after our own
+> mechanism (`zkp-throughput`, `batch-latency`) would exclude the baselines by
+> definition. See [`docs/experiments.md`](docs/experiments.md).
+
+Every experiment target depends on `validate-config`. Several config errors do
+not crash anything — they silently void the comparison — so validation is a
+prerequisite, not a habit.
 
 Results are written to `results/` (CSV + JSON) with plots in `results/plots/`.
 
@@ -85,12 +98,15 @@ Results are written to `results/` (CSV + JSON) with plots in `results/plots/`.
 
 ```
 VeRedact/
-├── ZK-Redact Scheme/     # Formal scheme specification (paper)
-├── cmd/                   # Component entrypoints
+├── Reference/             # Scheme specification + baseline papers
+├── docs/
+│   ├── experiments.md     # Experiment specification + fairness contract
+│   └── baselines/         # Per-baseline implementation specs
+├── cmd/                   # Component entrypoints (incl. validate-config)
 ├── pkg/                   # Shared libraries (proto, ch, zk, crypto, merkle)
 ├── internal/              # Component internals (gateway, pvl, redactor, pai)
+│   └── baselines/         # Re-implemented baselines (ref10, ref13, ref22)
 ├── network/               # Blockchain network config + chaincode
-
 ├── config/                # Shared experiment and scheme configurations
 ├── experiments/           # Experiment scripts
 ├── results/               # Output (generated)
@@ -98,6 +114,11 @@ VeRedact/
 ├── Makefile
 └── README.md
 ```
+
+Baselines are **re-implemented** on this shared harness rather than cited. The
+three reference papers use different languages, hardware, and platforms, so
+their published figures cannot share a table with ours — the fair-comparison
+rule above requires one environment for all systems.
 
 ## References
 
