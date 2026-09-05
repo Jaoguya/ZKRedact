@@ -178,7 +178,22 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	if err != nil {
 		return err
 	}
-	if s.transport, err = newTransport(transportName, gw); err != nil {
+
+	// The Fabric transport needs member ids mapped onto the identities cryptogen
+	// produced, before any session is opened. Built here so a mismatch fails at
+	// Setup with a message naming both counts, rather than at vote time as a
+	// missing file inside the SDK.
+	var ids *identityMap
+	if gw != nil {
+		memberIDs := make([]string, 0, len(p.Dataset.Identities))
+		for _, id := range p.Dataset.Identities {
+			memberIDs = append(memberIDs, id.ID)
+		}
+		if ids, err = buildIdentityMap(gw.CryptoPath, memberIDs); err != nil {
+			return err
+		}
+	}
+	if s.transport, err = newTransport(transportName, gw, ids); err != nil {
 		return err
 	}
 
@@ -196,6 +211,15 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 
 	// Fail now rather than per-request if the policy can never fill a committee.
 	if _, err = s.registry.selectCommittee(contractAddress("setup-probe"), s.attributePolicy, s.committeeSize); err != nil {
+		return err
+	}
+
+	// Publish N_all so the contract can compute N_auth itself. Not timed.
+	//
+	// Without it the contract holds no node set and every round fails at Init
+	// with "no nodes registered", which reads as a chaincode fault rather than
+	// a missing setup step. No-op for the in-process transport.
+	if err = registerNodes(ctx, s.transport, s.registry.nodes); err != nil {
 		return err
 	}
 

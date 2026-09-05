@@ -96,7 +96,7 @@ expect_reject() {
 
 round_json() {
   local addr="$1"
-  printf '{\\"contract_addr\\":\\"%s\\",\\"request_id\\":\\"%s\\",\\"target_tx_id\\":\\"tx-1\\",\\"requester_id\\":\\"id-golden\\",\\"cert\\":{\\"requester_known\\":true,\\"redactable\\":true,\\"satisfies\\":true,\\"attributes\\":\\"S OR R OR V\\"},\\"threshold\\":1}' "$addr" "$REQ_ID"
+  printf '{\\"contract_addr\\":\\"%s\\",\\"request_id\\":\\"%s\\",\\"target_tx_id\\":\\"tx-1\\",\\"requester_id\\":\\"id-golden\\",\\"cert\\":{\\"requester_known\\":true,\\"redactable\\":true,\\"satisfies\\":true,\\"attributes\\":\\"S OR R OR V\\"},\\"committee_size\\":1,\\"threshold\\":1}' "$addr" "$REQ_ID"
 }
 
 ballot_json() {

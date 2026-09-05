@@ -127,13 +127,13 @@ func TestGatewayRejectsNonMapping(t *testing.T) {
 // TestNewTransportRefusesFabricWithoutGateway pins the same guard one level up,
 // where Setup actually calls it.
 func TestNewTransportRefusesFabricWithoutGateway(t *testing.T) {
-	if _, err := newTransport(transportFabric, nil); err == nil {
+	if _, err := newTransport(transportFabric, nil, nil); err == nil {
 		t.Fatal("newTransport built a fabric transport with no gateway config")
 	}
 }
 
 func TestNewTransportUnknownName(t *testing.T) {
-	_, err := newTransport("grpc", nil)
+	_, err := newTransport("grpc", nil, nil)
 	if err == nil {
 		t.Fatal("an unknown transport name was accepted")
 	}
@@ -146,7 +146,7 @@ func TestNewTransportUnknownName(t *testing.T) {
 }
 
 func TestInProcessTransportStillBuilds(t *testing.T) {
-	tr, err := newTransport(transportInProcess, nil)
+	tr, err := newTransport(transportInProcess, nil, nil)
 	if err != nil {
 		t.Fatalf("newTransport: %v", err)
 	}

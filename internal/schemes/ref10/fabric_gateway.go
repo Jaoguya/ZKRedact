@@ -98,14 +98,22 @@ type gatewayFactory struct {
 	cfg  GatewayConfig
 	conn *grpc.ClientConn
 
-	mu   sync.Mutex
-	gws  map[string]*client.Gateway
+	// ids maps harness member names onto the Fabric identity directories
+	// cryptogen produced. Without it a lookup for "id-000000" fails deep in the
+	// SDK as a missing file on a path nobody configured.
+	ids *identityMap
+
+	mu  sync.Mutex
+	gws map[string]*client.Gateway
 }
 
 // newGatewayFactory dials the peer and prepares per-identity connections.
-func newGatewayFactory(cfg GatewayConfig) (*gatewayFactory, error) {
+func newGatewayFactory(cfg GatewayConfig, ids *identityMap) (*gatewayFactory, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	if ids == nil {
+		return nil, fmt.Errorf("ref10: gateway factory needs an identity map")
 	}
 
 	tlsCert, err := loadCertificate(cfg.TLSCertPath)
@@ -126,6 +134,7 @@ func newGatewayFactory(cfg GatewayConfig) (*gatewayFactory, error) {
 	return &gatewayFactory{
 		cfg:  cfg,
 		conn: conn,
+		ids:  ids,
 		gws:  make(map[string]*client.Gateway),
 	}, nil
 }
@@ -167,7 +176,11 @@ func (f *gatewayFactory) Session(memberID string) (chaincodeSession, error) {
 //	<CryptoPath>/users/<memberID>@<org>/msp/signcerts/*.pem
 //	<CryptoPath>/users/<memberID>@<org>/msp/keystore/*
 func (f *gatewayFactory) identityFor(memberID string) (*identity.X509Identity, identity.Sign, error) {
-	base := filepath.Join(f.cfg.CryptoPath, "users", memberID, "msp")
+	dir, err := f.ids.resolve(memberID)
+	if err != nil {
+		return nil, nil, err
+	}
+	base := filepath.Join(f.cfg.CryptoPath, "users", dir, "msp")
 
 	certPath, err := firstFileIn(filepath.Join(base, "signcerts"))
 	if err != nil {

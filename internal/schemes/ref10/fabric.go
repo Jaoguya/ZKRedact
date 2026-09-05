@@ -226,8 +226,9 @@ type chainRound struct {
 	TargetTxID   string          `json:"target_tx_id"`
 	RequesterID  string          `json:"requester_id"`
 	Cert         chainPolicyCert `json:"cert"`
-	Committee    []string        `json:"committee"`
-	Threshold    int             `json:"threshold"`
+	Committee     []string       `json:"committee"`
+	CommitteeSize int            `json:"committee_size"`
+	Threshold     int            `json:"threshold"`
 	Closed       bool            `json:"closed"`
 	Approved     bool            `json:"approved"`
 }
@@ -273,7 +274,8 @@ func encodeRound(r *voteRound) (string, error) {
 			PolicyVer:      r.Cert.PolicyVer,
 			Attributes:     r.Cert.Attributes,
 		},
-		Threshold: r.Threshold,
+		CommitteeSize: len(r.Members),
+		Threshold:     r.Threshold,
 	}
 	b, err := json.Marshal(cr)
 	if err != nil {

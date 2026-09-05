@@ -270,7 +270,7 @@ func (localTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, erro
 // a config asking for network-measured votes must not quietly get in-process
 // ones, because the resulting numbers would be a lower bound reported as a
 // measurement.
-func newTransport(name string, gw *GatewayConfig) (transport, error) {
+func newTransport(name string, gw *GatewayConfig, ids *identityMap) (transport, error) {
 	switch name {
 	case transportInProcess:
 		return localTransport{}, nil
@@ -279,7 +279,7 @@ func newTransport(name string, gw *GatewayConfig) (transport, error) {
 		if gw == nil {
 			return nil, ErrGatewayUnconfigured
 		}
-		factory, err := newGatewayFactory(*gw)
+		factory, err := newGatewayFactory(*gw, ids)
 		if err != nil {
 			return nil, err
 		}

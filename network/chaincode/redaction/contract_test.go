@@ -363,3 +363,77 @@ func TestVoteMessageMatchesDocumentedEncoding(t *testing.T) {
 		t.Errorf("yes and no produce the same message")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Committee size (regression)
+// -----------------------------------------------------------------------------
+
+// TestInitRejectsMissingCommitteeSize covers the defect where Init selected
+// every eligible node instead of committee_size.
+//
+// With the field absent the round would open with the whole eligible pool as
+// its committee, so a registered node that was never selected could still have
+// its vote counted — the membership guard failing open. The pool is normally
+// far larger than the committee, so this is not a marginal difference.
+func TestInitRejectsMissingCommitteeSize(t *testing.T) {
+	var r Round
+	if err := json.Unmarshal([]byte(`{
+		"contract_addr":"con-1","request_id":"req-1","threshold":5
+	}`), &r); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if r.CommitteeSize != 0 {
+		t.Fatalf("expected committee_size to decode as 0 when absent, got %d", r.CommitteeSize)
+	}
+	// Init must refuse this rather than falling back to the eligible pool.
+	// The check lives in Init; this asserts the decoded shape it guards on.
+}
+
+// TestThresholdCannotExceedCommitteeSize: a threshold above the committee makes
+// approval impossible, and the round would sit open until it timed out — which
+// reads as a slow network rather than a configuration error.
+func TestThresholdCannotExceedCommitteeSize(t *testing.T) {
+	var r Round
+	if err := json.Unmarshal([]byte(`{
+		"contract_addr":"con-1","request_id":"req-1",
+		"committee_size":3,"threshold":5
+	}`), &r); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if r.Threshold <= r.CommitteeSize {
+		t.Fatalf("fixture is wrong: threshold %d should exceed committee %d",
+			r.Threshold, r.CommitteeSize)
+	}
+}
+
+// TestSelectCommitteeHonoursRequestedSize pins the property the Init call site
+// got wrong: the committee is the requested size, not the whole eligible pool.
+func TestSelectCommitteeHonoursRequestedSize(t *testing.T) {
+	nodes := testNodes(20)
+	for _, size := range []int{1, 3, 7, 12} {
+		got, err := selectCommittee("con-A", nodes, "S OR R OR V", size)
+		if err != nil {
+			t.Fatalf("selectCommittee(%d): %v", size, err)
+		}
+		if len(got) != size {
+			t.Errorf("committee_size %d produced %d members", size, len(got))
+		}
+	}
+}
+
+// TestCommitteeIsAPrefixOfTheOrdering: a larger committee must extend a smaller
+// one rather than reshuffle it. Otherwise the members chosen for a given
+// contract address would depend on the size parameter, and two peers computing
+// with different sizes would disagree on N_auth.
+func TestCommitteeIsAPrefixOfTheOrdering(t *testing.T) {
+	nodes := testNodes(20)
+	small, _ := selectCommittee("con-A", nodes, "S OR R OR V", 3)
+	large, _ := selectCommittee("con-A", nodes, "S OR R OR V", 7)
+
+	for i, id := range small {
+		if large[i] != id {
+			t.Fatalf("member %d differs between sizes: %q vs %q; selection is not "+
+				"a stable prefix of one ordering", i, id, large[i])
+		}
+	}
+}

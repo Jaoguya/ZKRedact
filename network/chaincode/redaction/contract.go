@@ -83,6 +83,14 @@ type Round struct {
 	// Committee is N_auth, the output of RS_SHA256(addr, N_all, A_r).
 	Committee []string `json:"committee"`
 
+	// CommitteeSize is |N_auth|, from the fault assumption in config.
+	//
+	// Carried explicitly rather than inferred from the eligible pool: selecting
+	// every eligible node would let a registered node that was NOT selected have
+	// its vote counted, which is the membership guard failing open. The pool is
+	// usually much larger than the committee, so the difference is not marginal.
+	CommitteeSize int `json:"committee_size"`
+
 	// Threshold is the approvals required, from the fault assumption in config.
 	Threshold int `json:"threshold"`
 
@@ -205,6 +213,14 @@ func (s *SmartContract) Init(ctx contractapi.TransactionContextInterface, roundJ
 	if r.Threshold <= 0 {
 		return fmt.Errorf("redaction: threshold must be positive, got %d", r.Threshold)
 	}
+	if r.CommitteeSize <= 0 {
+		return fmt.Errorf("redaction: committee_size must be positive, got %d", r.CommitteeSize)
+	}
+	if r.Threshold > r.CommitteeSize {
+		return fmt.Errorf(
+			"redaction: threshold %d exceeds committee size %d; no redaction could be approved",
+			r.Threshold, r.CommitteeSize)
+	}
 
 	key := stateKey(keyRound, r.ContractAddr)
 	existing, err := ctx.GetStub().GetState(key)
@@ -223,14 +239,15 @@ func (s *SmartContract) Init(ctx contractapi.TransactionContextInterface, roundJ
 	// The committee is computed here, not accepted from the caller. A client
 	// choosing its own N_auth could stack the round with colluding members and
 	// the threshold would carry no meaning.
-	committee, err := selectCommittee(r.ContractAddr, all, r.Cert.Attributes, len(all))
+	committee, err := selectCommittee(r.ContractAddr, all, r.Cert.Attributes, r.CommitteeSize)
 	if err != nil {
 		return err
 	}
-	if r.Threshold > len(committee) {
+	if len(committee) < r.CommitteeSize {
 		return fmt.Errorf(
-			"redaction: threshold %d exceeds the %d eligible committee members",
-			r.Threshold, len(committee))
+			"redaction: only %d nodes satisfy the policy but committee_size is %d; "+
+				"a silently shrunken committee would weaken the threshold",
+			len(committee), r.CommitteeSize)
 	}
 	r.Committee = committee
 	r.Closed = false
