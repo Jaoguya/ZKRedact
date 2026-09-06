@@ -7,11 +7,24 @@
 // membership witnesses cannot make that statement, and the paper's central
 // security claim — that a reverted block is detectable — would be unenforceable.
 //
-// TRAPDOORLESS means no party knows the factorisation of the modulus. With the
-// factorisation, phi(N) is known and an element can be removed (or a witness
-// forged) without the prime-order work the security argument depends on. The
-// modulus must therefore come from a source where nobody holds the factors; see
-// FromRSAModulus and the note on GenerateUntrusted.
+// TRAPDOORLESS describes what VERIFIERS must trust: the group has unknown order
+// to them, no trusted setup is needed to check a witness, and soundness does not
+// rest on anyone's ignorance of the factors.
+//
+// It does NOT mean nobody holds phi(N). Ref[22] gives it to the regulator, and
+// says so directly — §II-C closes with "since the deletion algorithm is costy
+// without the knowledge of group order, it is executed by the regulator with the
+// RSA group order in the proposed blockchain" — and Algorithms 5 and 7 both take
+// phi(N) as an input. That regulator already holds the double-trapdoor chameleon
+// hash key, so it is the redaction authority by construction and the group order
+// adds no trust assumption.
+//
+// This distinction is a cost, not a footnote. Deleting without phi(N) means
+// rebuilding the state from the generator over every surviving element: measured
+// at RSA-3072, one deletion costs 34ms at n=50, 69ms at n=100 and 139ms at
+// n=200, against a flat 8.4ms with the group order. Delete is timed as
+// CryptoTime and carries Ref[22]'s headline Exp 2 curve, so the difference is
+// the measurement. See Config.GroupOrder.
 //
 // WHY NOT A HASH SET. A set of hashes supports membership trivially and is far
 // faster, and Exp 2 reports CryptoTime as a headline metric — so substituting
@@ -43,6 +56,9 @@ type Accumulator struct {
 	// witnesses can be regenerated. The accumulator itself is the commitment;
 	// this is bookkeeping the accumulator OWNER keeps, not part of the state a
 	// verifier trusts.
+	// phi is phi(N), when the regulator holds it. See Config.GroupOrder.
+	phi *big.Int
+
 	elements map[string]*big.Int
 
 	// nonces records the counter that produced each element's prime, so a
@@ -62,6 +78,29 @@ type Config struct {
 	// Modulus, when set, is used directly. This is the trapdoorless path: a
 	// modulus nobody generated privately.
 	Modulus *big.Int
+
+	// GroupOrder is phi(N), held by the REGULATOR so deletion is one
+	// exponentiation instead of a full rebuild.
+	//
+	// This is not a shortcut, it is what Ref[22] specifies. §II-C closes with:
+	// "since the deletion algorithm is costy without the knowledge of group
+	// order, it is executed by the regulator with the RSA group order in the
+	// proposed blockchain." The UA.Del written in that same section — recompute
+	// x* over every surviving element and raise h to it — is the version the
+	// paper explicitly says it does NOT use.
+	//
+	// It adds no trust assumption. The regulator performing Modify and Delete
+	// already holds the double-trapdoor chameleon hash key; it is the redaction
+	// authority by construction. "Trapdoorless" describes the accumulator as a
+	// construction class: VERIFIERS need no trusted setup and soundness does not
+	// rest on anyone's ignorance of the factors. Algorithms 5 and 7 both take
+	// phi(N) as an input for exactly this reason.
+	//
+	// Optional. Left nil, Delete falls back to the rebuild, which is correct but
+	// O(n) in the accumulated set — and Delete is the operation Exp 2 reports as
+	// Ref[22]'s headline cost, so the fallback inflates that curve by a factor
+	// of n.
+	GroupOrder *big.Int
 }
 
 // New builds an accumulator over the configured modulus.
@@ -90,11 +129,19 @@ func New(cfg Config) (*Accumulator, error) {
 	return &Accumulator{
 		n:        n,
 		g:        g,
+		phi:      cfg.GroupOrder,
 		state:    new(big.Int).Set(g),
 		elements: make(map[string]*big.Int),
 		nonces:   make(map[string]uint64),
 	}, nil
 }
+
+// HasGroupOrder reports whether deletion can use the regulator's trapdoor.
+//
+// Exposed so a run can RECORD which path it took. The two produce identical
+// state but differ by a factor of n in cost, and Exp 2 measures that cost —
+// so a results file that cannot say which one ran is not reproducible.
+func (a *Accumulator) HasGroupOrder() bool { return a.phi != nil }
 
 // State returns the current accumulator value A.
 func (a *Accumulator) State() *big.Int { return new(big.Int).Set(a.state) }
@@ -139,9 +186,11 @@ func (a *Accumulator) Add(x []byte) (*big.Int, error) {
 // the baseline dramatically cheaper while leaving a reverted block accepted.
 func (a *Accumulator) Delete(x []byte) error {
 	key := string(x)
-	if _, ok := a.elements[key]; !ok {
+	removed, ok := a.elements[key]
+	if !ok {
 		return fmt.Errorf("accumulator: element is not accumulated")
 	}
+	removed = new(big.Int).Set(removed)
 
 	delete(a.elements, key)
 	delete(a.nonces, key)
@@ -150,6 +199,31 @@ func (a *Accumulator) Delete(x []byte) error {
 			a.order = append(a.order[:i], a.order[i+1:]...)
 			break
 		}
+	}
+
+	return a.recomputeAfterDelete(removed)
+}
+
+// recomputeAfterDelete restores A to g^{prod of surviving primes}.
+//
+// With phi(N) that is one exponentiation: dividing the exponent by the removed
+// prime is multiplying by its inverse mod phi(N), since g^phi = 1. Without it,
+// the exponent is not invertible and the only route is to rebuild from the
+// generator, which is O(n) exponentiations.
+func (a *Accumulator) recomputeAfterDelete(removed *big.Int) error {
+	if a.phi != nil {
+		inv := new(big.Int).ModInverse(removed, a.phi)
+		if inv != nil {
+			a.state.Exp(a.state, inv, a.n)
+			return nil
+		}
+		// gcd(e, phi(N)) != 1, so the prime divides p-1 or q-1. Astronomically
+		// unlikely, and falling back is correct rather than fatal — but it must
+		// not pass unnoticed, because the cost profile silently changes.
+		return fmt.Errorf(
+			"accumulator: prime representative is not invertible mod phi(N); " +
+				"deletion would silently fall back to the O(n) rebuild and change " +
+				"the cost Exp 2 measures")
 	}
 
 	a.state.Set(a.g)
@@ -307,25 +381,46 @@ func (a *Accumulator) Generator() *big.Int { return new(big.Int).Set(a.g) }
 
 // GenerateUntrusted produces a modulus for testing and for the harness.
 //
-// IT IS NOT TRAPDOORLESS. Whoever calls it briefly knows the factors. A real
-// deployment uses an RSA UFO or a multi-party ceremony so nobody does.
+// Whoever calls it knows the factors. A real deployment derives N from an RSA
+// UFO or a multi-party ceremony, and the regulator's phi(N) would come from that
+// ceremony rather than from here.
 //
-// It is acceptable here for one reason and it is worth being explicit about:
-// the evaluation measures COST, and the cost of every accumulator operation
-// depends on the modulus size, not on who knows its factors. The security
-// argument would not survive this shortcut; the timing measurement is unchanged
-// by it. Recorded as a deviation in docs/baselines/ref22-shen.md.
+// This is acceptable for the evaluation because it measures COST, and cost
+// depends on the modulus size rather than on who knows the factors — with ONE
+// exception that an earlier version of this comment got wrong. Deletion is
+// exactly the operation whose cost turns on knowing phi(N), which is why
+// Ref[22] hands it to the regulator. Use GenerateUntrustedWithOrder for the
+// regulator's side; this function discards phi(N) and leaves Delete on the O(n)
+// rebuild. Recorded as a deviation in docs/baselines/ref22-shen.md.
 func GenerateUntrusted(bits int) (*big.Int, error) {
+	n, _, err := GenerateUntrustedWithOrder(bits)
+	return n, err
+}
+
+// GenerateUntrustedWithOrder returns the modulus AND phi(N).
+//
+// The regulator needs phi(N) to delete in one exponentiation, which is what
+// Ref[22] §II-C specifies. GenerateUntrusted discards it, and a caller that
+// takes that path gets the O(n) rebuild — correct, but not this scheme's cost.
+//
+// Same caveat as GenerateUntrusted about who knows the factors: a real
+// deployment derives N from an RSA UFO or a multi-party ceremony, and the
+// regulator's phi(N) would come from that ceremony rather than from here.
+func GenerateUntrustedWithOrder(bits int) (n, phi *big.Int, err error) {
 	if bits < 2 {
-		return nil, fmt.Errorf("accumulator: modulus must be at least 2 bits, got %d", bits)
+		return nil, nil, fmt.Errorf("accumulator: modulus must be at least 2 bits, got %d", bits)
 	}
 	p, err := rand.Prime(rand.Reader, bits/2)
 	if err != nil {
-		return nil, fmt.Errorf("accumulator: generate p: %w", err)
+		return nil, nil, fmt.Errorf("accumulator: generate p: %w", err)
 	}
 	q, err := rand.Prime(rand.Reader, bits-bits/2)
 	if err != nil {
-		return nil, fmt.Errorf("accumulator: generate q: %w", err)
+		return nil, nil, fmt.Errorf("accumulator: generate q: %w", err)
 	}
-	return new(big.Int).Mul(p, q), nil
+	n = new(big.Int).Mul(p, q)
+	phi = new(big.Int).Mul(
+		new(big.Int).Sub(p, big.NewInt(1)),
+		new(big.Int).Sub(q, big.NewInt(1)))
+	return n, phi, nil
 }

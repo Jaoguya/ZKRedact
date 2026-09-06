@@ -28,15 +28,35 @@ func (s *Scheme) build(p scheme.SetupParams) error {
 		return fmt.Errorf("ref22: chameleon hash key generation: %w", err)
 	}
 
-	modulus, err := accumulator.GenerateUntrusted(s.accumulatorBits)
+	// The regulator holds phi(N), which is what Ref[22] specifies: §II-C states
+	// that "since the deletion algorithm is costy without the knowledge of group
+	// order, it is executed by the regulator with the RSA group order". Both
+	// Modify (Algorithm 5) and Delete (Algorithm 7) take phi(N) as an input.
+	//
+	// No new trust is introduced. This scheme's regulator already holds the
+	// double-trapdoor chameleon hash key above — it IS the redaction authority.
+	// "Trapdoorless" constrains what VERIFIERS must trust, and they still need
+	// nothing beyond N.
+	//
+	// Without it, Delete rebuilds the accumulator from the generator over every
+	// surviving element: O(n) exponentiations rather than one. Delete is timed as
+	// CryptoTime and is Ref[22]'s headline Exp 2 curve, so the fallback would
+	// inflate that curve by a factor of n and make this baseline look far worse
+	// than its design.
+	modulus, groupOrder, err := accumulator.GenerateUntrustedWithOrder(s.accumulatorBits)
 	if err != nil {
 		return err
 	}
 	acc, err := accumulator.New(accumulator.Config{
-		Bits: s.accumulatorBits, Modulus: modulus,
+		Bits: s.accumulatorBits, Modulus: modulus, GroupOrder: groupOrder,
 	})
 	if err != nil {
 		return err
+	}
+	if !acc.HasGroupOrder() {
+		return fmt.Errorf(
+			"ref22: accumulator was built without the regulator's group order; " +
+				"Delete would fall back to the O(n) rebuild that §II-C says this scheme does not use")
 	}
 
 	s.curve = curve

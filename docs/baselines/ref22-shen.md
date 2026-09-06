@@ -157,7 +157,7 @@ All from `config/experiment.yaml`. **None hardcoded.**
 |---|---|
 | `Insert` (Algorithms 3, 4) | Block insertion is this paper's distinctive contribution but has no counterpart in ZK-Redact, Ref[10], or Ref[13]. Nothing to compare it against. |
 | Bitcoin-specific PoW mechanics | Our setting is permissioned. See deviation below. |
-| Non-interactive succinct proofs (§II-B) | Used in their security argument, not in the measured execution path. |
+| Non-interactive succinct proofs (§II-B) | ⚠️ **This justification is wrong and the omission is still open.** NI-PoE and NI-PoKE are on the measured path: Algorithm 7 builds four of them inside `Delete` (lines 17, 19, 22, 23) and Algorithm 8's entire return value is their verification. `UA.MWit` and `UA.N-MWit` also return proofs rather than bare witnesses. Omitting them makes `Delete` cheaper than the paper specifies, on the metric Exp 2 reports for this baseline. Tracked as a known gap. |
 | Comparison against AMVA17 / Bitcoin | Their internal baselines, not ours. |
 
 > **`Insert` is omitted for scope, not convenience.** It is a genuine capability the
@@ -175,6 +175,8 @@ All from `config/experiment.yaml`. **None hardcoded.**
 | Fabric instead of Bitcoin | One shared environment | Absolute numbers differ; relative comparison valid |
 | Go instead of Python 3.8 | Project toolchain | **Favours Ref[22]** — likely faster than published |
 | Their hardware was a 2 GB VM | We use the shared environment for all systems | Not comparable to published figures |
+| The modulus is generated locally, so its factors are briefly known | A real deployment uses an RSA UFO or a multi-party ceremony. Cost depends on modulus size, not on who knows the factors — **except for deletion**, which is why the regulator is given `phi(N)` (see below) | Neutral on cost; the security argument does not survive this shortcut and no security claim is made from it |
+| The regulator holds `phi(N)` and deletes in one exponentiation | **Not a deviation — this is what the paper specifies.** §II-C: *"since the deletion algorithm is costy without the knowledge of group order, it is executed by the regulator with the RSA group order in the proposed blockchain"*, and Algorithms 5 and 7 both take `phi(N)` as an input. The regulator already holds the double-trapdoor CH key, so it is the redaction authority by construction | Recorded because an earlier implementation rebuilt the accumulator instead, at O(n) exponentiations. Measured at RSA-3072: 34 ms at n=50, 69 ms at n=100, 139 ms at n=200, against a flat 8.4 ms with the group order — so the rebuild **inflated Ref[22]'s Exp 2 curve by ~83x at 1,000 blocks and ~830x at 10,000** |
 
 > This baseline has the largest gap between its published setup and ours: they
 > disabled PoW, excluded communication, and ran Python on a 2 GB virtual machine.
