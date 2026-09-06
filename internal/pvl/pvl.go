@@ -291,3 +291,19 @@ func (p *PVL) ShardCount() int {
 	defer p.mu.Unlock()
 	return p.cfg.ShardCount
 }
+
+// SetNativeBatchVerify switches between per-record and aggregated batch
+// verification between Exp 1 sweep points.
+func (p *PVL) SetNativeBatchVerify(native bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg.NativeBatchVerify = native
+	return nil
+}
+
+// NativeBatchVerify reports the current setting.
+func (p *PVL) NativeBatchVerify() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.NativeBatchVerify
+}

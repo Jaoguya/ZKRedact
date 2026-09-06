@@ -293,6 +293,7 @@ func runExp1(
 		ConcurrencyLevels: e.ConcurrencyLevels,
 		Repetitions:       reps,
 		ShardCounts:       cfg.ZKRedact.Sharding.Counts,
+		NativeBatchVerify: cfg.ZKRedact.ProofBatch.NativeBatchVerify,
 		Ablations:         ablations,
 	}, systems, trace)
 	if err != nil {

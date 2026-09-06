@@ -414,3 +414,32 @@ func traceAnchor(trace []*scheme.Request) time.Time {
 	}
 	return newest
 }
+
+// SetNativeBatchVerify switches the PVL between per-record and batch
+// verification.
+//
+// Implements scheme.BatchVerifierTuner. Like Reshard, this is runtime
+// reconfiguration: the circuit and keys are untouched, so an Exp 1 sweep point
+// costs new goroutines rather than a trusted setup.
+func (s *Scheme) SetNativeBatchVerify(native bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return fmt.Errorf("zkredact: SetNativeBatchVerify before Setup")
+	}
+	s.nativeBatchVerify = native
+
+	if s.pvlSvc != nil {
+		s.pvlSvc.Stop()
+	}
+	if err := s.pvl.SetNativeBatchVerify(native); err != nil {
+		return err
+	}
+	svc, err := pvl.NewService(s.pvl, s.queueDepth)
+	if err != nil {
+		return err
+	}
+	svc.Start()
+	s.pvlSvc = svc
+	return nil
+}

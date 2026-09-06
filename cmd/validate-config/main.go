@@ -33,6 +33,7 @@ import (
 
 	"zkredact/pkg/config"
 	"zkredact/pkg/crypto"
+	"zkredact/pkg/zk"
 )
 
 // -----------------------------------------------------------------------------
@@ -335,6 +336,21 @@ func checkBatching(c *config.Config, r *report) {
 		r.errf("zkredact.proof_batch.native_batch_verify",
 			"must contain both false and true",
 			"Phase 3 claims sharding gives parallelism independently of native batch verification; one setting cannot test that")
+	}
+
+	// Two arms that run the same code are not a comparison.
+	//
+	// zk.BatchVerify is currently a loop over single verifications, so
+	// native_batch_verify true and false take an identical path. The sweep still
+	// produces two sets of numbers, they are simply the same measurement twice —
+	// and a plot would show them as a result about batch verification. Groth16
+	// batching is real (n+2 pairings against 3n; see zk.BatchVerify), it is just
+	// not implemented, so this is a WARN rather than an error.
+	if !zk.NativeBatchVerify && contains2(pb.NativeBatchVerify, true) {
+		r.warnf("zkredact.proof_batch.native_batch_verify",
+			"true is configured but the backend implements no native batch verification",
+			"both arms take the same code path, so the ablation distinguishes nothing; "+
+				"implement zk.BatchVerify's aggregated form or drop the true arm before plotting it as a comparison")
 	}
 
 	// Verification batching that outlives a block interval stops measuring
@@ -685,4 +701,14 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\nConfig is valid.")
+}
+
+// contains2 reports whether a bool slice holds v.
+func contains2(xs []bool, v bool) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

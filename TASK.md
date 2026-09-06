@@ -6,7 +6,7 @@ re-implemented baselines on one shared Hyperledger Fabric harness.
 **Branch:** `main`
 **Code:** ~20,400 lines Go across 66 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **190 tests (321 with subtests) passing**, `make validate-config`
+gofmt-clean, **196 tests (328 with subtests) passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
@@ -80,7 +80,7 @@ something pass.** If a guard fires, it is telling you something true.
 source ~/.bashrc
 
 make build                      # compiles clean
-make test                       # gofmt + vet + 190 tests
+make test                       # gofmt + vet + 196 tests
 make validate-config            # passes; one expected WARN, see below
 make build-zk                   # compiles the circuit, checks it against the config
 ```
@@ -490,6 +490,75 @@ auth/sec. Two things in that table are the actual mechanism working:
   a batch, so they close on the wait bound instead. That trade-off is a result,
   not a defect.
 
+#### Phase 3's ablation grid, measured
+
+Two verification paths, both real: **per-record** verifies each proof on its
+own; **batch** runs the aggregated Groth16 pairing check in `pkg/zk/batch.go`.
+256 requests, 139 granted / 117 denied in every cell:
+
+| shards | mode | conc 1 | conc 64 | p50 at 64 |
+|---|---|---|---|---|
+| 1 | per-record | 147.5 | 1354.3 | 41.35 ms |
+| 1 | batch | 149.0 | **2109.0** | 26.20 ms |
+| 8 | per-record | 148.4 | 3064.9 | 19.63 ms |
+| 8 | batch | 148.7 | **3983.7** | 15.39 ms |
+
+Against the unsharded per-record floor:
+
+| | speedup |
+|---|---|
+| batching alone | 1.56x |
+| sharding alone | 2.26x |
+| combined | **2.94x** |
+| product, if the two were independent | 3.52x |
+
+> **They are not fully independent, and that is a result worth stating.** Phase 3
+> claims sharding gives parallelism INDEPENDENTLY of batch-verification support.
+> The grid shows both mechanisms working alone — so the claim's substance holds —
+> but combined they deliver 2.94x against the 3.52x perfect independence would
+> predict. Spreading a fixed arrival rate across more shards leaves each shard
+> with fewer proofs per batch, so sharding erodes some of batching's own gain.
+> Reporting 2.94x as if the mechanisms simply composed would overstate the
+> design.
+
+At concurrency 1 all four cells sit at ~148: nothing to shard, nothing to batch.
+That flat row is the control.
+
+#### The batch path is real cryptography, and here is how that was checked
+
+"n+3 pairings instead of 3n" is a claim about what the code does, so it was
+verified rather than asserted. Three pieces of evidence:
+
+**1. The pairings are counted, not calculated.**
+`TestBatchReallyDoesNPlus3Pairings` reads the slices actually handed to
+gnark-crypto's `PairingCheck`:
+
+| n | pairs paired | per-record would be |
+|---|---|---|
+| 2 | 5 | 6 |
+| 4 | 7 | 12 |
+| 8 | 11 | 24 |
+| 16 | 19 | 48 |
+
+**2. Stubbing the aggregation breaks the suite.** Replacing the pairing check
+with `return true` — a literal simulation — makes
+`TestBatchRejectsATamperedProof` and `TestBatchIsolatesTheFailure` fail
+immediately. If the speedup were a simulated number, removing the cryptography
+would change nothing. Mutation reverted; the file diffs clean.
+
+**3. The measured gain is WORSE than theory, which is the honest signature.**
+Predicted ~2.7x at n=32, measured **1.65x**. The gap is real overhead a
+paper-arithmetic figure would not have: n scalar multiplications on G1 for
+`r_i * Ar_i`, plus two multi-exponentiations. A fabricated number would have
+matched the theory.
+
+> **The risk here is not the pairing count — it is the two paths checking
+> different things.** gnark performs subgroup validation inside single `Verify`;
+> a batch that skipped it would accept small-order points the per-record path
+> rejects, and "batch is faster" would really mean "batch checks less".
+> `batchVerifyAggregated` does its own `IsInSubGroup` on `Ar`, `Bs` and `Krs`
+> for exactly this reason.
+
 #### Four things that had to be got right
 
 **1. Proving is the requester's work and is NOT timed.** Groth16 proving
@@ -543,6 +612,26 @@ without mutating the trace every scheme shares.
   derivation.
 - **`Reshard` avoids recompilation.** The circuit does not depend on N, so a
   sweep point costs new goroutines, not a trusted setup.
+
+### 5.5 Two loose ends from the Phase 3 work
+
+Neither breaks anything; both are the kind of thing that reads as a promise if
+left alone.
+
+**1. `experiments.verification_throughput.ablations` is still dead config.**
+The 4-cell grid it lists is now genuinely measured — the shard sweep covers
+sharding on/off and the batch sweep covers batching on/off — but `cfg.Ablations`
+itself is read by nothing except `validate-config`, which only checks that four
+cells are present. The numbers exist; the list that describes them does not
+produce them. **Either wire it as the literal driver of the sweep, or delete it**
+so it stops looking like the thing generating the grid.
+
+**2. `pkg/zk/batch.go` carries test-only state.** `lastG1`/`lastG2` retain the
+most recent `PairingCheck` inputs so `TestBatchReallyDoesNPlus3Pairings` can
+count them. They are written on every batch in a measured run and read only by
+tests. Harmless today, but production code holding test scaffolding is how a
+measured path grows something nobody intended. Better returned from the
+aggregation than stored in a package var.
 
 ### 6. Ref[22] Shen ✅ done
 
@@ -735,7 +824,7 @@ Three cautions before setting `meta.repetitions` from this:
 
 ### Code breaks where it has never run
 
-**Twenty-seven defects so far.** Every one sat on a path that compiled, passed
+**Twenty-nine defects so far.** Every one sat on a path that compiled, passed
 the tests around it, and had never actually executed — and every one failed by
 pointing somewhere other than its cause:
 
@@ -768,6 +857,8 @@ pointing somewhere other than its cause:
 | Ref[22] blocks linked by SHA-256 of content, not by the chameleon hash | the chain breaking at the block after every redaction, defeating the point of a chameleon hash |
 | Ref[22] block never stored its chameleon hash; `A`/`w` refreshed inside CH-covered content | the chain ceasing to verify after each append |
 | `HashToPrime` searched ~177 candidates on every verification | four minutes to build a chain; unbuildable at Exp 3's ledger sizes |
+| Exp 1's ablation grid declared, plumbed, and never read | `Point.Ablation` always nil; the sharding-vs-batching claim went unmeasured while the config said it was required |
+| `zk.BatchVerify` was a loop, justified by a comment saying Groth16 cannot batch | `native_batch_verify` true and false ran identical code, so the ablation was the same measurement twice |
 
 The lesson is procedural, not technical: **write the test that runs the path,
 and run it twice.** Several of these were found only by running something a
@@ -828,6 +919,9 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Scheme **claiming `PolicyBound`** granting every request → fail | `exp1` | a stub that always approves, which benchmarks beautifully. Capability-gated: Ref[13] and Ref[22] declare no policy evaluation, so granting everything is their honest outcome |
 | Scheme denying every request, granting none → fail | `exp1` | rejection is the cheapest path, so an all-denying scheme posts the best numbers in the study |
 | Unprepared request → `Authorize` fails | `zkredact` | the requester's ~160 ms proving cost silently re-entering the ~1.3 ms measured path |
+| `native_batch_verify: true` with no native batch verification → validator WARN | `validate-config` | two ablation arms running identical code and being plotted as a comparison |
+| Batch verification randomness is verifier-chosen per batch | `pkg/zk` | two proofs whose errors cancel in the product, so a batch of invalid proofs passes |
+| A failed batch falls back to per-proof verification | `pkg/zk` | one bad proof failing a whole shard's honest requests |
 | Non-sharding scheme swept over shard counts → not swept | `exp1` | fabricating a shard curve for a system with no shards |
 | `CryptoTime == 0` with successful redactions → fail | `exp2` | cost decomposition not instrumented |
 | Claims `LedgerIndependentAudit` but traverses the ledger → fail | `exp3` | a scheme contradicting its own capability declaration |

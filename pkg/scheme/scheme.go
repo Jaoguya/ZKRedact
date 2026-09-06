@@ -157,6 +157,21 @@ type Resharder interface {
 	Reshard(shardCount int) error
 }
 
+// BatchVerifierTuner is an OPTIONAL interface for a scheme whose proof
+// verification can run per-record or as a batch.
+//
+// Exp 1's ablation grid needs both arms measured: the manuscript's Phase 3
+// claims sharding gives parallelism INDEPENDENTLY of native batch-verification
+// support, and one setting cannot test that. A scheme without two distinct
+// paths does not implement this and is measured once.
+//
+// The arms must do genuinely different work. Two settings that reach the same
+// code produce two sets of numbers that are the same measurement twice — and a
+// plot would present them as a comparison.
+type BatchVerifierTuner interface {
+	SetNativeBatchVerify(native bool) error
+}
+
 // TracePreparer is an OPTIONAL interface for per-replay work that is not part
 // of what an experiment measures.
 //

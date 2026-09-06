@@ -162,19 +162,69 @@ func Verify(p *Params, pr *Proof) error {
 	return nil
 }
 
+// NativeBatchVerify reports whether this package implements the proof system's
+// own batch verification.
+//
+// TRUE: batch.go implements the aggregated pairing check. The two
+// zkredact.proof_batch.native_batch_verify arms therefore run genuinely
+// different code — per-record verification against aggregated batch
+// verification — which is what makes that ablation a comparison rather than the
+// same measurement twice.
+const NativeBatchVerify = true
+
 // BatchVerify verifies a batch and reports each result INDEPENDENTLY.
 //
-// Groth16 has no sublinear batch verification for proofs over distinct public
-// inputs, which is what a batch of authorizations is. Reporting a per-proof
-// result rather than one aggregate verdict is deliberate: Phase 3 Step 4
-// requires failure isolation, and an aggregate pass/fail would force the
-// recursive bisection the manuscript describes as the fallback.
+// WHAT GROTH16 CAN DO, stated accurately because the earlier comment here got
+// it wrong. Verification is
 //
-// It exists so the sharding claim can be measured against a real batching path.
-// It must never be reimplemented as a single aggregate check that returns early
-// on the first failure: that would make a batch of invalid proofs look fast.
+//	e(A, B) = e(alpha, beta) * e(L, gamma) * e(C, delta)
+//
+// with e(alpha, beta) precomputed in the verifying key, so one proof costs
+// three pairings. Batching n proofs with random scalars r_i gives
+//
+//	PROD_i e(A_i, B_i)^{r_i}
+//	    = e(alpha,beta)^{SUM r_i} * e(SUM r_i L_i, gamma) * e(SUM r_i C_i, delta)
+//
+// Only e(A_i, B_i) stays per-proof, because both arguments vary; gamma and
+// delta are fixed, so those two pairings aggregate across the whole batch. That
+// is n+2 pairings instead of 3n — roughly a 3x constant-factor saving, and it
+// holds for DISTINCT public inputs, which is what a batch of authorizations is.
+//
+// It is NOT sublinear, and that was the only correct part of what this comment
+// used to say. It was the wrong reason to leave batching unimplemented.
+//
+// gnark 0.16.3 exposes no batch-verification API, so the aggregation is written
+// against gnark-crypto's BLS12-381 primitives directly; see batch.go.
+//
+// FAILURE ISOLATION IS PRESERVED, which Phase 3 Step 4 requires. The aggregated
+// check yields one verdict for the whole batch, so a failure falls back to
+// per-proof verification to find the offender. The manuscript describes
+// recursive bisection as the fallback; a full re-verify is the simpler form of
+// the same thing and costs 3n on top of the n+3 already spent.
+//
+// THE COST ASYMMETRY IS REAL AND MUST NOT BE HIDDEN. An all-valid batch costs
+// n+3 pairings; a batch with one bad proof costs n+3 THEN 3n. That is the
+// honest price of isolation. It must never be "optimised" by returning a single
+// verdict or by exiting on the first failure — either would make a batch of
+// invalid proofs the fastest path through the system.
 func BatchVerify(p *Params, proofs []*Proof) []error {
 	out := make([]error, len(proofs))
+
+	// One proof is not a batch: aggregation would add two pairings for nothing.
+	if len(proofs) < 2 {
+		for i, pr := range proofs {
+			out[i] = Verify(p, pr)
+		}
+		return out
+	}
+
+	ok, err := batchVerifyAggregated(p, proofs)
+	if err == nil && ok {
+		return out // every entry nil: the whole batch verified
+	}
+
+	// Either the batch failed or aggregation could not be applied. Fall back to
+	// per-proof verification, which is what says WHICH proof is bad.
 	for i, pr := range proofs {
 		out[i] = Verify(p, pr)
 	}

@@ -42,6 +42,11 @@ type Config struct {
 	// level, since they have no equivalent knob.
 	ShardCounts []int
 
+	// NativeBatchVerify enumerates the verification modes to measure:
+	// false is per-record, true is batch. Applies only to a scheme that has
+	// both paths.
+	NativeBatchVerify []bool
+
 	// Ablations enumerate the sharding/batching combinations required to test
 	// the Phase 3 independence claim.
 	Ablations []Ablation
@@ -133,6 +138,16 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 			shardCounts = cfg.ShardCounts
 		}
 
+		// The batching arm of the ablation grid. A scheme with only one
+		// verification path is measured once; one with both is measured as
+		// per-record AND as batch, which is what makes the Phase 3
+		// independence claim testable rather than asserted.
+		batchModes := []bool{false} // false = per-record
+		tuner, tunable := s.(scheme.BatchVerifierTuner)
+		if tunable && len(cfg.NativeBatchVerify) > 0 {
+			batchModes = cfg.NativeBatchVerify
+		}
+
 		for _, shards := range shardCounts {
 			if sharded && shards > 0 {
 				if err := resharder.Reshard(shards); err != nil {
@@ -140,34 +155,49 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 				}
 			}
 
-			for _, conc := range cfg.ConcurrencyLevels {
-				for rep := 0; rep < cfg.Repetitions; rep++ {
-					replay := replayTrace(trace, conc, rep)
+			for _, native := range batchModes {
+				if tunable {
+					if err := tuner.SetNativeBatchVerify(native); err != nil {
+						return nil, fmt.Errorf("exp1: %s set batch mode %v: %w", s.Name(), native, err)
+					}
+				}
 
-					// Requester-side work and per-replay state resets happen
-					// here, OUTSIDE the timed region. For ZK-Redact that is
-					// proof generation, which costs an order of magnitude more
-					// than the verification Exp 1 measures.
-					if prep, ok := s.(scheme.TracePreparer); ok {
-						if err := prep.PrepareTrace(ctx, replay); err != nil {
-							return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+				for _, conc := range cfg.ConcurrencyLevels {
+					for rep := 0; rep < cfg.Repetitions; rep++ {
+						replay := replayTrace(trace, conc, rep)
+
+						// Requester-side work and per-replay state resets happen
+						// here, OUTSIDE the timed region. For ZK-Redact that is
+						// proof generation, which costs an order of magnitude more
+						// than the verification Exp 1 measures.
+						if prep, ok := s.(scheme.TracePreparer); ok {
+							if err := prep.PrepareTrace(ctx, replay); err != nil {
+								return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+							}
 						}
-					}
 
-					p, err := runOne(ctx, s, replay, conc)
-					if err != nil {
-						return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
-					}
-					p.Repetition = rep
-					p.ShardCount = shards
+						p, err := runOne(ctx, s, replay, conc)
+						if err != nil {
+							return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
+						}
+						p.Repetition = rep
+						p.ShardCount = shards
 
-					// The scaling baseline is per shard count: comparing a
-					// 64-shard run against a 1-shard single-worker measurement
-					// would report the sharding speedup as scaling efficiency.
-					if conc == 1 && shards == baselineShards(shardCounts) {
-						baseSamples = append(baseSamples, p.Throughput)
+						// Recorded per point, so a plot cannot mix the two arms.
+						// Sharding is "on" whenever more than one shard is in use.
+						if tunable || sharded {
+							p.Ablation = &Ablation{Sharding: shards > 1, Batching: native}
+						}
+
+						// The scaling baseline is per shard count: comparing a
+						// 64-shard run against a 1-shard single-worker measurement
+						// would report the sharding speedup as scaling efficiency.
+						if conc == 1 && shards == baselineShards(shardCounts) &&
+							native == batchModes[0] {
+							baseSamples = append(baseSamples, p.Throughput)
+						}
+						res.Points = append(res.Points, p)
 					}
-					res.Points = append(res.Points, p)
 				}
 			}
 		}
