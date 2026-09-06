@@ -117,12 +117,68 @@ advantage. Tests: `TestSecondPreimageResistance`, `TestOddNodeNotDuplicated`.
 
 | Phase | Requirement | Status |
 |---|---|---|
-| 1 Setup | keys, circuit, shards, PAI init | 🔶 |
-| 2 Authorization | statement `x_i`, proof `π_i` | 🔶 |
-| 3 Sharded verification | assign `H(req) mod N`, batch `(B,Δ)` | 🔶 |
-| 4 Batch redaction | `Fresh_i`, `CH.Adapt`, batch commit `C_B` | 🔶 |
-| 5 Provenance | chain `c_i = H(c_i ‖ H(PR))` | 🔶 |
-| 6 Audit | auditor auth, targeted retrieval | 🔶 |
+| 1 Setup | keys, circuit, shards, PAI init | ✅ |
+| 2 Authorization | statement `x_i`, proof `π_i` | ✅ |
+| 3 Sharded verification | assign `H(req) mod N`, batch `(B,Δ)` | ✅ |
+| 4 Batch redaction | `Fresh_i`, `CH.Adapt`, batch commit `C_B` | ✅ |
+| 5 Provenance | chain `c_i = H(c_i ‖ H(PR))` | ✅ |
+| 6 Audit | auditor auth, targeted retrieval | ✅ |
+
+### 3.1 Phases 4 to 6, equation by equation
+
+Every row is an equation from the manuscript, the function that implements it,
+and the test that would fail if it did not.
+
+| Equation | Implementation | Test |
+|---|---|---|
+| `Fresh_i = [v_i = v_i^cur] ∧ [v_P = v_P^cur]` (redaction-revalidation) | `redactor.(*Executor).isFresh` | `TestSameTargetInOneBatchIsExcludedAsStale` |
+| `B_R^(e) = {Q_i*}`, close on size or `Δ_R` (redaction-batch, -close) | `redactor.(*Executor).Run` | `TestExp2SweepsZKRedactWithoutStranding` |
+| `R_B^(e) = MerkleRoot({H(DID_i ‖ η_i)})` (redaction-batch-root) | `redactor.batchLeaf` + `merkle.NewFromHashes` | `TestRedactionSplitsCostAndReportsBoth` |
+| `CH.Adapt`, collision preserves the committed digest (ch-adapt, ch-collision) | `redactor.(*Ledger).Adapt` | `TestAdaptPreservesEveryBlockHash` |
+| `d^old, d^new = H(T_i^(v)), H(T_i^(v+1))` (state-digests) | `pai.StateDigest` | `TestAdaptChangesTheStateAndItsDigest` |
+| `C_i^auth = H(DID_i ‖ η_i ‖ H(π_i))` (authorization-evidence) | `pai.AuthCommitment` | `TestAuditDetectsATamperedHistory` |
+| `PR_i^(v+1) = (...)` (provenance-record) | `pai.Record` | `TestAuditVerifiesAHistoryItBuilt` |
+| `R_PR^(e) = MerkleRoot({H(PR_i)})` (round-record-root) | `pai.RecordTree` | `TestCommitAdvancesTheAnchorChain` |
+| `C_B^(e) = H(R_B^(e) ‖ e ‖ R_PR^(e))` (batch-redaction-commitment) | `redactor.BatchCommitment` | `TestRedactionSplitsCostAndReportsBoth` |
+| `c_i^(v+1) = H(c_i^(v) ‖ H(PR))` (provenance-chain) | `pai.NextCumulative` | `TestAuditDetectsATamperedHistory` |
+| `d^new_k = d^old_{k+1}` (history-continuity) | `pai.checkContinuity` | `TestCommitRefusesADiscontinuousRecord` |
+| `A_i^(v) = H(TID ‖ v ‖ c_i^(v))` (pai-entry) | `pai.Entry` | `TestCommitAdvancesTheAnchorChain` |
+| `R_PAI^(e) = MerkleRoot({A_i^(v_i)})` (pai-update-root) | `pai.(*Index).Commit` via `merkle.UpdateLeaf` | `TestUpdateMatchesRebuild` |
+| `μ_i^(e) = MerkleProof(A_i, R_PAI^(e))` (pai-proof) | `pai.(*Index).Retrieve` | `TestAuditVerifiesAHistoryItBuilt` |
+| `AC^(e) = H(e ‖ R_PAI^(e) ‖ R_PAI^(e-1) ‖ C_B^(e))` (pai-anchor) | `pai.AnchorCommitment` | `TestCommitAdvancesTheAnchorChain` |
+| `AR^(e) = (e, R_PAI^(e), R_PAI^(e-1), C_B^(e), AC^(e))` (pai-anchor-record) | `pai.Anchor`, on-chain via `redactor.(*Ledger).AppendAnchor` | `TestAnchorBlocksAreAppendedNotRewritten` |
+| `Sig.Verify(pk_a, H(R_a^audit), σ_a)`, freshness, `AuditAuth` (Step 1) | `pai.(*AuditorRegistry).Authorize` | `TestAuthorizeRejects*` (5 tests) |
+| `E_i^(e) = (H_i, v_i, c_i, A_i, μ_i)` + `ψ_{i,k}` + `(x,π)` (Step 2) | `pai.(*Index).Retrieve` | `TestRetrieveRefusesAHistoricalEpoch` |
+| `MerkleVerify(Â_i, μ_i, R_PAI^(e))` (audit-merkle) | `pai.verifyEntry` | `TestAuditVerifiesAHistoryItBuilt` |
+| `ĉ` replay, `|H_i| = v_i`, `ĉ^(v_i) = c_i^(v_i)` (audit-completeness) | `pai.verifyHistoryChain` | `TestAuditDetectsATamperedHistory` |
+| `Ĉ^auth = C^auth ∧ ZK.Verify(vk, x, π)` (audit-authorization) | `pai.verifyRecords` + `zk.VerifyEvidence` | `TestVerifyEvidenceRejectsAlteredStatement` |
+| `MerkleVerify(R_PR^(e_k), H(PR^(k)), ψ_{i,k})` | `pai.verifyRecords` | `TestAuditDetectsATamperedHistory` |
+| `d_{i,0} = H(T^(0))`, `d^new_{i,v_i} = H(T^(v_i))` (audit-boundary-states) | `pai.verifyBoundaries` | `TestAdaptChangesTheStateAndItsDigest` |
+| `AC^(e) =? H(...)` (audit-anchor) | `pai.verifyAnchor` | `TestCommitAdvancesTheAnchorChain` |
+
+### 3.2 Deviations in Phases 4 to 6
+
+Both are strict strengthenings and neither changes the number of hash
+invocations, which is what Exp 2 and Exp 3 measure. **Direction of bias: none
+measurable; if anything they cost ZK-Redact a few extra bytes per hash.**
+
+| # | Deviation | Why | Where |
+|---|---|---|---|
+| 1 | Every hashed field is length-prefixed | The manuscript writes `H(a ‖ b ‖ c)` over variable-length fields, which is ambiguous: `H("ab"‖"c") = H("a"‖"bc")`. Without prefixes, distinct records could share a preimage. | `pai/hashing.go` |
+| 2 | Each construction commits to a domain tag | Several equations share a shape — `c_i^(0) = H(TID‖0‖d)` and `A_i^(0) = H(TID‖0‖c)` differ only in the third element. Untagged, a cumulative commitment is a syntactically valid PAI entry, and one could be presented for the other in Phase 6. | `pai/hashing.go` |
+
+Two further implementation choices worth stating, neither a deviation:
+
+- **`R_PAI^(e)` is updated incrementally, not rebuilt.** `merkle.UpdateLeaf`
+  produces a root identical to a full rebuild over the same leaf set —
+  `TestUpdateMatchesRebuild` asserts it over randomised leaf counts. A rebuild
+  is O(|I|) per round, which at Exp 3's million-transaction ledger would swamp
+  the LedgerTime the experiment is trying to measure.
+- **The auditor rebuilds the public witness from `x_{i,k}` rather than reusing
+  the prover's.** Reusing it would verify the proof against the prover's own
+  claim about what was proved, so a record whose statement was altered
+  afterwards would still pass. `TestVerifyEvidenceRejectsAlteredStatement`
+  covers each altered field.
 
 Already enforced in code:
 
@@ -239,8 +295,8 @@ must never share a table with ours.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | Scheme cryptography is unimplemented, so conformance beyond `pkg/ch` and `pkg/merkle` is unverified | This file is re-audited as each component lands |
-| 2 | Nothing has been compiled or executed — no Go toolchain on the authoring machine | `make build && make test` on the target host before any result is recorded |
+| 1 | ~~Scheme cryptography is unimplemented~~ — all four schemes and all six ZK-Redact phases are now implemented and tested | Closed. §3.1 maps each equation to its test |
+| 2 | Timing assertions cannot be made on a coarse-clock host: this host resolves ~500µs, and a single `CH.Adapt` or auditor authorization finishes inside one tick | Tests assert the STRUCTURAL evidence unconditionally and the timing only behind `metrics.RequireUsableClock`. Real measurements require the Linux target host, which the harness already enforces |
 | 3 | ZK-Redact's spec does not fix a CH construction, so the classic choice is an assumption | Recorded in `ch.Required`; revisit if the paper is revised |
 | 4 | Ref[13]'s BAT needs a Pointproofs-style vector commitment with no standard Go implementation | Highest-risk remaining component; conformance to §3.2.2 must be audited when written |
 

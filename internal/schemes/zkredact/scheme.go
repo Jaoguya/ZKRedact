@@ -19,8 +19,11 @@ import (
 	"time"
 
 	"zkredact/internal/gateway"
+	"zkredact/internal/pai"
 	"zkredact/internal/pvl"
+	"zkredact/internal/redactor"
 	"zkredact/pkg/ch"
+	"zkredact/pkg/crypto"
 	"zkredact/pkg/scheme"
 	"zkredact/pkg/zk"
 )
@@ -54,8 +57,31 @@ type Scheme struct {
 	policies    map[string]*zk.Policy
 	credentials map[string]*credential
 
-	// txVersions is the ledger state the gateway checks freshness against.
-	txVersions map[string]uint64
+	// registryRoot is the credential registry's public root. Phase 6 needs it to
+	// verify stored proofs independently, and holding it here keeps the audit
+	// from reaching into the registry object the prover also uses.
+	registryRoot []byte
+
+	// --- Phases 4 to 6 ---
+
+	// chKey holds tk_ch. The trapdoor never leaves this scheme; the ledger is
+	// given the key rather than the scheme handing the trapdoor around.
+	chKey *ch.PrivateKey
+
+	// ledger is the permissioned blockchain, and the authority on transaction
+	// versions. There is deliberately no second copy: a map of versions kept
+	// beside it would be one more thing that could disagree with the state
+	// Fresh_i is checked against.
+	ledger *redactor.Ledger
+
+	// index is the PAI; exec runs Phase 4 against both.
+	index *pai.Index
+	exec  *redactor.Executor
+
+	// auditors is the registered auditor set; auditorKeys holds their signing
+	// keys, because the harness plays the auditor in Phase 6 Step 1.
+	auditors    *pai.AuditorRegistry
+	auditorKeys map[string]*crypto.SchnorrPrivateKey
 
 	gw  *gateway.Gateway
 	pvl *pvl.PVL
@@ -87,6 +113,13 @@ type Scheme struct {
 	freshnessWindow time.Duration
 	scopeHigh       uint64
 	redactionLoc    uint64
+
+	// blockTx is block_max_transactions, shared with every other scheme so the
+	// ledgers Exp 3 sweeps are the same height for the same corpus.
+	blockTx int
+
+	// auditorCount is how many auditors Phase 1 registers.
+	auditorCount int
 }
 
 // New returns an unconfigured ZK-Redact scheme. Setup must be called first.
@@ -195,6 +228,33 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	}
 	s.queueDepth = depth
 
+	// SHARED with every other scheme, from the environment and security blocks.
+	// A per-scheme copy could drift and would let ZK-Redact's ledger be a
+	// different height, or its hash a different function, than the baselines'.
+	if s.blockTx, err = intParam(p.Params, "block_max_transactions"); err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	hashName, err := stringParam(p.Params, "hash")
+	if err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+	if err := crypto.RequireHash(hashName); err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+
+	if s.auditorCount, err = intParam(p.Params, "auditor_count"); err != nil {
+		return fmt.Errorf("zkredact: %w", err)
+	}
+
+	// Setup can be re-run — Exp 3 rebuilds the ledger at every swept size — and
+	// the previous PVL's shard workers are goroutines. Without this they
+	// accumulate one full shard set per rebuild, still holding queues and
+	// verification keys.
+	if s.pvlSvc != nil {
+		s.pvlSvc.Stop()
+		s.pvlSvc = nil
+	}
+
 	s.proofCache = make(map[string]*zk.Proof)
 	s.params = p
 
@@ -219,46 +279,18 @@ func stringParam(params map[string]any, key string) (string, error) {
 	return sv, nil
 }
 
-// Redact implements Phase 4 and the record generation of Phase 5.
+// Teardown releases the PVL's shard workers.
 //
-// The cost split reported in RedactionResult is the point of Exp 2: CH.Adapt is
-// per-request and cannot be amortised, while chaincode, validation, commitment
-// and ledger write are amortised across the batch.
-func (s *Scheme) Redact(ctx context.Context, batch []*scheme.Authorization) (*scheme.RedactionResult, error) {
-	if err := s.check(); err != nil {
-		return nil, err
-	}
-	if len(batch) == 0 {
-		return &scheme.RedactionResult{}, nil
-	}
-	// TODO(phase4): revalidate Fresh_i for each entry; exclude stale requests
-	// and count them in StaleExcluded rather than retrying.
-	// TODO(phase4): serialise same-target requests, run independent ones in
-	// parallel.
-	// TODO(phase4): CH.Adapt per request, timed into CryptoTime.
-	// TODO(phase4): one chaincode round for the batch, timed into LedgerTime.
-	// TODO(phase5): build provenance records and append to per-tx chains.
-	return nil, fmt.Errorf("zkredact.Redact: %w", scheme.ErrNotImplemented)
-}
-
-// Audit implements Phase 6: auditor authentication, targeted retrieval, and
-// independent verification against the anchored PAI state.
-func (s *Scheme) Audit(ctx context.Context, q *scheme.AuditQuery) (*scheme.AuditResult, error) {
-	if err := s.check(); err != nil {
-		return nil, err
-	}
-	// TODO(phase6): verify auditor signature, freshness and AuditAuth — timed
-	// into AuthorizationTime, reported separately from the audit itself.
-	// TODO(phase6): retrieve the target's history and Merkle authentication
-	// path; verify against the anchored state.
-	// BlocksTraversed must stay flat as the ledger grows. If it does not, the
-	// ledger-independence claim is false and Exp 3 must report that.
-	return nil, fmt.Errorf("zkredact.Audit: %w", scheme.ErrNotImplemented)
-}
-
+// Not merely bookkeeping: each shard is a goroutine holding a queue and a
+// reference to the verification key, and Exp 3 tears a scheme down and sets it
+// up again at every ledger size.
 func (s *Scheme) Teardown(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pvlSvc != nil {
+		s.pvlSvc.Stop()
+		s.pvlSvc = nil
+	}
 	s.ready = false
 	return nil
 }

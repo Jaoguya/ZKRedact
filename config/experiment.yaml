@@ -317,6 +317,30 @@ zkredact:
     # should begin climbing. A single value would hide the trade-off entirely.
     wait_bounds_ms: [500, 1000, 2000, 4000]
 
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Provenance Retrieval and Audit Verification
+  # ---------------------------------------------------------------------------
+  audit:
+    # [DERIVED from dataset.policies.count = 10] How many auditors AU_a Phase 1
+    # registers, each with its own key pair and audit policy Pi_a^audit.
+    #
+    # NOT an experimental variable: Exp 3 issues every query as auditor-0, and
+    # the count changes no measured cost — an audit reads one auditor's
+    # registration, never the set.
+    #
+    # Derivation. auditor-0 holds an unrestricted scope, because Exp 3 measures
+    # a PERMITTED query; a denied one would time the rejection path instead.
+    # Every further auditor is scoped to ONE policy, so the count fixes how much
+    # of the policy space the restricted auditors cover. 11 gives auditor-0 plus
+    # exactly one narrowly scoped auditor per registered policy, which is what
+    # makes "this auditor may not audit that transaction" a reachable outcome
+    # rather than a branch no input can select.
+    #
+    # A value of 1 would be the failure this guards against: AuditAuth would
+    # return 1 for every input it could ever receive, and a check that cannot
+    # fail is not a check. The scheme's own tests assert the rejection.
+    auditor_count: 11
+
   circuit:
     # [MEASURED] NOT chosen — these are outputs of circuit compilation, filled
     # in from `make build-zk` and then held fixed and reported. Recording them

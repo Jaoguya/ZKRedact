@@ -96,13 +96,17 @@ func (s *Scheme) buildAuthorization(p scheme.SetupParams) error {
 		return err
 	}
 	s.registry = registry
+	s.registryRoot = registry.Root()
 
-	// --- ledger state the gateway checks freshness against ---
-	versions := make(map[string]uint64, len(ds.Transactions))
-	for _, tx := range ds.Transactions {
-		versions[tx.ID] = 0
+	// --- Phases 4 to 6: the ledger, the PAI, the executor and the auditors ---
+	//
+	// Built BEFORE the gateway, because the gateway's view of transaction
+	// versions is read from the ledger rather than kept as a second map. One
+	// authority for ledger state is what makes Fresh_i mean what it says.
+	if err := s.buildRedaction(p); err != nil {
+		return err
 	}
-	s.txVersions = versions
+	versions := s.ledger.Versions()
 
 	// --- Phase 2: the gateway ---
 	gw, err := gateway.New(
@@ -196,10 +200,12 @@ func (s *Scheme) PrepareTrace(ctx context.Context, trace []*scheme.Request) erro
 	for id, pol := range s.policies {
 		policyRecords[id] = gateway.PolicyRecord{Version: pol.Version, Commitment: pol.Commitment()}
 	}
-	versions := make(map[string]uint64, len(s.txVersions))
-	for k, v := range s.txVersions {
-		versions[k] = v
-	}
+	// Read from the LEDGER, not from a snapshot taken at Setup. Exp 3 builds a
+	// transaction's history by alternating Authorize and Redact, so by the time
+	// a later revision is prepared the version has moved; a stale snapshot here
+	// would build every statement against version 0 and the gateway would
+	// reject all of them as stale.
+	versions := s.ledger.Versions()
 	// THE GATEWAY'S CLOCK IS THE TRACE'S, NOT THE WALL'S.
 	//
 	// pkg/workload stamps the trace from a fixed epoch (2026-01-01) so a run is
@@ -257,7 +263,7 @@ func (s *Scheme) prepareOne(req *scheme.Request) (*prepared, error) {
 		return nil, fmt.Errorf("unknown policy %s", req.PolicyID)
 	}
 
-	version, ok := s.txVersions[req.TargetTxID]
+	version, ok := s.ledger.Version(req.TargetTxID)
 	if !ok {
 		return nil, fmt.Errorf("unknown transaction %s", req.TargetTxID)
 	}

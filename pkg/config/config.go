@@ -99,7 +99,12 @@ type ZKRedact struct {
 	Sharding       Sharding       `yaml:"sharding"`
 	ProofBatch     ProofBatch     `yaml:"proof_batch"`
 	RedactionBatch RedactionBatch `yaml:"redaction_batch"`
+	Audit          ZKAudit        `yaml:"audit"`
 	Circuit        Circuit        `yaml:"circuit"`
+}
+
+type ZKAudit struct {
+	AuditorCount *int `yaml:"auditor_count"`
 }
 
 type ZKGateway struct {
@@ -393,6 +398,17 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 		if c.Dataset.Transaction.RedactablePayloadBytes == nil {
 			return nil, fmt.Errorf("dataset.transaction.redactable_payload_bytes is not set")
 		}
+		// Phases 4 to 6. block_max_transactions and hash are SHARED with the
+		// baselines rather than duplicated here, for the same reason
+		// signature_curve is: a per-scheme copy could drift, and ZK-Redact
+		// would then be measured against a ledger of a different height or a
+		// hash of a different cost than the systems it is being compared to.
+		if c.Environment.Network.BlockMaxTransactions == nil {
+			return nil, fmt.Errorf("environment.network.block_max_transactions is not set, required by zkredact")
+		}
+		if z.Audit.AuditorCount == nil {
+			return nil, fmt.Errorf("zkredact.audit.auditor_count is not set")
+		}
 
 		// The FIRST value of each sweep is the ablation-DISABLED arm: one shard,
 		// batch of one, no native batch verification. Exp 1 reconfigures from
@@ -407,7 +423,10 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 			"native_batch_verify":      z.ProofBatch.NativeBatchVerify[0],
 			"freshness_window_ms":      *z.Gateway.FreshnessWindowMS,
 			"signature_curve":          *c.Security.SignatureCurve,
+			"hash":                     c.Security.Hash,
 			"redactable_payload_bytes": *c.Dataset.Transaction.RedactablePayloadBytes,
+			"block_max_transactions":   *c.Environment.Network.BlockMaxTransactions,
+			"auditor_count":            *z.Audit.AuditorCount,
 
 			// The PVL's per-shard queues must absorb the highest offered load
 			// Exp 1 produces; a shorter queue would block submitters and record

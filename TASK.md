@@ -4,17 +4,26 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~22,900 lines Go across 83 files, plus the Fabric network
+**Code:** ~30,100 lines Go across 102 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **254 tests (405 with subtests) passing**, `make validate-config`
+gofmt-clean, **292 tests (466 with subtests) passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
 transport**.
 
-The test count is the DEFAULT suite. Five live-tagged tests in
+Counts are `git ls-files '*.go'` across BOTH modules, and the test count is the
+DEFAULT suite. Five live-tagged tests in
 `internal/schemes/ref10/fabric_live_test.go` are excluded from it and need a
 running Fabric network; they are counted nowhere in that number.
+
+Two tests SKIP on a coarse-clock host and pass on the Linux target: they assert
+on durations shorter than a Windows scheduler tick. Both check the same code
+structurally and unconditionally — see "A guard nobody can trip is not a guard".
+
+✅ **Task 5 is complete.** All six ZK-Redact phases are implemented, and
+ZK-Redact now runs **Exp 1, Exp 2 and Exp 3** end to end. Until this landed the
+three baselines could run Exp 2 and Exp 3 and the paper's own scheme could not.
 
 ⚠️ All live verification above is on the **minimal** topology, on an
 8 vCPU / 8 GB macOS host. It establishes that the mechanism works; it produces
@@ -31,7 +40,22 @@ not macOS-dependent.
 
 ## Decisions waiting on you
 
-Neither blocks task 7; both block the full runs.
+None block task 8; all three block the full runs.
+
+**0. Exp 2's sweep size, which just grew.** Task 5 fixed a defect that had Exp 2
+measuring nothing after its first configuration (see task 5). The fix
+re-authorizes before each configuration, which is correct but multiplies the
+UNTIMED authorization pass by the sweep size:
+
+    configurations = |batch_sizes| x |wait_bounds| x repetitions
+                   = 7 x 4 x reps
+
+At `reps = 3` that is 84 authorization passes over the trace, per scheme. For
+ZK-Redact each pass is one Groth16 proof per request (~40 ms); for Ref[10] over
+`vote_transport: fabric` it is a committee round per request (~6.17 s), which
+dominates everything else in the project. The same trade the Exp 1 table below
+offers applies here: requests, repetitions and sweep width trade against each
+other one for one. **Decide the Exp 2 budget alongside the Exp 1 one.**
 
 **1. Exp 1's sweep size over fabric.** The configured sweep is 42.8 days. Cost is
 `total_requests x SUM(1/c) x 6.17 s x repetitions`, and `SUM(1/c) ~ 2` across the
@@ -475,14 +499,115 @@ indistinguishable from a broken circuit.
 > *faster*, and yield a full set of plausible Exp 1 numbers for a scheme that no
 > longer hides anything.
 
-### 5. ZK-Redact internals — Phases 2 and 3 ✅, Phases 4-6 remaining ⬅️ **next**
+### 5. ZK-Redact internals ✅ done — all six phases
 
 | Package | Phase | State |
 |---|---|---|
 | `internal/gateway` | 2 — request auth, dedup | ✅ done |
 | `internal/pvl` | 3 — sharding + batching. **Core of Exp 1** | ✅ done |
-| `internal/redactor` | 4 — batch execution. **Core of Exp 2** | not started |
-| `internal/pai` | 5, 6 — provenance + audit. **Core of Exp 3** | not started |
+| `internal/redactor` | 4 — batch execution + the ledger. **Core of Exp 2** | ✅ done |
+| `internal/pai` | 5, 6 — provenance + audit. **Core of Exp 3** | ✅ done |
+
+Every equation in Phases 4 to 6 is mapped to its implementation and its test in
+[`docs/paper-conformance.md`](docs/paper-conformance.md) §3.1, and the two
+deviations — length-prefixed hash inputs and per-construction domain tags — are
+recorded in §3.2 with their (nil) direction of bias.
+
+#### What Phases 4 to 6 measured, first time out
+
+Small fixtures on a coarse-clock Windows host, so these are shapes rather than
+numbers. All from tests that run in CI.
+
+| Check | Result |
+|---|---|
+| Block hash across a redaction | **unchanged**, on every block of a 3-block chain |
+| Two same-target requests in one batch | 1 succeeded, 1 stale — serialisation holds |
+| Audit of a 4-record history | verifies, twice in a row against the same scheme |
+| Blocks read by an audit, ledger 4 → 40 blocks | **2 → 2** |
+| Evidence bytes, ledger 4 → 40 blocks | 991 → 1087, i.e. **+3 Merkle siblings** |
+
+That last row is the cost table's `O(ν + log|I|)` term showing up as three extra
+32-byte siblings for a tenfold ledger, which is what it should be. It is also
+the reason Exp 3 classifies ZK-Redact as *sublinear* rather than *flat*: the
+authentication path genuinely grows with `log |I|`. The claim the experiment
+tests — that cost does not track LEDGER SIZE — holds, and `ClaimHolds` is true.
+
+#### Four things that had to be got right
+
+1. **The ledger commits the chameleon digest, not the content.** That is the
+   whole construction: `CH.Adapt` preserves the digest, so the block leaf, the
+   block root, the block hash and every forward back-link survive a redaction
+   untouched. `TestAdaptPreservesEveryBlockHash` checks all blocks, not just the
+   redacted one — committing the content instead would break only the LATER
+   links, which a single-block check would miss.
+2. **`Adapt` re-verifies the collision before committing.** A `CH.Adapt` that
+   returned a non-colliding randomness would fork the chain silently, and the
+   failure would surface much later as an audit that cannot verify. One extra
+   `CH.Hash`, inside `CryptoTime` where it belongs.
+3. **The auditor rebuilds the public witness from the retrieved statement.**
+   Reusing the prover's would check the proof against the prover's own claim
+   about what was proved, so a record whose statement was altered afterwards
+   would still verify. `pkg/zk/audit_evidence.go`, with a test per altered field.
+4. **`R_PAI` is updated incrementally.** A full rebuild is O(|I|) per round;
+   at Exp 3's million-transaction ledger that is a million hashes charged to
+   `LedgerTime`, swamping the amortisation Exp 2 exists to measure.
+   `merkle.UpdateLeaf` produces a bit-identical root, which
+   `TestUpdateMatchesRebuild` pins over randomised leaf counts and update orders.
+
+#### The defect this task found in Exp 2 — read this one
+
+**Exp 2's batch-size sweep was measuring nothing after its first point**, for
+ZK-Redact, Ref[13] and Ref[22] alike.
+
+`authorizeAll` ran once per scheme, then `runOne` replayed the same
+authorizations at every batch size, wait bound and repetition. But a redaction
+advances its transaction's version, and an authorization carries the version it
+was granted against — so the FIRST configuration's redactions invalidated every
+later configuration's authorizations. Measured, before the fix:
+
+```
+B_R=1  rep=0   succeeded=10  stale=0    crypto=3.66ms
+B_R=1  rep=1   succeeded=0   stale=10   crypto=0s
+B_R=2  rep=0   succeeded=0   stale=10   crypto=0s
+B_R=4  rep=1   succeeded=0   stale=10   crypto=0s
+```
+
+Five of six points reported 100% staleness, zero crypto time, and a cost per
+request derived from no work at all. The batch-size curve — the entire output of
+Exp 2 — would have been built from configurations that redacted nothing.
+
+**Ref[10] was unaffected, because it performs no freshness check.** The one
+scheme that could not detect the problem is the one that would have looked
+healthy, which is why this survived until ZK-Redact's `Redact` existed to be
+driven.
+
+Fixed by re-authorizing before every configuration. **Consequence for the run
+plan:** the untimed authorization pass now runs once per (batch size × wait
+bound × repetition) rather than once per scheme. For ZK-Redact that is one
+Groth16 proof per request per configuration — the statement binds the
+transaction version, and a new version needs a new proof — and for Ref[10] over
+`vote_transport: fabric` it is a full committee round per request per
+configuration, at ~6.17 s each. **This is the real cost of the workload, not an
+artefact**, but it multiplies Exp 2's wall clock by the sweep size and belongs
+in the same budget conversation as Exp 1's sweep. See "Decisions waiting on you".
+
+#### Also fixed here
+
+- **Exp 2 and Exp 3 never called `PrepareTrace`.** Only Exp 1 did. ZK-Redact's
+  `Authorize` refuses an unprepared request rather than proving inline — that
+  refusal is correct, since proving inside the measured path would charge Exp 1
+  for the requester's work — so both experiments would have failed on their
+  first ZK-Redact request. `exp2.authorizeAll` and `cmd/run-experiment`'s
+  `authorizeOne` now prepare first. Exp 3 prepares **one request at a time**,
+  because each revision must be proved against the version the previous
+  redaction left behind; preparing a whole depth up front would build every
+  statement at version 0 and the history axis would silently stop at depth 1.
+- **`Setup` and `Teardown` leaked the PVL's shard workers.** Exp 3 re-runs
+  `Setup` at every swept ledger size, and each one started a fresh set of shard
+  goroutines without stopping the previous set. Both now stop the old service.
+- **The ledger is the single authority on transaction versions.** `txVersions`
+  was a second map maintained beside it; it is gone, because `Fresh_i` means
+  nothing if two copies of the state can disagree.
 
 **ZK-Redact now runs Exp 1 end to end.** First measured sweep, 200 requests,
 103 granted / 97 denied at every configuration:
@@ -1124,7 +1249,7 @@ runner gets them.
 > penalise the baseline" and it should ideally be swept. Sweeping adds work here
 > and runtime to Exp 3.
 
-### 8. `cmd/plot`
+### 8. `cmd/plot` ⬅️ **next**
 Reads `results/*.json`. Headline plots:
 - Exp 1: throughput vs concurrency, all four, showing the crossover
 - Exp 2: cost per request vs `B_R`, split into crypto floor and amortised part
@@ -1182,6 +1307,25 @@ Three cautions before setting `meta.repetitions` from this:
 ---
 
 ## Findings already made — do not re-derive
+
+### A guard nobody can trip is not a guard
+
+Exp 2's sweep silently measured nothing for three of four schemes (task 5). What
+made it survive is worth generalising: **the scheme that could not detect the
+problem is the one that looked healthy.** Ref[10] performs no freshness check,
+so it alone reported plausible numbers at every configuration, and a reader
+comparing the four would have seen one clean curve and three flat ones and
+concluded something about batching.
+
+Two habits follow, and both are already in the code:
+
+- When several systems implement one contract, the WEAKEST one's output is not
+  evidence that the harness works. Drive the strictest one first.
+- A check that no input can fail is not a check. `zkredact.audit.auditor_count`
+  is set to 11 rather than 1 for exactly this reason: with one auditor holding
+  an unrestricted scope, `AuditAuth` would return 1 for every input it could
+  ever receive, and an enforced policy would be indistinguishable from an
+  ignored one. `TestAuditRejectsOutOfScopeAuditor` is what proves it can refuse.
 
 ### Code breaks where it has never run
 
@@ -1347,6 +1491,8 @@ pkg/                     shared libraries
 internal/
   gateway/               Phase 2 admission control
   pvl/                   Phase 3 sharded batch verification
+  redactor/              Phase 4 batch execution + the chameleon-hashed ledger
+  pai/                   Phases 5-6 provenance index, anchoring, audit verification
   schemes/               the four systems under test
 experiments/             one runner per experiment
 cmd/                     validate-config, run-experiment, build-zk

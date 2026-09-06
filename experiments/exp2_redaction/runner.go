@@ -177,19 +177,6 @@ func Run(
 				}
 			}
 
-			// Re-authorized after every rebuild. Setup replaces the ledger, so
-			// authorizations taken against the previous one would be stale and
-			// every redaction would be excluded rather than measured.
-			authorized, err := authorizeAll(ctx, s, trace)
-			if err != nil {
-				return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
-			}
-			if len(authorized) == 0 {
-				return nil, fmt.Errorf(
-					"exp2: %s authorized none of %d requests; there is nothing to redact",
-					s.Name(), len(trace))
-			}
-
 			// A scheme that does not batch is measured once, at B_R=1. Sweeping
 			// it across batch sizes would fabricate a curve it has no mechanism
 			// to produce.
@@ -201,6 +188,44 @@ func Run(
 			for _, size := range sizes {
 				for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
 					for rep := 0; rep < cfg.Repetitions; rep++ {
+						// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
+						// scheme.
+						//
+						// A redaction advances its transaction's version, and
+						// an authorization carries the version it was granted
+						// against. So the previous configuration's redactions
+						// invalidate this configuration's authorizations:
+						// every request fails Fresh_i and is counted as stale
+						// rather than executed.
+						//
+						// Authorizing once produced a sweep in which only the
+						// FIRST point measured a redaction. Every later point
+						// reported 100% staleness, zero CryptoTime and a cost
+						// per request derived from no work at all — for
+						// ZK-Redact, Ref[13] and Ref[22] alike, since all three
+						// revalidate state. The batch-size curve, which is what
+						// Exp 2 exists to produce, was built from configurations
+						// that redacted nothing. Ref[10] was unaffected only
+						// because it performs no freshness check, which meant
+						// the one scheme that could not detect the problem was
+						// the one that looked healthy.
+						//
+						// NOT TIMED, so this costs the comparison nothing but
+						// wall clock. It is not free wall clock: for ZK-Redact
+						// it is one Groth16 proof per request per configuration,
+						// because the statement binds the transaction version
+						// and a new version needs a new proof. That is the real
+						// cost of the workload, not an artefact of the harness.
+						authorized, err := authorizeAll(ctx, s, trace)
+						if err != nil {
+							return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
+						}
+						if len(authorized) == 0 {
+							return nil, fmt.Errorf(
+								"exp2: %s authorized none of %d requests at batch size %d; "+
+									"there is nothing to redact", s.Name(), len(trace), size)
+						}
+
 						p, err := runOne(ctx, s, authorized, size, wait)
 						if err != nil {
 							return nil, fmt.Errorf("exp2: %s at batch %d: %w", s.Name(), size, err)
@@ -226,7 +251,20 @@ func Run(
 //
 // Not timed. Denials are expected and are simply excluded — a request the
 // scheme refuses is not a redaction it can be asked to execute.
+//
+// PrepareTrace runs first for any scheme that needs it. ZK-Redact's Authorize
+// REFUSES an unprepared request rather than proving inline, so without this
+// call Exp 2 could not authorize a single ZK-Redact request — and the refusal
+// is deliberate: proving inside Authorize would charge the measurement for the
+// requester's work. Only Exp 1 called it before, which is why the gap survived
+// until ZK-Redact's Redact existed to be driven.
 func authorizeAll(ctx context.Context, s scheme.Scheme, trace []*scheme.Request) ([]*scheme.Authorization, error) {
+	if prep, ok := s.(scheme.TracePreparer); ok {
+		if err := prep.PrepareTrace(ctx, trace); err != nil {
+			return nil, fmt.Errorf("preparing the trace for %s: %w", s.Name(), err)
+		}
+	}
+
 	out := make([]*scheme.Authorization, 0, len(trace))
 	for _, req := range trace {
 		select {

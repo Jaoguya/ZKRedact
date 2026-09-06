@@ -685,7 +685,7 @@ func prepareLedger(
 				PolicyID:    sized.Policies[0].ID,
 				Timestamp:   time.Now(),
 			}
-			auth, err := s.Authorize(ctx, req)
+			auth, err := authorizeOne(ctx, s, req)
 			if err != nil {
 				return nil, fmt.Errorf("building history for %s: %w", target, err)
 			}
@@ -710,6 +710,29 @@ func prepareLedger(
 	return out, nil
 }
 
+// authorizeOne authorizes a single request, preparing it first for any scheme
+// that requires preparation.
+//
+// ONE REQUEST AT A TIME, deliberately. Exp 3 builds a transaction's history by
+// alternating Authorize and Redact, and each revision must be proved against
+// the version the previous redaction left behind. Preparing the whole depth up
+// front would build every statement against version 0, and every revision after
+// the first would be refused as stale — so the history axis would silently stop
+// at depth 1.
+//
+// ZK-Redact's Authorize REFUSES an unprepared request rather than proving
+// inline, because proving inside the measured path would charge Exp 1 for the
+// requester's work. That refusal is correct and must be satisfied here rather
+// than removed.
+func authorizeOne(ctx context.Context, s scheme.Scheme, req *scheme.Request) (*scheme.Authorization, error) {
+	if prep, ok := s.(scheme.TracePreparer); ok {
+		if err := prep.PrepareTrace(ctx, []*scheme.Request{req}); err != nil {
+			return nil, fmt.Errorf("preparing %s for %s: %w", req.ID, s.Name(), err)
+		}
+	}
+	return s.Authorize(ctx, req)
+}
+
 // findGrantedRequester returns an identity the scheme actually authorizes.
 //
 // Asking rather than assuming: each scheme decides eligibility its own way, and
@@ -717,7 +740,7 @@ func prepareLedger(
 func findGrantedRequester(ctx context.Context, s scheme.Scheme, ds *scheme.Dataset) (string, error) {
 	probeTx := ds.Transactions[len(ds.Transactions)-1].ID
 	for i, id := range ds.Identities {
-		auth, err := s.Authorize(ctx, &scheme.Request{
+		auth, err := authorizeOne(ctx, s, &scheme.Request{
 			ID:          fmt.Sprintf("probe-%d", i),
 			RequesterID: id.ID,
 			TargetTxID:  probeTx,
