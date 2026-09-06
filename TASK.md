@@ -178,6 +178,9 @@ without that declaration appearing in the capability matrix the results carry.
 | `pkg/accumulator` | **Trapdoorless universal RSA accumulator**, membership + non-membership |
 | `internal/gateway` | Phase 2 — auth, dedup, identity minimisation |
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
+| `internal/redactor` | Phase 4 — `Fresh_i`, `CH.Adapt`, `R_B`, `C_B`, and the chameleon-hashed ledger |
+| `internal/pai` | Phases 5-6 — provenance chain, PAI root, anchoring, auditor auth, audit verification |
+| `internal/schemes/zkredact` | **All six phases**, wired to `pkg/scheme` |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
 | `internal/schemes/ref13` | **Complete** — BAT, Algorithms 1-3, Eq. 11 and Eq. 12, both query and audit protocols |
@@ -185,16 +188,16 @@ without that declaration appearing in the capability matrix the results carry.
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
-**All four schemes now run Exp 1 end to end.** `ref13` was wired in this
-session; `-schemes` no longer needs to exclude it:
+**All four schemes now run all three experiments end to end.** Nothing needs
+excluding from `-schemes` any more:
 
 ```bash
 go run ./cmd/run-experiment -config config/pilot.yaml -exp verification \
-    -schemes zkredact,ref10_emt,ref22_shen
+    -schemes zkredact,ref10_emt,ref13_vrbc,ref22_shen
 ```
 
-ZK-Redact's Phases 4-6 (`internal/redactor`, `internal/pai`) are not built, so
-Exp 2 and Exp 3 cannot run against it yet.
+ZK-Redact was the last gap: until task 5 landed, the three BASELINES could run
+Exp 2 and Exp 3 and the paper's own scheme could not.
 
 ### What the three measured schemes cost, per authorization
 
