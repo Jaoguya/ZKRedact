@@ -152,7 +152,7 @@ without that declaration appearing in the capability matrix the results carry.
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
-| `internal/schemes/ref13` | **BAT** — tree, node commitments, Algorithms 1 and 2 |
+| `internal/schemes/ref13` | **BAT** — tree, node commitments, Algorithms 1, 2 and 3 |
 | `pkg/vc` | **Pointproofs vector commitment** — commit, open, verify, and Eq. 11 aggregation |
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
@@ -823,8 +823,8 @@ commitment is **done** (`pkg/vc`), including cross-commitment aggregation. The
 **BAT is done** (`internal/schemes/ref13/bat.go`): tree arithmetic, node
 commitments, Algorithm 1's path update, and Algorithm 2's path proof.
 
-Remaining: Algorithm 3 (audit over z challenged blocks), the `ref13` scheme
-wiring, and the two sweeps in §7.1 below.
+**Algorithm 3 is done** (`audit.go`): PRF challenge, path-union proof, and
+verification. Remaining: the `ref13` scheme wiring, and the two sweeps in §7.1.
 
 #### The spike found a defect in the paper
 
@@ -959,6 +959,40 @@ it to fail against the honest one.
 
 `TestStaleProofFailsAfterRedaction` covers the attack VRBC exists to stop: a
 full node serving a light node the pre-redaction version.
+
+#### Audit ✅ done, and what §4.1's optimisation actually buys
+
+`audit.go` implements Algorithm 3 over the path UNION — §4.1 says the cost is
+"determined by the node number of path union from challenged nodes to the root
+node", so shared ancestors are proved once. `PathUnionSize` is reported on every
+proof, because a flat Exp 3 curve against ledger size means nothing unless the
+union is reported beside it.
+
+Measured, q=5: at z=16 the union is **50 openings against 80** for independent
+paths. And Exp 3's claim in miniature — a **10x larger ledger moves the union
+only 21 to 35**, tracking depth rather than size.
+
+> **A test of mine asserted something the paper does not claim, and it failed.**
+> I had `TestOptimizedSelectionShrinksTheUnion` assert that §4.1 gives a smaller
+> union than uniform sampling. It does not: measured 56 optimised against 55
+> uniform. The mechanism is f1's range — `(q(1-q^{l-1})/(1-q), q(1-q^l)/(1-q)]`,
+> which at q=5, l=4 is `(155, 780]`, exactly the leaf indices — so it restricts
+> challenges to LEAVES. At 400 blocks the leaf level already holds 245 of them,
+> so a uniform sample draws shallow blocks with shorter paths and comes out
+> marginally cheaper.
+>
+> The implementation was faithful; the test premise was wrong. **Reporting the
+> optimised arm as the cheaper configuration would be a false claim in the
+> paper.** It buys full-depth coverage per challenge and a union bounded by
+> depth. Recorded in `ref13-vrbc.md`, and the test now pins the leaf-restriction
+> property and merely LOGS the comparison.
+
+**The verifier does not trust the prover's tree.** `VerifyAudit` anchors node 0
+to the trusted root, rejects a node presented with two different commitments,
+requires each child-position value to be the hash of the commitment the union
+holds for that child, and recomputes every coefficient. A link to a node outside
+the union is left uncross-checked deliberately — that is the frontier, and the
+aggregate still binds the value.
 
 ### 7.1 Two more unswept sweeps, found before writing the wiring
 

@@ -154,6 +154,18 @@ All from `config/experiment.yaml`. **None hardcoded.**
 > recorded in the config, not just the number**. Under the no-magic-numbers rule, the
 > reasoning is what transfers, not the digit.
 
+> **On `optimized_auditing`, and what it does not buy.** §4.1's mechanism is f1's
+> range, `(q(1-q^{l-1})/(1-q), q(1-q^l)/(1-q)]`, which for `q=5, l=4` is `(155, 780]`
+> — exactly the leaf-level indices. So the optimisation restricts challenges to
+> **leaves**. It does **not** produce a smaller path union than uniform sampling:
+> measured at `q=5` over 400 blocks, optimised gives a union of 56 against uniform's
+> 55, because the deepest level already holds 245 of 400 blocks and a uniform sample
+> draws some shallow ones whose paths are shorter. What it buys is full-depth
+> coverage per challenge and a union bounded by depth. **Presenting the optimised arm
+> as the cheaper configuration would be wrong** — it is enabled because it is the
+> configuration the paper measures. Pinned by
+> `TestOptimizedSelectionChallengesLeavesOnly`.
+
 > **On `bat_arity_q`.** Because `q` trades append cost against redaction and audit
 > cost in opposite directions, fixing one value would let the choice determine the
 > outcome. Sweep it, or justify a single value explicitly.
@@ -208,12 +220,12 @@ the paper reports results, and omitting it would weaken the baseline unfairly.
 ## 7. Fidelity checklist
 
 - [x] Vector commitments are real cryptographic commitments, not hash placeholders — `pkg/vc`, checked against directly evaluated exponents rather than against itself
-- [ ] Pairing checks (Eq. 11) are actually computed and can actually fail
+- [x] Pairing checks (Eq. 11) are actually computed and can actually fail — `AggregateVerify`, with the forgery tests behind it
 - [ ] Eq. 12 chameleon-hash correctness check is performed
-- [ ] BAT path updates touch every node from redacted block to root — not a shortcut
-- [ ] Audit challenge is genuinely randomised per round via the specified PRF
-- [ ] Optimized path-union selection (§4.1) is active
-- [ ] A tampered block is actually **detected** — verify with a negative test
+- [x] BAT path updates touch every node from redacted block to root — `refreshPath`, pinned by `TestRedactionChangesTheRoot`
+- [x] Audit challenge is genuinely randomised per round via the specified PRF — `TestAuditIsADifferentChallengeEachRound`
+- [x] Optimized path-union selection (§4.1) is active — and see the note above on what it does and does not buy
+- [x] A tampered block is actually **detected** — `TestAuditDetectsATamperedBlock`
 - [ ] Trapdoor authorization check is real, not stubbed to `return true`
 - [ ] No parameter appears as a literal anywhere in the implementation
 
