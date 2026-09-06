@@ -195,6 +195,8 @@ the paper reports results, and omitting it would weaken the baseline unfairly.
 | Fabric instead of Python + Ropsten | One shared environment for all systems (`SKILL.md` fair-comparison rule) | Absolute numbers differ substantially from published; relative comparison valid |
 | Go/Rust instead of Python + GMP/PBC | Matches project toolchain; Python timings are not comparable to compiled code | **Favours Ref[13]** — likely faster than its published figures |
 | Real network I/O included | Their off-chain measurements excluded transport | Raises measured cost; applied identically to all systems |
+| **The SRS omits `g1^{a^{N+1}}`.** Eq. 3 as printed gives the second parameter vector as `(g1^{a^{N+1}}, …, g1^{a^{2N}})`; `pkg/vc` publishes `[N+2, 2N]` instead | The paper's own soundness proof requires the omission. Eq. 20 reduces a forgery to computing `g1^{a^{N+1}(mu' - mu)}` and calls that an `l`-wBDHE solution — if `pp` contained that element the reduction would be vacuous, since a forger could shift any valid opening to any claimed value by scaling it directly. Pointproofs (Gorbunov et al., CCS 2020) omits it for the same reason. Read as a transcription slip in Eq. 3, not a design choice | **None on cost** — the prover never needs it (for `j != i` the exponent `N+1-i+j` equals `N+1` only when `j = i`), so no operation gets cheaper or dearer. It is a **soundness** correction: following Eq. 3 literally yields a commitment that passes every round-trip test and is trivially forgeable. Pinned by `TestForgeryNeedsTheOmittedParameter`, which performs the forgery with the withheld element and then asserts the element is absent from `pp` |
+| Trapdoor `alpha` is sampled by `vc.Setup` and discarded, rather than produced by a ceremony | Same argument as `accumulator.GenerateUntrusted` for Ref[22]'s RSA modulus: the evaluation measures COST, and every operation's cost depends on `N` and the group, not on who knew `alpha` | **None on cost.** The security argument would not survive this shortcut; the timing measurement is unchanged by it |
 
 > Our Ref[13] numbers are **not** comparable to the paper's published figures and
 > must never be presented as such. Language reimplementation alone can shift timings
@@ -205,7 +207,7 @@ the paper reports results, and omitting it would weaken the baseline unfairly.
 
 ## 7. Fidelity checklist
 
-- [ ] Vector commitments are real cryptographic commitments, not hash placeholders
+- [x] Vector commitments are real cryptographic commitments, not hash placeholders — `pkg/vc`, checked against directly evaluated exponents rather than against itself
 - [ ] Pairing checks (Eq. 11) are actually computed and can actually fail
 - [ ] Eq. 12 chameleon-hash correctness check is performed
 - [ ] BAT path updates touch every node from redacted block to root — not a shortcut

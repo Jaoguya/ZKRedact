@@ -152,7 +152,7 @@ without that declaration appearing in the capability matrix the results carry.
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
-| `pkg/vc` | **Pointproofs vector commitment** (task 7 spike) — commit, open, verify |
+| `pkg/vc` | **Pointproofs vector commitment** — commit, open, verify, and Eq. 11 aggregation |
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
@@ -815,11 +815,15 @@ immediately, because there the cost is real.
 > on the modulus size rather than on who knows its factors. The security
 > argument would not survive this; the timing measurement is unchanged by it.
 
-### 7. Ref[13] VRBC — spike ✅ done, BAT remaining ⬅️ **next**
+### 7. Ref[13] VRBC — cryptography ✅ done, BAT remaining ⬅️ **next**
 
 Ephemeral-trapdoor CH is **done** (`pkg/ch/ephemeral.go`). The vector
-commitment spike is **done** (`pkg/vc`). Remaining: the q-ary BAT on top of it —
-Algorithms 1-3, cross-commitment aggregation (Eq. 11), and the redaction path.
+commitment is **done** (`pkg/vc`), including cross-commitment aggregation.
+Remaining: the q-ary BAT on top of it — the tree itself (`Fam`, `Level`,
+`Parent`, `Path`, `#Child`), Algorithms 1-3, and the `ref13` scheme wiring.
+
+**The cryptography is no longer the risk.** What is left is tree bookkeeping
+against a construction that is now built and checked.
 
 #### The spike found a defect in the paper
 
@@ -871,13 +875,48 @@ computing one answer — taking it from 2.00 ms to 1.51 ms. The GT exponentiatio
 cannot be folded the same way, because the element that would turn it into a
 pairing is the withheld one.
 
-**Revised estimate: 1-2 sessions**, down from 2-4. Two reasons. `arity_q` is
-`[2, 5, 10]`, so `N` is 3, 6 or 11 — the vectors are TINY, and commitment width
-is not where the cost lives; path length is. And the primitive that carried the
-"no Go implementation exists" risk now exists and is checked.
+**Revised estimate: ~1 session**, down from 2-4. `arity_q` is `[2, 5, 10]`, so
+`N` is 3, 6 or 11 — the vectors are TINY, and commitment width is not where the
+cost lives; path length is. Both parts that carried the "no Go implementation
+exists" risk — the commitment and the aggregation — now exist and are checked.
 
-Aggregation (Eq. 11) is the remaining unknown, and it is the part that has to
-carry Exp 3.
+#### Aggregation (Eq. 11) ✅ done — the unknown that carried Exp 3
+
+Both Algorithm 2 (block query) and Algorithm 3 (auditing) reduce to one
+aggregated check:
+
+	PROD_i e(C_i^{t_i}, g2^{a^{N+1-c_i}}) = e(pi_hat, g2) * gT_{N+1}^{mu_hat}
+
+`AggregateOpen` / `AggregateVerify` implement it: **k+1 pairings in one Miller
+loop and one final exponentiation**, against 2k pairings and k final
+exponentiations for verifying openings one at a time. C_i is scaled in G1 rather
+than the pairing result in GT — equal by bilinearity, and far cheaper.
+
+| k openings | aggregated | one at a time | saving |
+|---|---|---|---|
+| 4 | 2.56 ms | 6.0 ms | 2.4x |
+| 16 | 6.20 ms | 24.2 ms | 3.9x |
+| 64 | 20.9 ms | 96.6 ms | **4.6x** |
+
+Marginal cost per extra opening is 0.31 ms against 1.51 ms standalone. This is
+the property Exp 3 rests on, and it is now measured rather than assumed.
+
+**THE COEFFICIENTS ARE THE SECURITY, AND THEY ARE EASY TO GET WRONG.** The left
+side of that equation does not involve the claimed values at all — they enter
+only through `mu_hat`. So with fixed or prover-chosen coefficients, a prover
+claims anything whose weighted sum still reaches `mu_hat`: raise one value by d,
+lower another by d, and the honest `pi_hat` still verifies.
+
+`TestUnboundCoefficientsWouldBeForgeable` performs exactly that and asserts it
+SUCCEEDS, then shows binding stops it. The paper binds rather than samples —
+`t = H2(c, C, v[c])`, Algorithm 2 line 3 and Algorithm 3 line 6 — so changing a
+value changes its own coefficient. `DeriveCoefficient` implements it over
+SHA-256, because `security.hash` is SHA-256; the `ref13` Setup must call
+`crypto.RequireHash`, as the Schnorr path does.
+
+> If that forgeability test ever starts FAILING, the verification equation has
+> changed and the argument for the coefficients has to be redone. It is not a
+> test that should be "fixed" by making it pass.
 
 #### The original risk assessment, kept because two of three still stand
 
