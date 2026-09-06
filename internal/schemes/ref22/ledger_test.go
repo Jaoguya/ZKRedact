@@ -4,6 +4,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"math/big"
 	"testing"
 
 	"zkredact/pkg/accumulator"
@@ -252,5 +253,117 @@ func TestBrokenLinkageIsDetected(t *testing.T) {
 
 	if _, err := l.ValChain(); err == nil {
 		t.Fatal("a broken chain linkage validated")
+	}
+}
+
+// Algorithm 7 lines 17-23 build four non-interactive proofs inside Delete, and
+// Algorithm 8's ValDel returns nothing but their conjunction. They were absent:
+// the product eta_hat_1 was computed and discarded, and ValDel checked
+// something else entirely.
+func TestDeleteProducesVerifiableProofs(t *testing.T) {
+	l := testLedger(t, 8)
+
+	if _, err := l.Delete([]uint64{2, 3}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if l.lastDeletion == nil {
+		t.Fatal("Delete recorded no proof; w_i is empty")
+	}
+	p := l.lastDeletion
+	if p.Q1 == nil || p.Q2 == nil || p.Q3 == nil {
+		t.Fatalf("w_i is incomplete: Q1=%v Q2=%v Q3=%v", p.Q1 != nil, p.Q2 != nil, p.Q3 != nil)
+	}
+	if p.Eta1 == nil || p.Eta1.Sign() <= 0 {
+		t.Error("eta_hat_1 was not carried into the proof")
+	}
+
+	ok, err := l.VerifyDeletion(p)
+	if err != nil {
+		t.Fatalf("VerifyDeletion: %v", err)
+	}
+	if !ok {
+		t.Error("a genuine deletion proof failed verification")
+	}
+}
+
+// The proof must be able to REJECT, or it is decoration on the cost curve.
+func TestDeletionProofRejectsTampering(t *testing.T) {
+	l := testLedger(t, 8)
+	if _, err := l.Delete([]uint64{4}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	genuine := l.lastDeletion
+
+	for _, tc := range []struct {
+		name  string
+		alter func(*deletionProof) *deletionProof
+	}{
+		{"Q1 replaced", func(p *deletionProof) *deletionProof {
+			c := *p
+			c.Q1 = &accumulator.PoE{Q: big.NewInt(2)}
+			return &c
+		}},
+		{"eta_hat_1 altered", func(p *deletionProof) *deletionProof {
+			c := *p
+			c.Eta1 = new(big.Int).Add(p.Eta1, big.NewInt(1))
+			return &c
+		}},
+		{"Q3 residue altered", func(p *deletionProof) *deletionProof {
+			c := *p
+			q := *p.Q3
+			q.R = new(big.Int).Add(q.R, big.NewInt(1))
+			c.Q3 = &q
+			return &c
+		}},
+		{"prior state fabricated", func(p *deletionProof) *deletionProof {
+			// The distinction that makes binding to the LEDGER's states matter.
+			// A verifier that recomputes w as StateBar^Eta1 accepts any
+			// StateBefore, because it never looks at the one it was given —
+			// so a deletion could claim to have started from a chain state
+			// that never existed.
+			c := *p
+			c.StateBefore = new(big.Int).Mul(p.StateBefore, big.NewInt(3))
+			return &c
+		}},
+		{"post state fabricated", func(p *deletionProof) *deletionProof {
+			c := *p
+			c.StateAfter = new(big.Int).Mul(p.StateAfter, big.NewInt(3))
+			return &c
+		}},
+		{"nu altered", func(p *deletionProof) *deletionProof {
+			c := *p
+			c.Nu = new(big.Int).Add(p.Nu, big.NewInt(1))
+			return &c
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, err := l.VerifyDeletion(tc.alter(genuine))
+			if err == nil && ok {
+				t.Errorf("accepted a tampered deletion proof")
+			}
+		})
+	}
+
+	if ok, _ := l.VerifyDeletion(nil); ok {
+		t.Error("accepted a missing deletion proof")
+	}
+}
+
+// A larger delete set means a larger eta_hat_1, which is the whole reason the
+// proof is succinct rather than a direct exponentiation.
+func TestDeletionProofScalesWithTheDeleteSet(t *testing.T) {
+	small := testLedger(t, 12)
+	large := testLedger(t, 12)
+
+	if _, err := small.Delete([]uint64{3}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := large.Delete([]uint64{3, 5, 7, 9}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if small.lastDeletion.Eta1.BitLen() >= large.lastDeletion.Eta1.BitLen() {
+		t.Errorf("eta_hat_1 did not grow with the delete set: %d bits for 1 block, %d for 4",
+			small.lastDeletion.Eta1.BitLen(), large.lastDeletion.Eta1.BitLen())
 	}
 }

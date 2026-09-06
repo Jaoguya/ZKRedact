@@ -251,7 +251,6 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 				}
 			}
 		}
-		_ = shardCounts
 
 		res.SaturationPoint[s.Name()] = findSaturation(res.Points, s.Name())
 	}

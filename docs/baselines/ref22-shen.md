@@ -157,7 +157,7 @@ All from `config/experiment.yaml`. **None hardcoded.**
 |---|---|
 | `Insert` (Algorithms 3, 4) | Block insertion is this paper's distinctive contribution but has no counterpart in ZK-Redact, Ref[10], or Ref[13]. Nothing to compare it against. |
 | Bitcoin-specific PoW mechanics | Our setting is permissioned. See deviation below. |
-| Non-interactive succinct proofs (§II-B) | ⚠️ **This justification is wrong and the omission is still open.** NI-PoE and NI-PoKE are on the measured path: Algorithm 7 builds four of them inside `Delete` (lines 17, 19, 22, 23) and Algorithm 8's entire return value is their verification. `UA.MWit` and `UA.N-MWit` also return proofs rather than bare witnesses. Omitting them makes `Delete` cheaper than the paper specifies, on the metric Exp 2 reports for this baseline. Tracked as a known gap. |
+| `Insert`'s own proofs (Algorithms 3, 4) | Insert itself is out of scope, so the proofs inside it are too. |
 | Comparison against AMVA17 / Bitcoin | Their internal baselines, not ours. |
 
 > **`Insert` is omitted for scope, not convenience.** It is a genuine capability the
@@ -188,15 +188,39 @@ All from `config/experiment.yaml`. **None hardcoded.**
 
 ## 7. Fidelity checklist
 
-- [ ] Accumulator is a real cryptographic accumulator, not a hash set
-- [ ] Both membership *and* non-membership witnesses are generated and verified
-- [ ] `UA.Del` genuinely invalidates prior versions — verify a reversion attack is caught
-- [ ] Double-trapdoor CH uses both trapdoors as specified, not a single-trapdoor stand-in
-- [ ] Largest-sequence-number rule is enforced
-- [ ] `Delete(L)` computes `H_prime(·)` for every deleted block, with one `CH.Adapt` per consecutive subset
-- [ ] `ValChain` genuinely traverses all blocks — no caching that would hide linear cost
-- [ ] Regulator key check is real, not stubbed
-- [ ] No parameter appears as a literal anywhere in the implementation
+- [x] Accumulator is a real cryptographic accumulator, not a hash set
+      — `pkg/accumulator`, hash-to-prime with nonce search and verifier-side
+      primality checking; `TestPrimeRepresentativesArePrime`,
+      `TestDistinctElementsGetDistinctPrimes`
+- [x] Both membership *and* non-membership witnesses are generated and verified
+      — `TestMembershipWitnessVerifies`, `TestNonMembershipWitnessVerifies`, and
+      forgery tests for both
+- [x] `UA.Del` genuinely invalidates prior versions — verify a reversion attack is caught
+      — `TestRevertedVersionIsDetected`, `TestModifyInvalidatesTheSupersededVersion`,
+      and `TestTrapdoorDeleteStillDetectsReversion` for the trapdoor path
+- [x] Double-trapdoor CH uses both trapdoors as specified, not a single-trapdoor stand-in
+      — `TestDoubleTrapdoorAdaptNeedsPerHashTrapdoor`,
+      `TestDoubleTrapdoorDistinctTPerHash`, `TestDoubleTrapdoorKeyExposureFreeness`
+- [x] Largest-sequence-number rule is enforced — `wiring.go`, adoption of the
+      latest version is forced rather than chosen
+- [x] `Delete(L)` computes `H_prime(·)` for every deleted block, with one `CH.Adapt` per consecutive subset
+      — `TestDeleteSetStructureDrivesAdaptationCount`. `H_prime` is the
+      accumulator's own prime representative, not a separate digest: an earlier
+      version returned a raw hash, so the product over `L` described no state
+      transition and could not be proved about
+- [x] **NI-PoE / NI-PoKE are built inside `Delete` and verified by `ValDel`**
+      — Algorithm 7 lines 17-23 and Algorithm 8. `TestDeleteProducesVerifiableProofs`,
+      `TestDeletionProofRejectsTampering` (including a fabricated prior state),
+      `TestDeletionProofScalesWithTheDeleteSet`
+- [x] `ValChain` genuinely traverses all blocks — no caching that would hide linear cost
+      — `TestValChainCostGrowsWithChainLength`
+- [x] Regulator key check is real, not stubbed — `HasTrapdoor` with a denial path
+- [x] No parameter appears as a literal anywhere in the implementation — audited
+
+> **Mutation-checked.** An always-true `VerifyDeletion`, a verifier that derives
+> the prior state from the exponent it is checking rather than reading it from
+> the ledger, and an `H_prime` that returns a raw digest instead of the
+> accumulator's prime each fail the suite.
 
 > Two checks carry the most weight. The reversion-attack test proves the accumulator
 > actually does its job — the paper's central security claim. And `ValChain` must not

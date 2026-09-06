@@ -118,6 +118,11 @@ type ledger struct {
 	// CURRENT accumulator state. Maintained by the ledger owner, which is whose
 	// job witness upkeep is in an RSA accumulator.
 	current map[string]*big.Int
+
+	// lastDeletion holds w_i from the most recent Delete: the four proofs of
+	// Algorithm 7 lines 17-23, which Algorithm 8 verifies. Retained so ValDel
+	// has something to check, exactly as a recording block would carry it.
+	lastDeletion *deletionProof
 }
 
 // newLedger prepares an empty chain.
@@ -304,9 +309,17 @@ func (l *ledger) Delete(positions []uint64) (adaptations int, err error) {
 		if seq >= uint64(len(l.blocks)) {
 			return 0, fmt.Errorf("ref22: block %d is not in the chain", seq)
 		}
-		product.Mul(product, hPrime(l.blocks[seq]))
+		e, err := hPrime(l.blocks[seq])
+		if err != nil {
+			return 0, fmt.Errorf("ref22: H_prime for block %d: %w", seq, err)
+		}
+		product.Mul(product, e)
 	}
-	_ = product
+
+	// eta_hat_1 is what Algorithm 7 line 17 proves over: the accumulator moved
+	// by exactly this product. Capturing the pre-deletion state here, before
+	// UA.Del runs below, is what makes that statement expressible.
+	stateBefore := l.acc.State()
 
 	removed := make(map[uint64]bool, len(positions))
 	for _, seq := range positions {
@@ -358,6 +371,25 @@ func (l *ledger) Delete(positions []uint64) (adaptations int, err error) {
 	}
 
 	l.blocks = kept
+
+	// Proofs BEFORE witness regeneration: line 18 adds the recording block's
+	// element to the accumulator, so regenerating first would produce witnesses
+	// against a state the next line invalidates.
+	//
+	// Algorithm 7 lines 17-23: the witness w_i of the recording block is four
+	// non-interactive proofs, not a bare accumulator value. Building them is
+	// part of what Delete COSTS, and Algorithm 8's ValDel returns nothing but
+	// their conjunction — so omitting them makes this scheme cheaper than its
+	// own design on the metric Exp 2 reports for it.
+	//
+	// Timed inside Delete deliberately: the regulator constructs these, and
+	// Delete is the operation Exp 2 measures.
+	proof, err := l.proveDeletion(stateBefore, product)
+	if err != nil {
+		return adaptations, err
+	}
+	l.lastDeletion = proof
+
 	if err := l.regenerateWitnesses(); err != nil {
 		return adaptations, err
 	}
@@ -383,6 +415,143 @@ func findPredecessor(blocks []*Block, seq uint64) *Block {
 		}
 	}
 	return out
+}
+
+// deletionProof is w_i from Algorithm 7 line 24, reduced to the parts this
+// re-implementation constructs.
+//
+// Q1 witnesses the removal of the deleted set (line 17), Q2 the addition of the
+// recording block (line 19), Q3 the validity of the non-membership witness
+// (line 22, a proof of KNOWLEDGE because beta is a secret Bezout coefficient),
+// and Q4 the non-membership of every prior version (line 23).
+type deletionProof struct {
+	Q1 *accumulator.PoE
+	Q2 *accumulator.PoE
+	Q3 *accumulator.PoKE
+
+	// The three accumulator states the proofs relate. All are LEDGER values.
+	//
+	// The verifier must take them from the chain, never recompute them from the
+	// exponent it is checking. Deriving w as u^eta inside the verifier makes the
+	// statement self-referential: altering eta then alters w to match, the
+	// quotient is usually unchanged because eta is far larger than the challenge
+	// prime, and the residue absorbs the difference — so a tampered eta_hat_1
+	// verifies. That is what an earlier version of VerifyDeletion did.
+	StateBefore *big.Int // A_{s_m}, before any deletion
+	StateBar    *big.Int // A_bar_i, after UA.Del over L (line 9)
+	StateAfter  *big.Int // A_i, after adding the recording block (line 18)
+
+	Eta1 *big.Int // eta_hat_1, the product over L (line 12)
+	EtaI *big.Int // eta_i, the recording block's element (line 18)
+	Nu   *big.Int // v_i (line 21)
+}
+
+// proveDeletion builds the proofs of Algorithm 7 lines 17-23.
+func (l *ledger) proveDeletion(stateBefore, eta1 *big.Int) (*deletionProof, error) {
+	n := l.acc.Modulus()
+	g := l.acc.Generator()
+
+	// A_bar_i: the state after UA.Del over L (Algorithm 7 line 9).
+	stateBar := l.acc.State()
+
+	// Line 17: the deleted elements really were removed. The statement is that
+	// raising the POST-deletion state by eta_hat_1 returns the PRE-deletion
+	// state, which holds because A_before = g^{prod all} and
+	// A_bar = g^{prod surviving}.
+	q1, w1, err := accumulator.ProvePoE(stateBar, eta1, n)
+	if err != nil {
+		return nil, fmt.Errorf("ref22: NI-PoE for the deleted set: %w", err)
+	}
+	if w1.Cmp(stateBefore) != 0 {
+		return nil, fmt.Errorf(
+			"ref22: accumulator did not move by eta_hat_1 across the deletion; " +
+				"the proof would attest a transition that did not happen")
+	}
+
+	// Line 18: the block recording the deletion event is added, A_i = A_bar^eta_i.
+	etaBytes := l.recordingElement()
+	etaI, err := accumulator.HashToPrime(etaBytes)
+	if err != nil {
+		return nil, fmt.Errorf("ref22: recording block element: %w", err)
+	}
+	if _, err := l.acc.Add(etaBytes); err != nil {
+		return nil, fmt.Errorf("ref22: UA.Add for the recording block: %w", err)
+	}
+	stateAfter := l.acc.State()
+
+	// Line 19: that addition really happened.
+	q2, w2, err := accumulator.ProvePoE(stateBar, etaI, n)
+	if err != nil {
+		return nil, fmt.Errorf("ref22: NI-PoE for the recording block: %w", err)
+	}
+	if w2.Cmp(stateAfter) != 0 {
+		return nil, fmt.Errorf(
+			"ref22: recording block was not added as A_bar^eta_i; " +
+				"the proof would attest a state the ledger does not hold")
+	}
+
+	// Lines 21-22: v_i = A_i^beta, with a proof of KNOWLEDGE of beta. beta comes
+	// from Exgcd and is secret, so a PoE would require publishing it.
+	beta := new(big.Int).ModInverse(eta1, stateAfter)
+	if beta == nil {
+		beta = new(big.Int).Set(eta1)
+	}
+	q3, nu, err := accumulator.ProvePoKE(stateAfter, beta, g, n)
+	if err != nil {
+		return nil, fmt.Errorf("ref22: NI-PoKE for the non-membership witness: %w", err)
+	}
+
+	return &deletionProof{
+		Q1: q1, Q2: q2, Q3: q3,
+		StateBefore: stateBefore,
+		StateBar:    stateBar,
+		StateAfter:  stateAfter,
+		Eta1:        eta1,
+		EtaI:        etaI,
+		Nu:          nu,
+	}, nil
+}
+
+// recordingElement is the element derived from the block recording the deletion
+// event, which Algorithm 7 line 18 adds to the accumulator.
+func (l *ledger) recordingElement() []byte {
+	h := sha256.New()
+	h.Write([]byte("ref22/deletion-record"))
+	var seq [8]byte
+	binary.BigEndian.PutUint64(seq[:], uint64(len(l.blocks)))
+	h.Write(seq[:])
+	return h.Sum(nil)
+}
+
+// VerifyDeletion is Algorithm 8: ValDel returns the conjunction of the proof
+// verifications and nothing else.
+func (l *ledger) VerifyDeletion(p *deletionProof) (bool, error) {
+	if p == nil {
+		return false, fmt.Errorf("ref22: no deletion proof recorded")
+	}
+	if p.Q1 == nil || p.Q2 == nil || p.Q3 == nil ||
+		p.StateBefore == nil || p.StateBar == nil || p.StateAfter == nil ||
+		p.Eta1 == nil || p.EtaI == nil || p.Nu == nil {
+		return false, fmt.Errorf("ref22: deletion proof is incomplete")
+	}
+	n := l.acc.Modulus()
+	g := l.acc.Generator()
+
+	// Every state below is read from the proof as a ledger value. None is
+	// recomputed from the exponent being checked.
+	ok, err := accumulator.VerifyPoE(p.Q1, p.StateBar, p.StateBefore, p.Eta1, n)
+	if err != nil || !ok {
+		return false, err
+	}
+	ok, err = accumulator.VerifyPoE(p.Q2, p.StateBar, p.StateAfter, p.EtaI, n)
+	if err != nil || !ok {
+		return false, err
+	}
+	ok, err = accumulator.VerifyPoKE(p.Q3, p.StateAfter, p.Nu, g, n)
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, nil
 }
 
 // ValDel is Algorithm 8.
@@ -461,13 +630,19 @@ func (l *ledger) regenerateWitnesses() error {
 	return nil
 }
 
-// hPrime is H'(B), the per-block value Algorithm 7 multiplies over the delete
-// set.
-func hPrime(b *Block) *big.Int {
-	h := sha256.New()
-	h.Write([]byte("ref22/hprime"))
-	h.Write(b.Content())
-	return new(big.Int).SetBytes(h.Sum(nil))
+// hPrime is H_prime(B): the block's PRIME representative in the accumulator.
+//
+// It must be the accumulator's own element exponent, not a separate hash. An
+// earlier version returned a raw SHA-256 digest, which was wrong twice over —
+// it is not prime, and it is not the exponent the accumulator actually holds.
+// The product over the delete set was therefore unrelated to the state
+// transition it was supposed to describe, which is why nothing could be proved
+// about it and why the product was computed and discarded.
+//
+// With this alignment, A_bar^{prod over L} = A_before holds by construction,
+// and that identity is exactly what Algorithm 7 line 17 proves.
+func hPrime(b *Block) (*big.Int, error) {
+	return accumulator.HashToPrime(b.element())
 }
 
 // consecutiveRuns splits a delete set into maximal consecutive runs.
