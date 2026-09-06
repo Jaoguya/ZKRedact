@@ -6,7 +6,7 @@ re-implemented baselines on one shared Hyperledger Fabric harness.
 **Branch:** `main`
 **Code:** ~20,400 lines Go across 66 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **196 tests (328 with subtests) passing**, `make validate-config`
+gofmt-clean, **204 tests passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
@@ -16,6 +16,12 @@ transport**.
 8 vCPU / 8 GB macOS host. It establishes that the mechanism works; it produces
 no measurements. The full topology has been brought up and deployed before, but
 no experiment has run on it — see §3.5.
+
+✅ **Independently re-verified** on a second host (Windows, Go 1.27.0, i5-10600):
+`go build`, `go vet`, gofmt and the full suite under `-race` all clean, and
+`validate-config` reports 0 errors. Only the non-live suite — the Fabric paths
+are build-tagged and were not exercised there. Worth knowing that the tree is
+not macOS-dependent.
 
 ---
 
@@ -146,6 +152,7 @@ without that declaration appearing in the capability matrix the results carry.
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
+| `pkg/vc` | **Pointproofs vector commitment** (task 7 spike) — commit, open, verify |
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
@@ -524,6 +531,15 @@ Against the unsharded per-record floor:
 At concurrency 1 all four cells sit at ~148: nothing to shard, nothing to batch.
 That flat row is the control.
 
+> ⚠️ **These numbers are not reproducible from the config as committed, and must
+> be re-measured.** `SchemeParams` passed `proof_batch.sizes[0]`, which is 1, and
+> nothing overrode it — so `BatchSize` was 1 on every run, every batch closed at
+> one job, and `BatchVerify`'s `len(proofs) < 2` branch sent both arms down the
+> per-record path. The table above therefore came from a configuration that was
+> never committed. The sweep is now wired (§5.6), so the committed config CAN
+> produce this table — but these particular figures cannot be traced to it and
+> should be regenerated on the EC2 host before anything is plotted from them.
+
 #### The batch path is real cryptography, and here is how that was checked
 
 "n+3 pairings instead of 3n" is a claim about what the code does, so it was
@@ -613,7 +629,7 @@ without mutating the trace every scheme shares.
 - **`Reshard` avoids recompilation.** The circuit does not depend on N, so a
   sweep point costs new goroutines, not a trusted setup.
 
-### 5.5 Two loose ends from the Phase 3 work
+### 5.5 Two loose ends from the Phase 3 work — #2 ✅ done, #1 open
 
 Neither breaks anything; both are the kind of thing that reads as a promise if
 left alone.
@@ -626,12 +642,79 @@ cells are present. The numbers exist; the list that describes them does not
 produce them. **Either wire it as the literal driver of the sweep, or delete it**
 so it stops looking like the thing generating the grid.
 
-**2. `pkg/zk/batch.go` carries test-only state.** `lastG1`/`lastG2` retain the
-most recent `PairingCheck` inputs so `TestBatchReallyDoesNPlus3Pairings` can
-count them. They are written on every batch in a measured run and read only by
-tests. Harmless today, but production code holding test scaffolding is how a
-measured path grows something nobody intended. Better returned from the
-aggregation than stored in a package var.
+**2. `pkg/zk/batch.go` carried test-only state — ✅ fixed.** `lastG1`/`lastG2`
+are gone. `batchVerifyAggregated` is split into `batchPairingPoints`, which
+builds and RETURNS the two point vectors, and a thin checker that pairs them;
+`batchPairingInputs` calls the former directly.
+
+It was worse than "harmless today". Those were package-level variables written
+without a lock on a path the PVL runs from **one goroutine per shard**, so they
+were a data race waiting for the batch path to run sharded. `-race` did not
+catch it for two reasons that were both about to disappear: `BatchSize` was 1,
+so the `len(proofs) < 2` branch never reached the aggregation, and the only test
+that exercises native verification sets `ShardCount = 1` (`pvl_test.go:162`,
+"one shard, so all proofs share a batch"). Fixing the batch sweep in §5.6 would
+have made it reachable at N > 1.
+
+### 5.6 The batching ablation was never actually measured — ✅ fixed
+
+**What was wrong.** Exp 1 swept the verification MODE but not the batch SIZE.
+`SchemeParams` returned `proof_batch.sizes[0]` — the batching-disabled arm — and
+there was no runtime path to change it, so every Exp 1 run used `B = 1`. At
+`B = 1` the shard loop closes each batch at one job and `zk.BatchVerify` takes
+its `len(proofs) < 2` branch, so `native_batch_verify` true and false ran
+identical code. The grid produced two labelled arms holding the same
+measurement.
+
+This is the third instance of one defect: a sweep declared in config, plumbed
+through `Config`, and then never read. The shard sweep was the first, the
+ablation grid the second.
+
+`SchemeParams`' own doc comment describes the bug it contained — *"Swept
+parameters … are NOT included … so that a scheme cannot accidentally read a
+sweep's first element and hold it for the whole run"* — while its body returned
+exactly those first elements.
+
+**The fix.**
+
+- `scheme.Rebatcher` (`Rebatch(batchSize int) error`), mirroring `Resharder`.
+- `PVL.SetBatchSize` / `BatchSize`, and `zkredact.Rebatch`. It REBUILDS the
+  service rather than only mutating the PVL, because `NewService` takes a
+  snapshot (`&Service{cfg: p.cfg, …}`) — mutating the PVL alone leaves the
+  running workers on the old B, which is the silent version of this same bug.
+- Exp 1 sweeps `cfg.BatchSizes`, and each `Point` now records `BatchSize` and
+  `NativeBatchVerify`.
+- `Ablation.Batching` now means `batch > 1`, the config's own disabled-arm
+  convention. The verification mode is a SEPARATE field: the two are independent
+  knobs, and folding them into one boolean is what made the arms
+  indistinguishable.
+
+**Consequence for the run plan.** Exp 1's grid is now 7 shard counts x 7 batch
+sizes x 2 modes = **98 configurations per scheme, against 14 before**. On
+ZK-Redact's ~1.34 ms path that is roughly an hour, not a budget problem — but it
+lands on Decision 1 and task 9 should size it deliberately rather than inherit
+it.
+
+**Two guards added, both mutation-checked.**
+
+- `validate-config` now ERRORS when `native_batch_verify` includes `true` but
+  every configured `B` is 1. The existing check tested backend capability, which
+  cannot see this route. Verified: fires and exits 1 on `sizes: [1]`, silent on
+  the real config.
+- `experiments/exp1_verification/runner_test.go` — the package had **no tests at
+  all**, which is why a declared sweep could go unexecuted twice.
+  `TestRunSweepsEveryConfiguredDimension` asserts the points cover every
+  configured combination. Mutation-checked by disabling the batch sweep in the
+  runner: it fails with `got 8 points, want 16 — a declared sweep is not being
+  executed` and names the four missing configurations.
+
+> **The lesson worth keeping.** Both times, the defect survived because the
+> disabled arm is a VALID configuration — it runs, produces plausible numbers,
+> and fails nothing. A coverage test that checks what the sweep produced against
+> what the config asked for is the only thing that catches it. Adding a sweep
+> without extending that test re-opens the hole.
+
+---
 
 ### 6. Ref[22] Shen ✅ done
 
@@ -732,13 +815,71 @@ immediately, because there the cost is real.
 > on the modulus size rather than on who knows its factors. The security
 > argument would not survive this; the timing measurement is unchanged by it.
 
-### 7. Ref[13] VRBC — the last scheme, and the highest risk ⬅️ **next**
+### 7. Ref[13] VRBC — spike ✅ done, BAT remaining ⬅️ **next**
 
-Ephemeral-trapdoor CH is **done** (`pkg/ch/ephemeral.go`). Remaining: the q-ary
-BAT with Pointproofs-style vector commitments over BLS12-381.
+Ephemeral-trapdoor CH is **done** (`pkg/ch/ephemeral.go`). The vector
+commitment spike is **done** (`pkg/vc`). Remaining: the q-ary BAT on top of it —
+Algorithms 1-3, cross-commitment aggregation (Eq. 11), and the redaction path.
 
-**Estimated 2-4 sessions**, against ~1-2 for a task like Ref[22]. Three reasons
-the range is wider:
+#### The spike found a defect in the paper
+
+**Eq. 3 as printed publishes `g1^{a^{N+1}}`, and must not.** It gives the second
+parameter vector as `(g1^{a^{N+1}}, …, g1^{a^{2N}})`. The paper's OWN soundness
+proof is the evidence that this is wrong: Eq. 20 reduces a forgery to computing
+`g1^{a^{N+1}(mu' - mu)}` and calls that an l-wBDHE solution. If `pp` contained
+that element the reduction is vacuous — a forger shifts any valid opening to any
+claimed value by scaling it directly.
+
+`pkg/vc` therefore publishes `[N+2, 2N]`, as Pointproofs does. The prover loses
+nothing: for `j != i` the exponent `N+1-i+j` equals `N+1` only when `j = i`.
+
+> **Implementing Eq. 3 literally produces a construction that passes every
+> round-trip test and is trivially forgeable.** That is exactly the failure this
+> task was flagged for. Record it in
+> [`ref13-vrbc.md`](docs/baselines/ref13-vrbc.md)'s deviation list — **not done
+> yet**.
+
+#### How it was tested without a reference implementation
+
+Round trips only prove self-consistency, so two of the eight tests are not round
+trips:
+
+- **`Commit` and `Open` are checked against directly evaluated exponents**, with
+  alpha known to the test, using single scalar multiplications — no reference
+  string, no MSM. Two independent routes to the same point.
+- **`TestForgeryNeedsTheOmittedParameter` performs the forgery** with the
+  withheld element, and it VERIFIES. That only works if the verification equation
+  really is Pointproofs', so it checks the algebra rather than the code agreeing
+  with itself. It then asserts the element is absent from `pp` — and fails if
+  anyone ever "corrects" the SRS to match Eq. 3.
+
+#### Measured cost, and the re-estimate
+
+Indicative only — i5-10600, not the EC2 host, whose clock guard refuses real
+runs there.
+
+| | N=3 | N=11 | N=64 |
+|---|---|---|---|
+| Commit | 0.19 ms | 0.22 ms | 0.44 ms |
+| Open | 0.17 ms | 0.23 ms | 0.46 ms |
+| Verify | 1.51 ms | 1.58 ms | 1.67 ms |
+
+Verify is flat in N, as the algebra predicts: two pairings and a GT
+exponentiation, none of which depend on the vector length. Its two `Pair` calls
+were folded into one — two Miller loops and two final exponentiations were
+computing one answer — taking it from 2.00 ms to 1.51 ms. The GT exponentiation
+cannot be folded the same way, because the element that would turn it into a
+pairing is the withheld one.
+
+**Revised estimate: 1-2 sessions**, down from 2-4. Two reasons. `arity_q` is
+`[2, 5, 10]`, so `N` is 3, 6 or 11 — the vectors are TINY, and commitment width
+is not where the cost lives; path length is. And the primitive that carried the
+"no Go implementation exists" risk now exists and is checked.
+
+Aggregation (Eq. 11) is the remaining unknown, and it is the part that has to
+carry Exp 3.
+
+#### The original risk assessment, kept because two of three still stand
 
 - **No Go implementation exists.** Pointproofs (Gorbunov et al., CCS 2020) has
   to be built from the paper: structured reference string, commitment, opening
@@ -753,10 +894,8 @@ the range is wider:
   [`ref13-vrbc.md`](docs/baselines/ref13-vrbc.md) calls the vector commitment
   "the **main implementation cost**" and says it must be audited against §3.2.2.
 
-> **Start with a spike, not the full build.** Implement only the Pointproofs
-> commitment and one opening proof, check it against the paper's equations, and
-> re-estimate from measured ground. Committing to a schedule before that is
-> guessing.
+> **Start with a spike, not the full build.** ✅ Done — see above. The estimate
+> below was made before it; the measured one is 1-2 sessions.
 
 > **`bat_arity_q` is an unpriced decision.** The spec notes redaction and audit
 > costs FALL with q while append costs RISE, so "a single value can flatter or
@@ -920,6 +1059,9 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Scheme denying every request, granting none → fail | `exp1` | rejection is the cheapest path, so an all-denying scheme posts the best numbers in the study |
 | Unprepared request → `Authorize` fails | `zkredact` | the requester's ~160 ms proving cost silently re-entering the ~1.3 ms measured path |
 | `native_batch_verify: true` with no native batch verification → validator WARN | `validate-config` | two ablation arms running identical code and being plotted as a comparison |
+| `native_batch_verify: true` with every `B` = 1 → validator ERROR | `validate-config` | the same two-identical-arms fault reached by the other route: aggregation needs 2+ proofs, so B=1 defeats it whatever the backend supports |
+| Sweep declared in config but not produced in the points → test failure | `exp1` coverage test | a swept dimension silently pinned to its disabled arm — this has happened three times |
+| Opening that would need `g1^{a^{N+1}}` → error, and the SRS omits it | `pkg/vc` | Ref[13] Eq. 3 taken literally: a vector commitment that passes every round-trip test and is trivially forgeable |
 | Batch verification randomness is verifier-chosen per batch | `pkg/zk` | two proofs whose errors cancel in the product, so a batch of invalid proofs passes |
 | A failed batch falls back to per-proof verification | `pkg/zk` | one bad proof failing a whole shard's honest requests |
 | Non-sharding scheme swept over shard counts → not swept | `exp1` | fabricating a shard curve for a system with no shards |
