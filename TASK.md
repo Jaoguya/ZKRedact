@@ -6,7 +6,7 @@ re-implemented baselines on one shared Hyperledger Fabric harness.
 **Branch:** `main`
 **Code:** ~20,400 lines Go across 66 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **204 tests passing**, `make validate-config`
+gofmt-clean, **278 tests passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
@@ -152,7 +152,7 @@ without that declaration appearing in the capability matrix the results carry.
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
-| `internal/schemes/ref13` | **BAT** — tree, node commitments, Algorithms 1, 2 and 3 |
+| `internal/schemes/ref13` | **Complete** — BAT, Algorithms 1-3, Eq. 11 and Eq. 12, both query and audit protocols |
 | `pkg/vc` | **Pointproofs vector commitment** — commit, open, verify, and Eq. 11 aggregation |
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
@@ -471,7 +471,7 @@ indistinguishable from a broken circuit.
 > *faster*, and yield a full set of plausible Exp 1 numbers for a scheme that no
 > longer hides anything.
 
-### 5. ZK-Redact internals — Phases 2 and 3 ✅, Phases 4-6 remaining
+### 5. ZK-Redact internals — Phases 2 and 3 ✅, Phases 4-6 remaining ⬅️ **next**
 
 | Package | Phase | State |
 |---|---|---|
@@ -816,7 +816,7 @@ immediately, because there the cost is real.
 > on the modulus size rather than on who knows its factors. The security
 > argument would not survive this; the timing measurement is unchanged by it.
 
-### 7. Ref[13] VRBC — cryptography ✅ done, BAT remaining ⬅️ **next**
+### 7. Ref[13] VRBC ✅ done
 
 Ephemeral-trapdoor CH is **done** (`pkg/ch/ephemeral.go`). The vector
 commitment is **done** (`pkg/vc`), including cross-commitment aggregation. The
