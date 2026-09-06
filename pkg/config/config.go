@@ -479,11 +479,26 @@ func (c *Config) SchemeParams(name string) (map[string]any, error) {
 		if len(b.ChallengedBlocks) == 0 {
 			return nil, fmt.Errorf("baselines.ref13_vrbc.challenged_blocks is empty")
 		}
+		if len(b.ArityQ) == 0 {
+			return nil, fmt.Errorf("baselines.ref13_vrbc.arity_q is empty")
+		}
+		if c.Security.ChameleonHashCurve == nil {
+			return nil, fmt.Errorf("security.chameleon_hash_curve is not set")
+		}
 		return map[string]any{
-			// arity_q is swept; the runner injects the value for each point.
+			// FIRST value of each sweep, as the zkredact case does, and for the
+			// same reason: a runner that forgets to sweep then measures the
+			// smallest configuration rather than silently holding whichever
+			// value happened to be first. The runner overrides both per point.
+			//
+			// arity_q used to be omitted entirely, with a comment claiming the
+			// runner injected it. No runner did, so ref13.Setup failed on a
+			// missing parameter and the scheme could not run at all.
+			"arity_q":              b.ArityQ[0],
 			"challenged_blocks":    b.ChallengedBlocks[0],
 			"corrupted_block_rate": *b.CorruptedBlockRate,
 			"optimized_auditing":   *b.OptimizedAuditing,
+			"chameleon_hash_curve": *c.Security.ChameleonHashCurve,
 		}, nil
 
 	case "ref22_shen":

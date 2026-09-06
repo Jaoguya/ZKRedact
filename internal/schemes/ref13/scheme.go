@@ -12,11 +12,13 @@ package ref13
 
 import (
 	"context"
+	"crypto/elliptic"
 	"fmt"
 	"sync"
 
 	"zkredact/pkg/ch"
 	"zkredact/pkg/scheme"
+	"zkredact/pkg/vc"
 )
 
 // Scheme is the VRBC baseline.
@@ -45,7 +47,35 @@ type Scheme struct {
 
 	// optimizedAuditing selects the §4.1 path-union strategy. Enabled, because
 	// it is the configuration under which the paper reports its results.
+	//
+	// It restricts challenges to LEAF nodes. It does NOT produce a smaller path
+	// union than uniform sampling — see docs/baselines/ref13-vrbc.md — so the
+	// arm must not be reported as the cheaper configuration.
 	optimizedAuditing bool
+
+	// chCurve is the chameleon hash curve, from security.chameleon_hash_curve.
+	chCurve string
+
+	// --- built by build(), not configured ---
+
+	curve    elliptic.Curve
+	key      *ch.EphemeralKey
+	vcParams *vc.Params
+	bat      *BAT
+
+	// blocks is the ledger, indexed by seq-1. Block indices start at 1 because
+	// BAT node 0 is the root and holds no block.
+	blocks  []*block
+	blockOf map[string]int
+
+	// versions counts redactions per block, indexed by seq. Redact compares it
+	// against the authorization so a stale request is excluded rather than
+	// silently applied.
+	versions map[int]int
+
+	// prevHash is h_{i-1} while the chain is being built. A redaction does NOT
+	// disturb it: ch_i is invariant under a collision, which is the whole point.
+	prevHash []byte
 }
 
 func New() *Scheme { return &Scheme{} }
@@ -115,66 +145,31 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 		return fmt.Errorf("ref13: missing parameter optimized_auditing")
 	}
 
+	if v, ok := p.Params["chameleon_hash_curve"].(string); ok {
+		s.chCurve = v
+	} else {
+		return fmt.Errorf("ref13: missing parameter chameleon_hash_curve")
+	}
+
+	// The audit cannot challenge more blocks than the ledger holds. Left
+	// unchecked, SelectChallenged would return fewer than z and the run would
+	// silently measure a smaller audit than the config asked for.
+	if s.challengedBlocks > len(p.Dataset.Transactions) {
+		return fmt.Errorf(
+			"ref13: challenged_blocks=%d exceeds the %d blocks in the dataset; "+
+				"the audit would measure a smaller sample than configured",
+			s.challengedBlocks, len(p.Dataset.Transactions))
+	}
+
 	s.params = p
+	s.versions = make(map[int]int, len(p.Dataset.Transactions))
 
-	// TODO: generate CH keys and vector-commitment public parameters over
-	// BLS12-381 (NOT BN254 — see config security notes).
-	// TODO: build the q-ary BAT over the materialised ledger; commitments must
-	// be real cryptographic commitments, not hash placeholders.
-	return fmt.Errorf("ref13.Setup: %w", scheme.ErrNotImplemented)
-}
-
-// Authorize verifies trapdoor possession.
-//
-// This scheme specifies no per-request authorization protocol: redaction
-// authority rests with the system manager who holds the trapdoor. We measure
-// exactly that and do not synthesise a richer protocol for it — inventing one
-// would be fabricating a result.
-//
-// It will therefore appear very fast at low concurrency. Under load, the single
-// trapdoor holder is a genuine serialization point, which is a real property of
-// the design rather than an artefact of the harness.
-func (s *Scheme) Authorize(ctx context.Context, req *scheme.Request) (*scheme.Authorization, error) {
-	if err := s.check(); err != nil {
-		return nil, err
+	if err := s.build(p); err != nil {
+		return err
 	}
-	// TODO: verify the caller holds the system-manager trapdoor. Must be a real
-	// check that can fail — a stub returning true would benchmark beautifully
-	// and measure nothing.
-	return nil, fmt.Errorf("ref13.Authorize: %w", scheme.ErrNotImplemented)
-}
 
-// Redact computes a CH collision and updates node commitments along the path
-// from the redacted block to the BAT root. Per-request by construction.
-//
-// Delayed redaction (§4.1) is deliberately not implemented: the paper proposes
-// it but specifies no batch-formation policy, wait bound, or conflict handling,
-// and never measures it. Building it would mean inventing those and then
-// benchmarking our own design under their name.
-func (s *Scheme) Redact(ctx context.Context, batch []*scheme.Authorization) (*scheme.RedactionResult, error) {
-	if err := s.check(); err != nil {
-		return nil, err
-	}
-	// TODO: per entry, CH.Adapt then update commitments for every node from the
-	// redacted block to the root — no shortcuts; the path update is the cost.
-	return nil, fmt.Errorf("ref13.Redact: %w", scheme.ErrNotImplemented)
-}
-
-// Audit runs the challenge-response protocol of §3.2.5.
-//
-// Semantics note: this verifies ledger integrity, not a transaction's redaction
-// history. Exp 3 compares cost scaling against ledger size, which both schemes
-// answer; it does not claim feature equivalence, which they do not have.
-func (s *Scheme) Audit(ctx context.Context, q *scheme.AuditQuery) (*scheme.AuditResult, error) {
-	if err := s.check(); err != nil {
-		return nil, err
-	}
-	// TODO: issue Chal = (z, phi1, phi2); generate the integrity proof
-	// (Algorithm 3); verify the aggregate pairing equation and then Eq. 12 over
-	// every challenged block.
-	// Result must carry Semantics = SemanticsLedgerIntegrity.
-	// A tampered block MUST be detected — see the fidelity checklist.
-	return nil, fmt.Errorf("ref13.Audit: %w", scheme.ErrNotImplemented)
+	s.ready = true
+	return nil
 }
 
 func (s *Scheme) Teardown(ctx context.Context) error {

@@ -157,8 +157,8 @@ without that declaration appearing in the capability matrix the results carry.
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
 
-**Three of four schemes now run Exp 1 end to end.** Only `ref13` still returns
-`ErrNotImplemented`, so `-schemes` must exclude it:
+**All four schemes now run Exp 1 end to end.** `ref13` was wired in this
+session; `-schemes` no longer needs to exclude it:
 
 ```bash
 go run ./cmd/run-experiment -config config/pilot.yaml -exp verification \
@@ -823,8 +823,10 @@ commitment is **done** (`pkg/vc`), including cross-commitment aggregation. The
 **BAT is done** (`internal/schemes/ref13/bat.go`): tree arithmetic, node
 commitments, Algorithm 1's path update, and Algorithm 2's path proof.
 
-**Algorithm 3 is done** (`audit.go`): PRF challenge, path-union proof, and
-verification. Remaining: the `ref13` scheme wiring, and the two sweeps in §7.1.
+**The scheme is wired and runs end to end.** `ref13_vrbc` no longer returns
+`ErrNotImplemented` on any measured path, so `-schemes` need not exclude it.
+Remaining: nothing in this task except that `arity_q` and `challenged_blocks`
+are still injected at index [0] rather than swept by a runner — see §7.1.
 
 #### The spike found a defect in the paper
 
@@ -993,6 +995,39 @@ requires each child-position value to be the hash of the commitment the union
 holds for that child, and recomputes every coefficient. A link to a node outside
 the union is left uncross-checked deliberately — that is the frontier, and the
 aggregate still binds the value.
+
+#### Wiring ✅ done, and a modelling error the tests caught
+
+`wiring.go` builds the ledger and BAT, and implements Authorize, Redact and
+Audit. Authorize is trapdoor possession and nothing more — structured to match
+Ref[22]'s check, because both schemes make the same claim and an asymmetry there
+would be ours rather than theirs.
+
+> **I committed the wrong value to the BAT, and two tests caught it.**
+> `blockScalar` committed the CHAMELEON HASH. That is invariant under a
+> collision by construction, so the root never moved on redaction: the path
+> update did nothing, `LedgerTime` was zero, and a light node could not tell
+> redacted data from stale data — which is the exact attack VRBC exists to stop.
+>
+> I had reasoned by analogy from Ref[22], where the chain links by `ch`. The two
+> schemes use it for opposite purposes, and Algorithm 1 line 5 settles it:
+> `C'_s = C_s · g1^{(m'_s - m_s)a + gamma_s}` is a difference of **m** values,
+> and §2.2 defines `m_i` as the Merkle root over the block's transactions.
+>
+> So the division of labour is: **ch_i is invariant**, which preserves
+> `h_i = H(ch_i, ctr_i)` and lets the chain survive unmined; **m_i changes**,
+> which forces Algorithm 1's path update — the cost Exp 2 measures and the
+> reason the BAT exists. Pinned by
+> `TestRedactionKeepsTheChameleonHashAndMovesTheRoot`, which asserts both halves
+> at once.
+
+**A second test of mine was wrong about this host, not about the code.** It
+asserted `CryptoTime` and `LedgerTime` are non-zero. On this Windows laptop the
+clock resolution is 497.7us, so every sub-tick duration reads as exactly zero —
+the failure `pkg/metrics/resolution.go` was written to catch, and which is why a
+real run is refused here. The assertion is now gated on `metrics.ClockIsUsable`
+and logs the skip. **Do not "fix" it by loosening the check on the EC2 host,
+where the clock is fine and a zero would be a real defect.**
 
 ### 7.1 Two more unswept sweeps, found before writing the wiring
 
