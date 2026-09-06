@@ -4,13 +4,17 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~20,400 lines Go across 66 files, plus the Fabric network
+**Code:** ~22,900 lines Go across 83 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **278 tests passing**, `make validate-config`
+gofmt-clean, **254 tests (405 with subtests) passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
 transport**.
+
+The test count is the DEFAULT suite. Five live-tagged tests in
+`internal/schemes/ref10/fabric_live_test.go` are excluded from it and need a
+running Fabric network; they are counted nowhere in that number.
 
 ⚠️ All live verification above is on the **minimal** topology, on an
 8 vCPU / 8 GB macOS host. It establishes that the mechanism works; it produces
