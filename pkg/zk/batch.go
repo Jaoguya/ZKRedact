@@ -37,17 +37,25 @@ import (
 // would pass while neither proof verifies alone. Sampled here from crypto/rand,
 // after the proofs are in hand.
 //
-// Returns (true, nil) when the whole batch verifies. A false result says only
-// that SOMETHING in the batch is wrong, never which — the caller isolates.
-func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
+// batchPairingPoints builds the two point vectors the aggregated check pairs.
+//
+// It is separate from the check itself so a test can count what actually
+// reaches PairingCheck without the aggregation having to record it anywhere.
+// An earlier version stored them in package variables, which put shared mutable
+// state on a path the PVL runs from one goroutine per shard.
+//
+// The bool reports whether construction succeeded. False with a nil error is a
+// REJECTION — a proof failed validation before any pairing was computed — and
+// is not the same as an error, which means the batch could not be evaluated.
+func batchPairingPoints(p *Params, proofs []*Proof) ([]curve.G1Affine, []curve.G2Affine, bool, error) {
 	vk, ok := p.VK.(*groth16bls.VerifyingKey)
 	if !ok {
-		return false, fmt.Errorf("zk: verifying key is %T, not BLS12-381 Groth16", p.VK)
+		return nil, nil, false, fmt.Errorf("zk: verifying key is %T, not BLS12-381 Groth16", p.VK)
 	}
 	if len(vk.PublicAndCommitmentCommitted) != 0 || len(vk.CommitmentKeys) != 0 {
 		// Pedersen commitments change the verification identity, and the circuit
 		// here has none. Refusing beats silently checking the wrong equation.
-		return false, fmt.Errorf("zk: batch verification does not cover Pedersen commitments")
+		return nil, nil, false, fmt.Errorf("zk: batch verification does not cover Pedersen commitments")
 	}
 
 	n := len(proofs)
@@ -62,25 +70,25 @@ func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
 	for i, pr := range proofs {
 		gp, ok := pr.Proof.(*groth16bls.Proof)
 		if !ok {
-			return false, fmt.Errorf("zk: proof %d is %T, not BLS12-381 Groth16", i, pr.Proof)
+			return nil, nil, false, fmt.Errorf("zk: proof %d is %T, not BLS12-381 Groth16", i, pr.Proof)
 		}
 		if len(gp.Commitments) != 0 {
-			return false, fmt.Errorf("zk: proof %d carries Pedersen commitments", i)
+			return nil, nil, false, fmt.Errorf("zk: proof %d carries Pedersen commitments", i)
 		}
 
 		// Subgroup checks. gnark's single Verify does these internally; a batch
 		// that skipped them could be satisfied with small-order points, so the
 		// aggregation would accept proofs the individual path rejects.
 		if !gp.Ar.IsInSubGroup() || !gp.Krs.IsInSubGroup() || !gp.Bs.IsInSubGroup() {
-			return false, nil
+			return nil, nil, false, nil
 		}
 
 		pub, err := publicVector(pr)
 		if err != nil {
-			return false, err
+			return nil, nil, false, err
 		}
 		if len(pub) != len(vk.G1.K)-1 {
-			return false, fmt.Errorf(
+			return nil, nil, false, fmt.Errorf(
 				"zk: proof %d has %d public inputs, verifying key expects %d",
 				i, len(pub), len(vk.G1.K)-1)
 		}
@@ -88,13 +96,13 @@ func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
 		// kSum_i = K[0] + SUM_j w_j * K[j+1]
 		var kJac curve.G1Jac
 		if _, err := kJac.MultiExp(vk.G1.K[1:], pub, ecc.MultiExpConfig{}); err != nil {
-			return false, fmt.Errorf("zk: public input MSM for proof %d: %w", i, err)
+			return nil, nil, false, fmt.Errorf("zk: public input MSM for proof %d: %w", i, err)
 		}
 		kJac.AddMixed(&vk.G1.K[0])
 		kSums[i].FromJacobian(&kJac)
 
 		if _, err := scalars[i].SetRandom(); err != nil {
-			return false, fmt.Errorf("zk: batch randomness: %w", err)
+			return nil, nil, false, fmt.Errorf("zk: batch randomness: %w", err)
 		}
 		rSum.Add(&rSum, &scalars[i])
 
@@ -106,10 +114,10 @@ func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
 	// SUM r_i * Krs_i and SUM r_i * kSum_i, each one multi-exponentiation.
 	var krsAgg, kAgg curve.G1Jac
 	if _, err := krsAgg.MultiExp(krs, scalars, ecc.MultiExpConfig{}); err != nil {
-		return false, fmt.Errorf("zk: Krs aggregation: %w", err)
+		return nil, nil, false, fmt.Errorf("zk: Krs aggregation: %w", err)
 	}
 	if _, err := kAgg.MultiExp(kSums, scalars, ecc.MultiExpConfig{}); err != nil {
-		return false, fmt.Errorf("zk: public input aggregation: %w", err)
+		return nil, nil, false, fmt.Errorf("zk: public input aggregation: %w", err)
 	}
 
 	var krsAff, kAff, alphaAgg curve.G1Affine
@@ -125,13 +133,28 @@ func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
 	g1 := append(arPoints, krsAff, kAff, alphaAgg)
 	g2 := append(bsPoints, vk.G2.Delta, vk.G2.Gamma, vk.G2.Beta)
 
-	lastG1, lastG2 = g1, g2
+	return g1, g2, true, nil
+}
 
-	ok, err := curve.PairingCheck(g1, g2)
+// batchVerifyAggregated checks n proofs with one aggregated pairing check.
+//
+// Returns (true, nil) when the whole batch verifies. A false result says only
+// that SOMETHING in the batch is wrong, never which — the caller isolates.
+func batchVerifyAggregated(p *Params, proofs []*Proof) (bool, error) {
+	g1, g2, ok, err := batchPairingPoints(p, proofs)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		// Rejected before pairing: a subgroup check failed.
+		return false, nil
+	}
+
+	verified, err := curve.PairingCheck(g1, g2)
 	if err != nil {
 		return false, fmt.Errorf("zk: batch pairing check: %w", err)
 	}
-	return ok, nil
+	return verified, nil
 }
 
 // publicVector extracts a proof's public inputs as field elements.
@@ -146,16 +169,15 @@ func publicVector(pr *Proof) (fr.Vector, error) {
 	return v, nil
 }
 
-// lastG1/lastG2 retain the most recent PairingCheck inputs so a test can count
-// them. Test scaffolding only: nothing reads them in a measured run.
-var lastG1 []curve.G1Affine
-var lastG2 []curve.G2Affine
-
-// batchPairingInputs runs the aggregation and returns the points that were
-// actually paired.
+// batchPairingInputs returns the points the aggregation would actually pair,
+// so a test can count them.
 func batchPairingInputs(p *Params, proofs []*Proof) ([]curve.G1Affine, []curve.G2Affine, error) {
-	if _, err := batchVerifyAggregated(p, proofs); err != nil {
+	g1, g2, ok, err := batchPairingPoints(p, proofs)
+	if err != nil {
 		return nil, nil, err
 	}
-	return lastG1, lastG2, nil
+	if !ok {
+		return nil, nil, fmt.Errorf("zk: batch rejected before any pairing was computed")
+	}
+	return g1, g2, nil
 }

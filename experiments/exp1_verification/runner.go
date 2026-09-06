@@ -47,6 +47,12 @@ type Config struct {
 	// both paths.
 	NativeBatchVerify []bool
 
+	// BatchSizes is B, the intra-shard batch size. It must be swept alongside
+	// NativeBatchVerify: at B=1 a batch holds one proof, aggregation is skipped,
+	// and both verification modes take the same path — so a mode sweep on its own
+	// measures nothing and reports it as a comparison.
+	BatchSizes []int
+
 	// Ablations enumerate the sharding/batching combinations required to test
 	// the Phase 3 independence claim.
 	Ablations []Ablation
@@ -63,8 +69,14 @@ type Point struct {
 	Scheme      string    `json:"scheme"`
 	Concurrency int       `json:"concurrency"`
 	ShardCount  int       `json:"shard_count,omitempty"`
+	BatchSize   int       `json:"proof_batch_size,omitempty"`
 	Ablation    *Ablation `json:"ablation,omitempty"`
 	Repetition  int       `json:"repetition"`
+
+	// NativeBatchVerify records which verification path produced this point.
+	// Kept separate from Ablation.Batching: batching is B > 1, while this is
+	// whether the aggregated pairing check ran, and the two are independent.
+	NativeBatchVerify bool `json:"native_batch_verify"`
 
 	Throughput float64         `json:"authorized_requests_per_second"`
 	Latency    metrics.Summary `json:"latency"`
@@ -148,6 +160,16 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 			batchModes = cfg.NativeBatchVerify
 		}
 
+		// B, swept for the same reason as the shard count. Without this the
+		// verification-mode sweep above is inert: a batch of one never reaches
+		// the aggregated pairing check, so both modes run identical code and the
+		// grid reports one measurement twice.
+		batchSizes := []int{0} // 0 means "not applicable"
+		rebatcher, rebatchable := s.(scheme.Rebatcher)
+		if rebatchable && len(cfg.BatchSizes) > 0 {
+			batchSizes = cfg.BatchSizes
+		}
+
 		for _, shards := range shardCounts {
 			if sharded && shards > 0 {
 				if err := resharder.Reshard(shards); err != nil {
@@ -155,48 +177,64 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 				}
 			}
 
-			for _, native := range batchModes {
-				if tunable {
-					if err := tuner.SetNativeBatchVerify(native); err != nil {
-						return nil, fmt.Errorf("exp1: %s set batch mode %v: %w", s.Name(), native, err)
+			for _, batch := range batchSizes {
+				if rebatchable && batch > 0 {
+					if err := rebatcher.Rebatch(batch); err != nil {
+						return nil, fmt.Errorf("exp1: %s rebatch to %d: %w", s.Name(), batch, err)
 					}
 				}
 
-				for _, conc := range cfg.ConcurrencyLevels {
-					for rep := 0; rep < cfg.Repetitions; rep++ {
-						replay := replayTrace(trace, conc, rep)
+				for _, native := range batchModes {
+					if tunable {
+						if err := tuner.SetNativeBatchVerify(native); err != nil {
+							return nil, fmt.Errorf("exp1: %s set batch mode %v: %w", s.Name(), native, err)
+						}
+					}
 
-						// Requester-side work and per-replay state resets happen
-						// here, OUTSIDE the timed region. For ZK-Redact that is
-						// proof generation, which costs an order of magnitude more
-						// than the verification Exp 1 measures.
-						if prep, ok := s.(scheme.TracePreparer); ok {
-							if err := prep.PrepareTrace(ctx, replay); err != nil {
-								return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+					for _, conc := range cfg.ConcurrencyLevels {
+						for rep := 0; rep < cfg.Repetitions; rep++ {
+							replay := replayTrace(trace, conc, rep)
+
+							// Requester-side work and per-replay state resets happen
+							// here, OUTSIDE the timed region. For ZK-Redact that is
+							// proof generation, which costs an order of magnitude more
+							// than the verification Exp 1 measures.
+							if prep, ok := s.(scheme.TracePreparer); ok {
+								if err := prep.PrepareTrace(ctx, replay); err != nil {
+									return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+								}
 							}
-						}
 
-						p, err := runOne(ctx, s, replay, conc)
-						if err != nil {
-							return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
-						}
-						p.Repetition = rep
-						p.ShardCount = shards
+							p, err := runOne(ctx, s, replay, conc)
+							if err != nil {
+								return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
+							}
+							p.Repetition = rep
+							p.ShardCount = shards
+							p.BatchSize = batch
+							p.NativeBatchVerify = native
 
-						// Recorded per point, so a plot cannot mix the two arms.
-						// Sharding is "on" whenever more than one shard is in use.
-						if tunable || sharded {
-							p.Ablation = &Ablation{Sharding: shards > 1, Batching: native}
-						}
+							// Recorded per point, so a plot cannot mix the arms.
+							// Sharding is "on" above one shard; batching is on above
+							// a batch of one, which is the config's own disabled arm.
+							if tunable || sharded || rebatchable {
+								p.Ablation = &Ablation{
+									Sharding: shards > 1,
+									Batching: batch > 1,
+								}
+							}
 
-						// The scaling baseline is per shard count: comparing a
-						// 64-shard run against a 1-shard single-worker measurement
-						// would report the sharding speedup as scaling efficiency.
-						if conc == 1 && shards == baselineShards(shardCounts) &&
-							native == batchModes[0] {
-							baseSamples = append(baseSamples, p.Throughput)
+							// The scaling baseline is per shard count: comparing a
+							// 64-shard run against a 1-shard single-worker measurement
+							// would report the sharding speedup as scaling efficiency.
+							// Pinned to the first batch size and mode for the same
+							// reason — one baseline cannot span two configurations.
+							if conc == 1 && shards == baselineShards(shardCounts) &&
+								native == batchModes[0] && batch == batchSizes[0] {
+								baseSamples = append(baseSamples, p.Throughput)
+							}
+							res.Points = append(res.Points, p)
 						}
-						res.Points = append(res.Points, p)
 					}
 				}
 			}

@@ -353,6 +353,18 @@ func checkBatching(c *config.Config, r *report) {
 				"implement zk.BatchVerify's aggregated form or drop the true arm before plotting it as a comparison")
 	}
 
+	// The same symptom reached by the other route. Aggregation needs at least
+	// two proofs in a batch, so if every configured B is 1 the mode sweep runs
+	// identical code however capable the backend is. Checking the backend alone
+	// would miss this, and it is the harder one to see in a plot: the arms are
+	// labelled differently and the numbers agree.
+	if zk.NativeBatchVerify && contains2(pb.NativeBatchVerify, true) && maxInt(pb.Sizes) < 2 {
+		r.errf("zkredact.proof_batch.sizes",
+			"every batch size is 1, so no batch ever reaches the aggregated check",
+			"the native_batch_verify arms take the same path and produce the same "+
+				"measurement twice; include a size >= 2 or drop the true arm")
+	}
+
 	// Verification batching that outlives a block interval stops measuring
 	// batching and starts measuring block cadence.
 	if c.Environment.Network.BlockTimeoutMS != nil && len(pb.WaitBoundMS) > 0 {

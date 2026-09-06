@@ -307,3 +307,24 @@ func (p *PVL) NativeBatchVerify() bool {
 	defer p.mu.Unlock()
 	return p.cfg.NativeBatchVerify
 }
+
+// SetBatchSize changes B between Exp 1 sweep points.
+//
+// Validate's floor applies here too: B < 1 would make runShardLoop close an
+// empty batch on every arrival.
+func (p *PVL) SetBatchSize(b int) error {
+	if b < 1 {
+		return fmt.Errorf("pvl: proof_batch_size must be >= 1, got %d", b)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg.BatchSize = b
+	return nil
+}
+
+// BatchSize reports the current B.
+func (p *PVL) BatchSize() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.BatchSize
+}

@@ -443,3 +443,31 @@ func (s *Scheme) SetNativeBatchVerify(native bool) error {
 	s.pvlSvc = svc
 	return nil
 }
+
+// Rebatch changes B, the intra-shard batch size.
+//
+// Implements scheme.Rebatcher. The service holds a SNAPSHOT of the PVL config
+// taken at NewService, so running workers keep the old B until they are
+// replaced — which is why this rebuilds rather than only mutating the PVL.
+func (s *Scheme) Rebatch(batchSize int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return fmt.Errorf("zkredact: Rebatch before Setup")
+	}
+	s.proofBatchSize = batchSize
+
+	if s.pvlSvc != nil {
+		s.pvlSvc.Stop()
+	}
+	if err := s.pvl.SetBatchSize(batchSize); err != nil {
+		return err
+	}
+	svc, err := pvl.NewService(s.pvl, s.queueDepth)
+	if err != nil {
+		return err
+	}
+	svc.Start()
+	s.pvlSvc = svc
+	return nil
+}

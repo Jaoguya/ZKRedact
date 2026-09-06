@@ -172,6 +172,21 @@ type BatchVerifierTuner interface {
 	SetNativeBatchVerify(native bool) error
 }
 
+// Rebatcher is an OPTIONAL interface for a scheme with an intra-shard batch
+// size, B in Phase 3 Step 2.
+//
+// It exists for the same reason as Resharder: B is runtime dispatch, so
+// re-running Setup to sweep it would recompile the circuit at every point.
+//
+// WITHOUT IT THE BATCHING ABLATION CANNOT RUN. A batch of one is the
+// batching-DISABLED arm — a single proof never reaches an aggregated pairing
+// check, so native_batch_verify true and false take the identical path and the
+// grid reports one measurement twice under two labels. Sweeping the verifier
+// mode is not enough on its own; B has to move with it.
+type Rebatcher interface {
+	Rebatch(batchSize int) error
+}
+
 // TracePreparer is an OPTIONAL interface for per-replay work that is not part
 // of what an experiment measures.
 //

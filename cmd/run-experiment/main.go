@@ -294,6 +294,7 @@ func runExp1(
 		Repetitions:       reps,
 		ShardCounts:       cfg.ZKRedact.Sharding.Counts,
 		NativeBatchVerify: cfg.ZKRedact.ProofBatch.NativeBatchVerify,
+		BatchSizes:        cfg.ZKRedact.ProofBatch.Sizes,
 		Ablations:         ablations,
 	}, systems, trace)
 	if err != nil {
