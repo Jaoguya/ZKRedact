@@ -229,10 +229,16 @@ experiment-e2e: validate-config
 # -----------------------------------------------------------------------------
 # Results
 # -----------------------------------------------------------------------------
+# Renders SVG figures and, beside each one, the CSV of aggregated numbers it was
+# drawn from. The CSV is what makes a figure checkable without rerunning the
+# experiment, and it is what the paper should be plotted from.
+#
+# Fails when RESULTS_DIR holds nothing, rather than reporting success over an
+# empty directory.
 .PHONY: plots
 plots:
 	@echo "==> plots from $(RESULTS_DIR)"
-	@false
+	@$(GO) run ./cmd/plot -results $(RESULTS_DIR) -out $(RESULTS_DIR)/plots
 
 .PHONY: clean
 clean:

@@ -1249,13 +1249,53 @@ runner gets them.
 > penalise the baseline" and it should ideally be swept. Sweeping adds work here
 > and runtime to Exp 3.
 
-### 8. `cmd/plot` ⬅️ **next**
-Reads `results/*.json`. Headline plots:
-- Exp 1: throughput vs concurrency, all four, showing the crossover
-- Exp 2: cost per request vs `B_R`, split into crypto floor and amortised part
-- Exp 3: cost vs ledger size at fixed history depth — ZK-Redact flat, others climbing
+### 8. `cmd/plot` ✅ done
 
-### 9. Pilot run
+Reads `results/*.json`, aggregates repetitions, and writes an SVG plus a CSV per
+figure into `results/plots`. `make plots` was `@false`; it now runs it.
+
+Seven figures: Exp 1 throughput and p50 latency against concurrency; Exp 2 cost
+per request, crypto share, and staleness against `B_R`; Exp 3 audit cost and
+evidence bytes against ledger size.
+
+**Repetitions are finally consumed.** §9 recorded that every runner appended
+each repetition as its own `Point` and nothing ever aggregated them, so extra
+repetitions were rows nobody read and `meta.repetitions` could not be set from
+measured variance. Each plotted point now carries mean, min, max and N, and the
+CSV carries all four.
+
+> **The pooling rule is the part that fails silently.** Two points may be
+> averaged only if they differ in NOTHING but the repetition index. Every other
+> dimension — shards, batch size, verification mode, arity, challenged blocks,
+> wait bound, conflict ratio, history depth — is part of the series key.
+> Averaging arity 2 with arity 10 produces a smooth curve at a value neither
+> configuration ever measured, and nothing in the figure would say so. Pinned by
+> `TestPoolingAcrossArityWouldBeCaught`, which fails if the two are ever merged.
+
+**Three honesty properties are built into the output, not left to the reader:**
+
+- A single-repetition point is drawn as a HOLLOW marker and counted in a note on
+  the figure. It is not a measurement with a spread and must not look like one.
+- A scheme that declares `LedgerIndependentAudit` and then scales linearly gets
+  a WARNING printed on the Exp 3 figure and on stdout, from the runner's own
+  `ClaimHolds`. Pinned by `TestContradictedLedgerClaimIsSurfaced`.
+- A partial comparison (`-schemes`) is repeated on every figure it produced.
+
+**No plotting dependency.** SVG is written directly. SKILL.md requires any
+dependency beyond the base toolchain to be flagged and justified, and a chart
+library is a large one for seven line charts. The CSV beside each figure means
+nothing is locked in: the paper can be plotted from those numbers in pgfplots or
+matplotlib, and a figure can be checked without rerunning anything.
+
+The charts are deliberately plain. These are working figures for reading
+results — a plot that looks finished invites less scrutiny of the numbers under
+it.
+
+**Not yet exercised on real data.** Verified against fixtures and against a
+hand-built Exp 1 file shaped like §5's recorded numbers. The first real run is
+task 9, and the figures should be read sceptically that first time.
+
+### 9. Pilot run ⬅️ **next** (needs the EC2 host)
 `make pilot` builds the dataset and trace without executing. Then use a short
 real run to resolve the values that cannot be guessed:
 - `meta.repetitions` from measured variance
@@ -1495,7 +1535,7 @@ internal/
   pai/                   Phases 5-6 provenance index, anchoring, audit verification
   schemes/               the four systems under test
 experiments/             one runner per experiment
-cmd/                     validate-config, run-experiment, build-zk
+cmd/                     validate-config, run-experiment, build-zk, plot
 scripts/setup-ec2.sh     host provisioning (install | verify)
 network/
   chaincode/redaction/   Algorithm 3 as chaincode (separate Go module)
