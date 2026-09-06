@@ -344,3 +344,139 @@ func TestRedactionKeepsTheChameleonHashAndMovesTheRoot(t *testing.T) {
 		t.Errorf("block content = %q, want the replacement", after.redactable)
 	}
 }
+
+// TestEq12CatchesWhatEq11Cannot is the reason both checks exist.
+//
+// The attack: change a block's content WITHOUT computing a chameleon-hash
+// collision, then rebind the BAT to the new digest. Eq. 11 is now perfectly
+// valid — the root really does commit to the new m_s — but no legitimate
+// (r_s, Y_s) hashes that content to ch_s, so the chain is lying about what was
+// ever agreed. Only Eq. 12 sees it.
+//
+// If this test starts passing with Eq. 12 removed, the audit has stopped
+// checking that on-chain data was ever validly produced, and Exp 3 would be
+// reporting a verifier cheaper than the scheme specifies.
+func TestEq12CatchesWhatEq11Cannot(t *testing.T) {
+	s := setupScheme(t, 5, 60, 6)
+	ctx := context.Background()
+
+	const target = "tx-11"
+	seq := s.blockOf[target]
+
+	// Sanity: the ledger audits clean first, so a later failure means the
+	// tampering and not a broken fixture.
+	before, err := s.Audit(ctx, &scheme.AuditQuery{TargetTxID: target})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if !before.Verified {
+		t.Fatal("an untampered block did not verify; this test proves nothing")
+	}
+
+	// Tamper: new content, new commitment, NO collision.
+	b := s.blocks[seq-1]
+	b.redactable = []byte("content that was never chameleon-hashed")
+	if err := s.bat.Bind(seq, scalarOf(blockDigest(b.core, b.redactable))); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+
+	// Eq. 11 alone still holds: the root commits to the new digest.
+	proof, err := s.bat.ProveAudit(
+		Challenge{Z: 1, Phi1: []byte("a"), Phi2: []byte("b")}, []int{seq})
+	if err != nil {
+		t.Fatalf("ProveAudit: %v", err)
+	}
+	pairingOK, err := s.bat.VerifyAudit(s.bat.Root(),
+		Challenge{Z: 1, Phi1: []byte("a"), Phi2: []byte("b")}, proof)
+	if err != nil {
+		t.Fatalf("VerifyAudit: %v", err)
+	}
+	if !pairingOK {
+		t.Fatal("the pairing check rejected the tampered block, so this test is " +
+			"not demonstrating what Eq. 12 adds")
+	}
+
+	// But the full audit must fail, and only Eq. 12 can be what fails it.
+	after, err := s.Audit(ctx, &scheme.AuditQuery{TargetTxID: target})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if after.Verified {
+		t.Error("a block whose content was never chameleon-hashed passed the " +
+			"audit; Eq. 12 is not being checked")
+	}
+}
+
+// TestEq12AcceptsALegitimateRedaction is the other half: a redaction done
+// properly, through a collision, must still verify. A check that rejected
+// everything would pass the test above and be useless.
+func TestEq12AcceptsALegitimateRedaction(t *testing.T) {
+	s := setupScheme(t, 5, 60, 6)
+	ctx := context.Background()
+
+	const target = "tx-11"
+	auth, err := s.Authorize(ctx, &scheme.Request{
+		ID: "r1", TargetTxID: target, NewContent: []byte("lawfully redacted"),
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if _, err := s.Redact(ctx, []*scheme.Authorization{auth}); err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+
+	res, err := s.Audit(ctx, &scheme.AuditQuery{TargetTxID: target})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if !res.Verified {
+		t.Error("a properly redacted block failed the audit; the collision path " +
+			"and Eq. 12 disagree about what a valid block looks like")
+	}
+}
+
+// TestBlockQueryAndBlockchainAuditAreBothReachable pins the protocol split: the
+// spec measures two protocols and the Scheme interface has one method, so the
+// selection has to work or one of the two is never measured.
+func TestBlockQueryAndBlockchainAuditAreBothReachable(t *testing.T) {
+	s := setupScheme(t, 5, 200, 8)
+	ctx := context.Background()
+
+	query, err := s.Audit(ctx, &scheme.AuditQuery{TargetTxID: "tx-42"})
+	if err != nil {
+		t.Fatalf("block query: %v", err)
+	}
+	audit, err := s.Audit(ctx, &scheme.AuditQuery{})
+	if err != nil {
+		t.Fatalf("blockchain audit: %v", err)
+	}
+
+	if !query.Verified || !audit.Verified {
+		t.Fatalf("query verified=%v, audit verified=%v; both must",
+			query.Verified, audit.Verified)
+	}
+	t.Logf("block query: %d nodes, %d bytes | blockchain audit: %d nodes, %d bytes",
+		query.BlocksTraversed, query.EvidenceBytes,
+		audit.BlocksTraversed, audit.EvidenceBytes)
+
+	// One block's path must be cheaper than z blocks' union, or the two
+	// protocols are not actually distinct.
+	if query.BlocksTraversed >= audit.BlocksTraversed {
+		t.Errorf("a single-block query traversed %d nodes against the audit's %d; "+
+			"the protocol selection is not taking effect",
+			query.BlocksTraversed, audit.BlocksTraversed)
+	}
+}
+
+// TestAuditOfAnUnknownTargetDoesNotVerify keeps a query for a transaction the
+// ledger lacks from being reported as success.
+func TestAuditOfAnUnknownTargetDoesNotVerify(t *testing.T) {
+	s := setupScheme(t, 5, 40, 4)
+	res, err := s.Audit(context.Background(), &scheme.AuditQuery{TargetTxID: "nope"})
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	if res.Verified {
+		t.Error("a query for a transaction not in the ledger verified")
+	}
+}

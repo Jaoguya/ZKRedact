@@ -823,10 +823,10 @@ commitment is **done** (`pkg/vc`), including cross-commitment aggregation. The
 **BAT is done** (`internal/schemes/ref13/bat.go`): tree arithmetic, node
 commitments, Algorithm 1's path update, and Algorithm 2's path proof.
 
-**The scheme is wired and runs end to end.** `ref13_vrbc` no longer returns
-`ErrNotImplemented` on any measured path, so `-schemes` need not exclude it.
-Remaining: nothing in this task except that `arity_q` and `challenged_blocks`
-are still injected at index [0] rather than swept by a runner — see §7.1.
+**Task 7 is complete.** `ref13_vrbc` runs end to end, both verification
+protocols check Eq. 11 AND Eq. 12, and `arity_q` and `challenged_blocks` are
+swept by Exp 2 and Exp 3. All nine fidelity-checklist items in
+`ref13-vrbc.md` are ticked.
 
 #### The spike found a defect in the paper
 
@@ -1029,7 +1029,57 @@ real run is refused here. The assertion is now gated on `metrics.ClockIsUsable`
 and logs the skip. **Do not "fix" it by loosening the check on the EC2 host,
 where the clock is fine and a zero would be a real defect.**
 
-### 7.1 Two more unswept sweeps, found before writing the wiring
+#### Eq. 12 done — the check Eq. 11 cannot make
+
+The audit verified BAT commitments and nothing else. Eq. 11 proves the root
+commits to m_s; it says nothing about whether m_s is a value anyone could
+legitimately have produced. A prover that invents a digest, commits to it and
+updates the path has a perfectly valid Eq. 11 proof for content that was never
+chameleon-hashed.
+
+`TestEq12CatchesWhatEq11Cannot` performs exactly that: it changes a block's
+content with NO collision, rebinds the tree, asserts the pairing check still
+PASSES, and then requires the full audit to fail. Both halves are asserted, so
+the test shows Eq. 12 doing work rather than merely being present.
+
+`verifyBlock` also re-derives m_s from the content and requires it to equal what
+the aggregate opened. Checking Eq. 12 on one block while Eq. 11 proved another
+verifies two unrelated statements.
+
+**Both protocols are now reachable.** §3.2.4 block query and §3.2.5 blockchain
+audit are distinct in the spec but the `Scheme` interface has one `Audit`
+method, so the query selects: a known `TargetTxID` runs the block query, an
+empty one runs the z-block audit. Measured: 4 nodes / 748 bytes against 25 nodes
+/ 4656 bytes. `exp3` always passes a target, so without the split only one of
+the two would ever have been measured.
+
+### 7.1 The setup sweeps, done
+
+`arity_q` and `challenged_blocks` are SETUP-time parameters: the tree shape
+depends on them, so unlike Exp 1's `Reshard` they cannot be changed in place.
+Exp 2 gained a `Rebuild` hook and Exp 3's `Prepare` gained an overrides
+argument; both re-run Setup, which is free because Setup is untimed.
+
+**A parameter applies to a scheme iff `config.SchemeParams` produces it.** That
+keeps the parameter map the single contract between config and scheme — the same
+one `internal/schemes/contract_test.go` checks — rather than the runner carrying
+its own list of which knob belongs to which baseline. A scheme with no such knob
+gets one empty entry and is measured once, so its points are not multiplied
+under labels that mean nothing for it.
+
+Points in both experiments now record `SetupParams`, without which the arity
+curves would be indistinguishable in the results. `LedgerScaling` and
+`OptimalBatchSize` are computed per scheme rather than pooled, since pooling
+arity 2 with arity 10 would compare two different trees and report the
+difference as ledger scaling or a batching effect. Exp 2 re-authorizes after
+every rebuild: Setup replaces the ledger, and stale authorizations would exclude
+every redaction rather than measure it.
+
+Guarded by `experiments/exp3_audit/runner_test.go`, mutation-checked: disabling
+the sweep fails with "got 2 points, want 8 — a declared setup sweep is not being
+executed" and names all four missing combinations.
+
+
 
 **`arity_q` is a fourth instance of the declared-but-unswept pattern.**
 `config.go` says *"arity_q is swept; the runner injects the value for each

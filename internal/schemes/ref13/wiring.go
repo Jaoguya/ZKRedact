@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"time"
 
+	bls "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 
 	"zkredact/pkg/ch"
@@ -307,7 +308,19 @@ func (s *Scheme) Redact(ctx context.Context, batch []*scheme.Authorization) (*sc
 	return res, nil
 }
 
-// Audit runs the §3.2.5 challenge-response protocol.
+// Audit runs Ref[13]'s verification protocols.
+//
+// THE SCHEME HAS TWO, and docs/baselines/ref13-vrbc.md measures both. Which one
+// runs is selected by the query, because the Scheme interface has a single
+// Audit method:
+//
+//   - TargetTxID names a known block  -> BLOCK QUERY (§3.2.4). One path from
+//     that block to the root.
+//   - otherwise                       -> BLOCKCHAIN AUDIT (§3.2.5). z blocks
+//     drawn by the PRF challenge, proved over their path union.
+//
+// Both stop at the same place: Eq. 11 AND Eq. 12 verified. Stopping at the
+// pairing check would report a verifier cheaper than the scheme specifies.
 //
 // SEMANTICS: this verifies LEDGER INTEGRITY, not one transaction's redaction
 // history. Ref[13] has no per-transaction provenance, and answering as though it
@@ -322,36 +335,67 @@ func (s *Scheme) Audit(ctx context.Context, q *scheme.AuditQuery) (*scheme.Audit
 
 	res := &scheme.AuditResult{Semantics: scheme.SemanticsLedgerIntegrity}
 
-	// A fresh challenge per audit. A fixed one would let a prover precompute,
+	// A fresh challenge per round. A fixed one would let a prover precompute,
 	// and the spot check would measure nothing.
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, fmt.Errorf("ref13: audit challenge: %w", err)
 	}
+
+	var challenged []int
+	if q != nil && q.TargetTxID != "" {
+		seq, known := s.blockOf[q.TargetTxID]
+		if !known {
+			// Not an error: a query for a transaction this ledger does not hold
+			// is a legitimate outcome, and reporting it as a failed verification
+			// is more honest than erroring the run.
+			res.Verified = false
+			return res, nil
+		}
+		challenged = []int{seq}
+	}
+
 	chal := Challenge{
 		Z:    s.challengedBlocks,
 		Phi1: append([]byte("phi1"), seed...),
 		Phi2: append([]byte("phi2"), seed...),
 	}
 
+	// --- prover side ---
 	retrieveStart := time.Now()
-	challenged, err := s.bat.SelectChallenged(chal, s.optimizedAuditing)
-	if err != nil {
-		return nil, err
+	if challenged == nil {
+		sel, err := s.bat.SelectChallenged(chal, s.optimizedAuditing)
+		if err != nil {
+			return nil, err
+		}
+		challenged = sel
 	}
 	proof, err := s.bat.ProveAudit(chal, challenged)
 	if err != nil {
 		return nil, err
 	}
+	evidence := make([]blockEvidence, 0, len(challenged))
+	for _, seq := range challenged {
+		ev, err := s.evidenceFor(seq)
+		if err != nil {
+			return nil, err
+		}
+		evidence = append(evidence, ev)
+	}
 	res.RetrievalTime = time.Since(retrieveStart)
 
+	// --- verifier side: Eq. 11 then Eq. 12, both required ---
 	verifyStart := time.Now()
-	ok, err := s.bat.VerifyAudit(s.bat.Root(), chal, proof)
+	pairingOK, err := s.bat.VerifyAudit(s.bat.Root(), chal, proof)
+	if err != nil {
+		return nil, err
+	}
+	blocksOK, err := s.verifyAllBlocks(evidence, proof.Openings)
 	if err != nil {
 		return nil, err
 	}
 	res.VerificationTime = time.Since(verifyStart)
-	res.Verified = ok
+	res.Verified = pairingOK && blocksOK
 
 	// BlocksTraversed is the PATH UNION, not the ledger. That is the number
 	// §4.1 says the cost is determined by, and reporting the ledger size here
@@ -360,9 +404,36 @@ func (s *Scheme) Audit(ctx context.Context, q *scheme.AuditQuery) (*scheme.Audit
 	// itself, and the harness is meant to catch that.
 	res.BlocksTraversed = proof.PathUnionSize
 
-	// One G1 commitment and one field element per opening, plus the aggregate.
-	const g1Bytes, frBytes = 48, 32
+	// One G1 commitment and two field elements per opening, plus the aggregate,
+	// plus Eq. 12's evidence per challenged block: h_{s-1}, ch_s, (r_s, Y_s) and
+	// the content. The verifier needs all of it, and a pairing-only accounting
+	// would leave it out of the transferred total.
+	//
+	// Every size is MEASURED from the encodings actually in use rather than
+	// written down. Writing 48 for a G1 point is correct for BLS12-381 today and
+	// silently wrong the moment the curve changes, and the curve is a config
+	// field. The chameleon hash sizes come from its own curve, which is a
+	// different config field again.
+	var g1 bls.G1Affine
+	g1Enc := g1.Bytes()
+	g1Bytes := len(g1Enc)
+
+	var f fr.Element
+	frEnc := f.Bytes()
+	frBytes := len(frEnc)
+
+	// h_{s-1} is a SHA-256 digest; ch_s and Y_s are points on the CH curve,
+	// carried as affine coordinate pairs.
+	hashBytes := sha256.Size
+	chCoord := (s.curve.Params().BitSize + 7) / 8
+	pointBytes := 2 * chCoord
+
 	res.EvidenceBytes = proof.PathUnionSize*(g1Bytes+frBytes+frBytes) + g1Bytes + frBytes
+	for _, ev := range evidence {
+		// h_{s-1} + ch_s + Y_s + r_s + the content itself.
+		res.EvidenceBytes += hashBytes + pointBytes + pointBytes + chCoord +
+			len(ev.Core) + len(ev.Redactable)
+	}
 
 	// No auditor authentication step exists in this scheme; reported as zero
 	// rather than folded into the total, so ZK-Redact is not penalised for

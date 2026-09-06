@@ -250,14 +250,14 @@ func run(configPath, expName string, dryRun bool, only string) error {
 	case "verification":
 		return runExp1(ctx, cfg, reps, systems, trace, writer, meta)
 	case "redaction":
-		return runExp2(ctx, cfg, reps, systems, trace, writer, meta)
+		return runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits)
 	case "audit":
 		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
 	case "all":
 		if err := runExp1(ctx, cfg, reps, systems, trace, writer, meta); err != nil {
 			return err
 		}
-		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta); err != nil {
+		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits); err != nil {
 			return err
 		}
 		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
@@ -319,6 +319,9 @@ func runExp2(
 	trace []*scheme.Request,
 	w *results.Writer,
 	meta metaFn,
+	ds *scheme.Dataset,
+	seed int64,
+	targetBits int,
 ) error {
 	e := cfg.Experiments.RedactionThroughput
 	if !e.Enabled {
@@ -335,6 +338,12 @@ func runExp2(
 		WaitBoundsMS:   cfg.ZKRedact.RedactionBatch.WaitBoundsMS,
 		ConflictRatios: cfg.Workload.ConflictRatios,
 		Repetitions:    reps,
+		Rebuild: func(ctx context.Context, s scheme.Scheme, overrides map[string]any) error {
+			return rebuildScheme(ctx, cfg, ds, seed, targetBits, s, overrides)
+		},
+		SetupSweeps: func(s scheme.Scheme) ([]map[string]any, error) {
+			return setupSweeps(cfg, s.Name())
+		},
 	}, systems, trace)
 	if err != nil {
 		return err
@@ -378,8 +387,11 @@ func runExp3(
 		HistoryDepths: e.HistoryDepths,
 		Repetitions:   reps,
 		AuditorID:     "auditor-0",
-		Prepare: func(ctx context.Context, s scheme.Scheme, ledgerSize int) (map[int][]string, error) {
-			return prepareLedger(ctx, cfg, ds, seed, targetBits, s, ledgerSize, *blockTx, e.HistoryDepths)
+		Prepare: func(ctx context.Context, s scheme.Scheme, ledgerSize int, overrides map[string]any) (map[int][]string, error) {
+			return prepareLedger(ctx, cfg, ds, seed, targetBits, s, ledgerSize, *blockTx, e.HistoryDepths, overrides)
+		},
+		SetupSweeps: func(s scheme.Scheme) ([]map[string]any, error) {
+			return setupSweeps(cfg, s.Name())
 		},
 	}, systems)
 	if err != nil {
@@ -394,6 +406,109 @@ func runExp3(
 		}
 	}
 	return emit(w, results.Document{Metadata: meta("exp3_audit"), Result: res})
+}
+
+// rebuildScheme re-runs Setup with swept setup-time parameters applied.
+//
+// Setup is untimed, which is what makes sweeping a setup parameter affordable at
+// all. It also REPLACES the scheme's ledger, so anything derived from the
+// previous one — authorizations especially — must be recomputed by the caller.
+func rebuildScheme(
+	ctx context.Context,
+	cfg *config.Config,
+	ds *scheme.Dataset,
+	seed int64,
+	targetBits int,
+	s scheme.Scheme,
+	overrides map[string]any,
+) error {
+	params, err := cfg.SchemeParams(s.Name())
+	if err != nil {
+		return err
+	}
+	for k, v := range overrides {
+		if _, declared := params[k]; !declared {
+			return fmt.Errorf("sweep sets %q, which %s does not declare", k, s.Name())
+		}
+		params[k] = v
+	}
+	return s.Setup(ctx, scheme.SetupParams{
+		Dataset:      ds,
+		Seed:         seed,
+		SecurityBits: targetBits,
+		Params:       params,
+	})
+}
+
+// setupSweeps enumerates the swept SETUP-time parameter combinations for one
+// scheme, as override maps.
+//
+// A parameter applies to a scheme if and only if config.SchemeParams produces
+// it. That keeps the parameter map the single contract between config and
+// scheme — the one internal/schemes/contract_test.go checks — instead of the
+// runner carrying its own list of which knob belongs to which baseline.
+//
+// These cannot be reconfigured in place the way Exp 1 reshards: arity_q decides
+// the BAT's shape, so Setup has to re-run. That is free, since Setup is untimed
+// for every scheme, and it is why these live here rather than behind a runtime
+// interface like scheme.Resharder.
+//
+// A scheme declaring none of them gets one empty entry and is measured once.
+func setupSweeps(cfg *config.Config, name string) ([]map[string]any, error) {
+	params, err := cfg.SchemeParams(name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Each swept setup parameter, with the values the config lists for it.
+	type axis struct {
+		key    string
+		values []any
+	}
+	var axes []axis
+
+	if _, declared := params["arity_q"]; declared {
+		vals := make([]any, 0, len(cfg.Baselines.Ref13.ArityQ))
+		for _, q := range cfg.Baselines.Ref13.ArityQ {
+			vals = append(vals, q)
+		}
+		if len(vals) == 0 {
+			return nil, fmt.Errorf("%s declares arity_q but the config lists none", name)
+		}
+		axes = append(axes, axis{"arity_q", vals})
+	}
+	if _, declared := params["challenged_blocks"]; declared {
+		vals := make([]any, 0, len(cfg.Baselines.Ref13.ChallengedBlocks))
+		for _, z := range cfg.Baselines.Ref13.ChallengedBlocks {
+			vals = append(vals, z)
+		}
+		if len(vals) == 0 {
+			return nil, fmt.Errorf("%s declares challenged_blocks but the config lists none", name)
+		}
+		axes = append(axes, axis{"challenged_blocks", vals})
+	}
+
+	if len(axes) == 0 {
+		return []map[string]any{nil}, nil
+	}
+
+	// Cartesian product over the axes.
+	out := []map[string]any{{}}
+	for _, a := range axes {
+		next := make([]map[string]any, 0, len(out)*len(a.values))
+		for _, base := range out {
+			for _, v := range a.values {
+				m := make(map[string]any, len(base)+1)
+				for k, bv := range base {
+					m[k] = bv
+				}
+				m[a.key] = v
+				next = append(next, m)
+			}
+		}
+		out = next
+	}
+	return out, nil
 }
 
 func emit(w *results.Writer, doc results.Document) error {
@@ -505,6 +620,7 @@ func prepareLedger(
 	s scheme.Scheme,
 	ledgerSize, blockTx int,
 	depths []int,
+	overrides map[string]any,
 ) (map[int][]string, error) {
 	need := ledgerSize * blockTx
 	if need > len(full.Transactions) {
@@ -523,6 +639,17 @@ func prepareLedger(
 	params, err := cfg.SchemeParams(s.Name())
 	if err != nil {
 		return nil, err
+	}
+	// Swept setup-time parameters replace their defaults for this point. Only
+	// keys the scheme already declares are overridden — setupSweeps derives
+	// them from this same map, so an unknown key here would be a bug rather
+	// than a configuration choice.
+	for k, v := range overrides {
+		if _, declared := params[k]; !declared {
+			return nil, fmt.Errorf(
+				"sweep sets %q, which %s does not declare", k, s.Name())
+		}
+		params[k] = v
 	}
 	if err := s.Setup(ctx, scheme.SetupParams{
 		Dataset:      sized,

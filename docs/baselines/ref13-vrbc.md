@@ -221,13 +221,13 @@ the paper reports results, and omitting it would weaken the baseline unfairly.
 
 - [x] Vector commitments are real cryptographic commitments, not hash placeholders — `pkg/vc`, checked against directly evaluated exponents rather than against itself
 - [x] Pairing checks (Eq. 11) are actually computed and can actually fail — `AggregateVerify`, with the forgery tests behind it
-- [ ] Eq. 12 chameleon-hash correctness check is performed
+- [x] Eq. 12 chameleon-hash correctness check is performed — `verify.go`, and `TestEq12CatchesWhatEq11Cannot` shows Eq. 11 alone accepts what Eq. 12 rejects
 - [x] BAT path updates touch every node from redacted block to root — `refreshPath`, pinned by `TestRedactionChangesTheRoot`
 - [x] Audit challenge is genuinely randomised per round via the specified PRF — `TestAuditIsADifferentChallengeEachRound`
 - [x] Optimized path-union selection (§4.1) is active — and see the note above on what it does and does not buy
 - [x] A tampered block is actually **detected** — `TestAuditDetectsATamperedBlock`
-- [ ] Trapdoor authorization check is real, not stubbed to `return true`
-- [ ] No parameter appears as a literal anywhere in the implementation
+- [x] Trapdoor authorization check is real, not stubbed to `return true` — `HasTrapdoor`, and `TestAuthorizeDeniesAnUnknownTarget` shows it can deny
+- [x] No parameter appears as a literal anywhere in the implementation — audited; the evidence-size accounting measures encodings from the types in use rather than writing 48 and 32 down, since both curves are config fields
 
 > The negative test matters most. A commitment scheme that never rejects anything
 > would look extremely fast and be entirely worthless. Every verification path needs a

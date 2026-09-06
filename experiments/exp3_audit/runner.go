@@ -55,7 +55,24 @@ type Config struct {
 	// indicated why.
 	//
 	// Construction is NOT timed: only retrieval and verification are.
-	Prepare func(ctx context.Context, s scheme.Scheme, ledgerSize int) (map[int][]string, error)
+	//
+	// overrides carries SETUP-time swept parameters for this point — Ref[13]'s
+	// arity_q and challenged_blocks. They cannot be reconfigured in place the
+	// way Exp 1 reshards, because the tree shape depends on them, so Setup is
+	// re-run per value. That is free: Setup is untimed for every scheme.
+	Prepare func(ctx context.Context, s scheme.Scheme, ledgerSize int, overrides map[string]any) (map[int][]string, error)
+
+	// SetupSweeps reports the swept setup-parameter combinations that apply to
+	// one scheme, each as an override map. A scheme without any of these knobs
+	// must get exactly one entry, or it would be measured repeatedly under
+	// labels that mean nothing for it and the extra points would look like
+	// variance.
+	//
+	// WHY A HOOK. Whether a parameter applies to a scheme is decided by whether
+	// config.SchemeParams produces it, which keeps the parameter map the single
+	// contract — the same contract internal/schemes/contract_test.go checks.
+	// The runner has no business duplicating that knowledge.
+	SetupSweeps func(s scheme.Scheme) ([]map[string]any, error)
 }
 
 // Point is one measured configuration.
@@ -64,6 +81,12 @@ type Point struct {
 	LedgerSize   int    `json:"ledger_size"`
 	HistoryDepth int    `json:"history_depth"`
 	Repetition   int    `json:"repetition"`
+
+	// SetupParams records the swept setup-time parameters this point was
+	// measured under — Ref[13]'s arity_q and challenged_blocks. Empty for a
+	// scheme with no such knob. Without it the arity sweep would produce
+	// several curves a plot could not tell apart.
+	SetupParams map[string]any `json:"setup_params,omitempty"`
 
 	// Semantics records which question this scheme actually answered. Carried
 	// into results so no table can silently imply equivalence.
@@ -142,33 +165,56 @@ func Run(
 	res := &Result{LedgerScaling: make(map[string]ScalingClass)}
 
 	for _, s := range schemesUnderTest {
-		for _, ledger := range cfg.LedgerSizes {
-			// Rebuild at this ledger size before measuring anything at it.
-			targetsByDepth, err := cfg.Prepare(ctx, s, ledger)
+		// The setup-parameter combinations this scheme is measured under. One
+		// empty entry for a scheme with no swept setup knobs.
+		sweeps := []map[string]any{nil}
+		if cfg.SetupSweeps != nil {
+			got, err := cfg.SetupSweeps(s)
 			if err != nil {
-				return nil, fmt.Errorf("exp3: preparing %s at ledger %d: %w", s.Name(), ledger, err)
+				return nil, fmt.Errorf("exp3: setup sweeps for %s: %w", s.Name(), err)
 			}
-			for _, depth := range cfg.HistoryDepths {
-				targets := targetsByDepth[depth]
-				if len(targets) == 0 {
-					return nil, fmt.Errorf("exp3: no target transaction at history depth %d", depth)
-				}
-				for rep := 0; rep < cfg.Repetitions; rep++ {
-					// Rotate targets across repetitions so results are not an
-					// artefact of one transaction's position in the ledger.
-					target := targets[rep%len(targets)]
+			if len(got) > 0 {
+				sweeps = got
+			}
+		}
 
-					p, err := runOne(ctx, s, cfg.AuditorID, target, ledger, depth)
-					if err != nil {
-						return nil, fmt.Errorf("exp3: %s at ledger %d depth %d: %w",
-							s.Name(), ledger, depth, err)
+		schemeStart := len(res.Points)
+
+		for _, overrides := range sweeps {
+			for _, ledger := range cfg.LedgerSizes {
+				// Rebuild at this ledger size and setup configuration before
+				// measuring anything at it.
+				targetsByDepth, err := cfg.Prepare(ctx, s, ledger, overrides)
+				if err != nil {
+					return nil, fmt.Errorf("exp3: preparing %s at ledger %d: %w", s.Name(), ledger, err)
+				}
+				for _, depth := range cfg.HistoryDepths {
+					targets := targetsByDepth[depth]
+					if len(targets) == 0 {
+						return nil, fmt.Errorf("exp3: no target transaction at history depth %d", depth)
 					}
-					p.Repetition = rep
-					res.Points = append(res.Points, p)
+					for rep := 0; rep < cfg.Repetitions; rep++ {
+						// Rotate targets across repetitions so results are not an
+						// artefact of one transaction's position in the ledger.
+						target := targets[rep%len(targets)]
+
+						p, err := runOne(ctx, s, cfg.AuditorID, target, ledger, depth)
+						if err != nil {
+							return nil, fmt.Errorf("exp3: %s at ledger %d depth %d: %w",
+								s.Name(), ledger, depth, err)
+						}
+						p.Repetition = rep
+						p.SetupParams = overrides
+						res.Points = append(res.Points, p)
+					}
 				}
 			}
 		}
-		res.LedgerScaling[s.Name()] = classifyScaling(res.Points, s)
+
+		// Scaling is classified per setup configuration: pooling an arity-2 run
+		// with an arity-10 run would compare two different trees and report the
+		// difference as ledger scaling.
+		res.LedgerScaling[s.Name()] = classifyScaling(res.Points[schemeStart:], s)
 	}
 	return res, nil
 }

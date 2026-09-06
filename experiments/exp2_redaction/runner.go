@@ -39,6 +39,29 @@ type Config struct {
 	ConflictRatios []float64
 
 	Repetitions int
+
+	// Rebuild re-runs a scheme's Setup under swept SETUP-time parameters —
+	// Ref[13]'s arity_q, which decides the BAT's shape and so the length of the
+	// path every redaction updates.
+	//
+	// WHY EXP 2 NEEDS THIS. q trades costs in OPPOSITE directions: append cost
+	// rises with it while redaction cost falls. config/experiment.yaml says as
+	// much, and that any single value "would let our choice decide the outcome
+	// of Exp 2 and Exp 3". Measuring one arity would report a number we picked
+	// rather than one the design produces.
+	//
+	// Unlike Exp 1's Reshard this cannot be done in place — the tree shape
+	// depends on it — so Setup is re-run. That costs the comparison nothing,
+	// since Setup is untimed for every scheme.
+	//
+	// Optional: nil means no setup sweep is possible.
+	Rebuild func(ctx context.Context, s scheme.Scheme, overrides map[string]any) error
+
+	// SetupSweeps reports the swept setup-parameter combinations for one scheme.
+	// A scheme without such a knob must get exactly one entry, or it would be
+	// measured repeatedly under labels meaningless for it and the duplicates
+	// would read as variance.
+	SetupSweeps func(s scheme.Scheme) ([]map[string]any, error)
 }
 
 // Point is one measured configuration.
@@ -48,6 +71,11 @@ type Point struct {
 	WaitBoundMS   int     `json:"wait_bound_ms"`
 	ConflictRatio float64 `json:"conflict_ratio"`
 	Repetition    int     `json:"repetition"`
+
+	// SetupParams records the swept setup-time parameters this point was
+	// measured under — Ref[13]'s arity_q. Empty for a scheme without one.
+	// Without it the arity curves would be indistinguishable in the results.
+	SetupParams map[string]any `json:"setup_params,omitempty"`
 
 	// Counts
 	Requested     int `json:"requested"`
@@ -123,37 +151,72 @@ func Run(
 	res := &Result{OptimalBatchSize: make(map[string]int)}
 
 	for _, s := range schemesUnderTest {
-		authorized, err := authorizeAll(ctx, s, trace)
-		if err != nil {
-			return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
-		}
-		if len(authorized) == 0 {
-			return nil, fmt.Errorf(
-				"exp2: %s authorized none of %d requests; there is nothing to redact",
-				s.Name(), len(trace))
-		}
-
-		// A scheme that does not batch is measured once, at B_R=1. Sweeping it
-		// across batch sizes would fabricate a curve it has no mechanism to
-		// produce.
-		sizes := cfg.BatchSizes
-		if !s.Capabilities().BatchRedaction {
-			sizes = []int{1}
+		// Setup-time sweeps for this scheme; one empty entry when it has none.
+		sweeps := []map[string]any{nil}
+		if cfg.SetupSweeps != nil {
+			got, err := cfg.SetupSweeps(s)
+			if err != nil {
+				return nil, fmt.Errorf("exp2: setup sweeps for %s: %w", s.Name(), err)
+			}
+			if len(got) > 0 {
+				sweeps = got
+			}
 		}
 
-		for _, size := range sizes {
-			for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
-				for rep := 0; rep < cfg.Repetitions; rep++ {
-					p, err := runOne(ctx, s, authorized, size, wait)
-					if err != nil {
-						return nil, fmt.Errorf("exp2: %s at batch %d: %w", s.Name(), size, err)
+		schemeStart := len(res.Points)
+
+		for _, overrides := range sweeps {
+			if overrides != nil {
+				if cfg.Rebuild == nil {
+					return nil, fmt.Errorf(
+						"exp2: %s has swept setup parameters but no Rebuild hook, "+
+							"so the sweep would be declared and never executed", s.Name())
+				}
+				if err := cfg.Rebuild(ctx, s, overrides); err != nil {
+					return nil, fmt.Errorf("exp2: rebuilding %s: %w", s.Name(), err)
+				}
+			}
+
+			// Re-authorized after every rebuild. Setup replaces the ledger, so
+			// authorizations taken against the previous one would be stale and
+			// every redaction would be excluded rather than measured.
+			authorized, err := authorizeAll(ctx, s, trace)
+			if err != nil {
+				return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
+			}
+			if len(authorized) == 0 {
+				return nil, fmt.Errorf(
+					"exp2: %s authorized none of %d requests; there is nothing to redact",
+					s.Name(), len(trace))
+			}
+
+			// A scheme that does not batch is measured once, at B_R=1. Sweeping
+			// it across batch sizes would fabricate a curve it has no mechanism
+			// to produce.
+			sizes := cfg.BatchSizes
+			if !s.Capabilities().BatchRedaction {
+				sizes = []int{1}
+			}
+
+			for _, size := range sizes {
+				for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
+					for rep := 0; rep < cfg.Repetitions; rep++ {
+						p, err := runOne(ctx, s, authorized, size, wait)
+						if err != nil {
+							return nil, fmt.Errorf("exp2: %s at batch %d: %w", s.Name(), size, err)
+						}
+						p.Repetition = rep
+						p.SetupParams = overrides
+						res.Points = append(res.Points, p)
 					}
-					p.Repetition = rep
-					res.Points = append(res.Points, p)
 				}
 			}
 		}
-		res.OptimalBatchSize[s.Name()] = findOptimalBatch(res.Points, s.Name())
+
+		// Optimal batch size is found within this scheme's own points. Pooling
+		// arities would compare two different tree shapes and report the
+		// difference as a batching effect.
+		res.OptimalBatchSize[s.Name()] = findOptimalBatch(res.Points[schemeStart:], s.Name())
 	}
 	return res, nil
 }
