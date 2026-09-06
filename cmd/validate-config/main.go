@@ -560,11 +560,14 @@ func checkExperiments(c *config.Config, r *report) {
 					"the crossover where sharding overtakes a single serialization point must fall inside the plot")
 			}
 		}
-		if len(e.Ablations) < 4 {
-			r.warnf("experiments.verification_throughput.ablations",
-				fmt.Sprintf("%d cells configured, expected 4", len(e.Ablations)),
-				"sharding and batching must be separable to evaluate the Phase 3 independence claim")
-		}
+		// No ablation check here. The sharding x batching grid is DERIVED from
+		// the two sweeps rather than configured — shard count 1 is the
+		// sharding-disabled arm, proof batch size 1 the batching-disabled one —
+		// and both are already required where each sweep is validated. A check
+		// in this block would report the same defect a second time.
+		//
+		// What used to be here counted four entries in a configured list that
+		// drove nothing, so it could pass while the arms were unmeasurable.
 	}
 
 	// Exp 2

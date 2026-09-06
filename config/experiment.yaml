@@ -578,11 +578,18 @@ experiments:
 
     # [METHOD] Required ablation grid. Sharding and batching must be separable,
     # or the Phase 3 independence claim cannot be evaluated at all.
-    ablations:
-      - { sharding: false, batching: false }  # single-verification floor
-      - { sharding: true,  batching: false }  # sharding alone
-      - { sharding: false, batching: true }   # batching alone
-      - { sharding: true,  batching: true }   # combined
+    # The sharding x batching ablation grid is NOT configured here. It is
+    # derived from the two sweeps: zkredact.sharding.counts includes 1, which
+    # is the sharding-disabled arm, and zkredact.proof_batch.sizes includes 1,
+    # which is the batching-disabled arm. All four cells therefore fall out of
+    # the cross product, at every magnitude rather than only on/off, and each
+    # point records which arm it belongs to.
+    #
+    # A four-entry list used to sit here. It was read by nothing except
+    # validate-config, which checked only that it had four entries — so the
+    # numbers existed and the list describing them produced none of them.
+    # validate-config now checks the two disabled arms are present instead,
+    # which is the property that actually makes the arms separable.
 
   # ---------------------------------------------------------------------------
   # Exp 2 — Redaction Throughput

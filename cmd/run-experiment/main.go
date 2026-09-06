@@ -284,18 +284,12 @@ func runExp1(
 	}
 	fmt.Println("\n=== Exp 1: Verification Throughput ===")
 
-	ablations := make([]exp1.Ablation, len(e.Ablations))
-	for i, a := range e.Ablations {
-		ablations[i] = exp1.Ablation{Sharding: a.Sharding, Batching: a.Batching}
-	}
-
 	res, err := exp1.Run(ctx, exp1.Config{
 		ConcurrencyLevels: e.ConcurrencyLevels,
 		Repetitions:       reps,
 		ShardCounts:       cfg.ZKRedact.Sharding.Counts,
 		NativeBatchVerify: cfg.ZKRedact.ProofBatch.NativeBatchVerify,
 		BatchSizes:        cfg.ZKRedact.ProofBatch.Sizes,
-		Ablations:         ablations,
 	}, systems, trace)
 	if err != nil {
 		return err

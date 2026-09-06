@@ -192,16 +192,10 @@ type Experiments struct {
 }
 
 type ExpVerification struct {
-	Enabled           bool       `yaml:"enabled"`
-	ConcurrencyLevels []int      `yaml:"concurrency_levels"`
-	Systems           []string   `yaml:"systems"`
-	Metrics           []string   `yaml:"metrics"`
-	Ablations         []Ablation `yaml:"ablations"`
-}
-
-type Ablation struct {
-	Sharding bool `yaml:"sharding"`
-	Batching bool `yaml:"batching"`
+	Enabled           bool     `yaml:"enabled"`
+	ConcurrencyLevels []int    `yaml:"concurrency_levels"`
+	Systems           []string `yaml:"systems"`
+	Metrics           []string `yaml:"metrics"`
 }
 
 type ExpRedaction struct {

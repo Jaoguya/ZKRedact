@@ -4,9 +4,9 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~31,400 lines Go across 107 files, plus the Fabric network
+**Code:** ~32,800 lines Go across 111 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **301 tests (475 with subtests) across 19 packages passing**, `make validate-config`
+gofmt-clean, **519 test runs across 19 packages passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
@@ -43,11 +43,56 @@ not macOS-dependent.
 
 ---
 
+## Audit of tasks 1-8 — five defects found and fixed
+
+A line-by-line pass of the papers' algorithms against the code, done before
+task 9 rather than after. Every one of these passed the full test suite, the
+config gate and `go vet` beforehand.
+
+| # | Defect | Effect |
+|---|---|---|
+| 1 | Ref[10] `Redact` wrote the new content into the block instead of PRUNING `d_w` to a reference to `tx_rdt` (Algorithm 5 line 9, §V-C) | Erased the deletion-vs-replacement distinction between Ref[10] and ZK-Redact |
+| 2 | Ref[10] Algorithm 1 only recomputed hashes, never validating a redacted transaction AGAINST its redaction transaction | A node could prune to any content and the audit passed |
+| 3 | Ref[10] `Audit` verified only the target, not every located `tx_rdt` (spec §2) | Verification cost flat in history depth — a property Ref[10] has no mechanism for, on Exp 3's second headline plot |
+| 4 | Ref[22]'s accumulator discarded `phi(N)`, so `Delete` rebuilt state over every surviving element | **~83x at 1,000 blocks, ~830x at 10,000.** §II-C says deletion "is executed by the regulator with the RSA group order" |
+| 5 | Exp 2 never varied the conflict ratio — hardcoded `WorkloadParams(0.0)`, unswept config, and `conflict_ratio: 0` stamped into every result row | ZK-Redact's Phase 4 Step 1 serialization unexercised; staleness measured only where it is least likely |
+
+Two more surfaced while fixing #4 and #5: Ref[22]'s NI-PoE/NI-PoKE were absent
+although Algorithm 7 builds four inside `Delete` and Algorithm 8 verifies
+nothing else, and `hPrime` returned a raw digest rather than the accumulator's
+prime representative — so the product over the delete set described no state
+transition, which is why it could be computed and discarded unnoticed.
+
+**What found them, in every case, was reading the paper's algorithm against the
+implementation.** Unit tests passed throughout: the code was consistent with
+itself and inconsistent with the specification. Mutation-checking each fix
+mattered too — six mutants survived their first test and needed better ones.
+
+⚠️ **The audit was not uniform.** Ref[10] and Ref[22] got the line-by-line
+treatment and both yielded defects. **Ref[13] and ZK-Redact got a lighter pass**
+— test coverage, capability declarations, deviation tables, spot checks — and
+nothing obvious surfaced. That is weaker evidence, not a clean bill. Ref[13] is
+also the component this file flagged as highest-risk. Worth the same treatment
+before results are written up.
+
+---
+
 ## Decisions waiting on you
 
 **All code is done, so these are the only things standing between the repo and
 results.** Every one of them is a budget or scope call that is yours, not the
 code's — nothing below can be resolved by writing more of it.
+
+**0a. Exp 2's sweep grew again — the conflict ratio is now a real axis.** It was
+declared, configured, and never swept; fixing that multiplies Exp 2's
+configurations by `|conflict_ratios|`, currently 3, ON TOP of the
+re-authorization multiplier below. Narrowing the axis in config is a legitimate
+call, and now a recorded one rather than an accident.
+
+**0b. Ref[22]'s Delete cost moved in both directions and has not been
+re-measured end to end.** Restoring `phi(N)` made it dramatically cheaper; the
+four NI-PoE/NI-PoKE proofs make it dearer. The net is unknown until a real run,
+so any prior expectation about Ref[22]'s Exp 2 curve should be discarded.
 
 **0. Exp 2's sweep size, which just grew.** Task 5 fixed a defect that had Exp 2
 measuring nothing after its first configuration (see task 5). The fix
@@ -1498,6 +1543,11 @@ Full audit with paper citations: [`docs/paper-conformance.md`](docs/paper-confor
 | Ref[10] eligible pool smaller than `committee_size` → `Setup` fails | `ref10` | a silently shrunken committee weakening the threshold |
 | Ref[13] corruption rate ≠ 0.01 → `Setup` fails | `ref13` | `challenged_blocks` silently losing its 95%/99% meaning |
 | Ref[22] accumulator < 3072 bits → `Setup` fails | `ref22` | a baseline benchmarked below the shared security level |
+| Ref[22] built without the regulator's group order → `Setup` fails | `ref22` | Delete silently falling back to the O(n) rebuild §II-C says the scheme does not use |
+| Accumulator delete with a non-invertible prime → error, not a silent rebuild | `pkg/accumulator` | the cost profile changing without saying so |
+| `Delete` where the accumulator did not move by `eta_hat_1` → error | `ref22` | a deletion proof attesting a transition that did not happen |
+| Exp 2 without a `TraceFor` hook → refused | `exp2` | the conflict-ratio sweep collapsing back to one fixed trace |
+| `security.pairing_curve` with no implementation → validation error | `validate-config` | a curve recorded in results that never ran |
 | CH construction a scheme needs not implemented → `Setup` fails | all four schemes, via `ch.CheckRequired` | a baseline silently given a cheaper chameleon hash than its paper specifies |
 | `baselines.ref22_shen.accumulator_bits` ≠ `security.accumulator_bits` → error | `validate-config` | the runtime security level drifting from the documented one — `ref22.Setup` reads the baseline copy |
 | Clock too coarse to resolve the measurements → run refused | `run-experiment` | a full results file of quantised, plausible-looking numbers |

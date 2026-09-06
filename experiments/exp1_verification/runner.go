@@ -52,13 +52,19 @@ type Config struct {
 	// and both verification modes take the same path — so a mode sweep on its own
 	// measures nothing and reports it as a comparison.
 	BatchSizes []int
-
-	// Ablations enumerate the sharding/batching combinations required to test
-	// the Phase 3 independence claim.
-	Ablations []Ablation
 }
 
 // Ablation is one cell of the sharding x batching grid.
+//
+// DERIVED from the swept values, never configured. The grid is produced by the
+// shard and batch sweeps themselves: shard_counts includes 1, which is sharding
+// off, and batch sizes include 1, which is batching off, so all four cells fall
+// out of the cross product at every magnitude rather than only on/off.
+//
+// A configured list of four cells used to sit beside this, read by nothing but
+// the validator, which checked only that four were present. The numbers existed;
+// the list describing them produced none of them. Removed rather than wired,
+// because wiring it would have replaced a richer sweep with a coarser one.
 type Ablation struct {
 	Sharding bool `json:"sharding"`
 	Batching bool `json:"batching"`
