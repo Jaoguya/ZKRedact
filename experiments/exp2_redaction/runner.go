@@ -36,7 +36,24 @@ type Config struct {
 
 	// ConflictRatios exercise the serialization rule: same-target requests must
 	// serialise while independent ones proceed in parallel.
+	//
+	// SWEPT, which needs a fresh trace per ratio — the ratio is a property of
+	// how the trace is generated, not a knob applied to an existing one. See
+	// TraceFor.
 	ConflictRatios []float64
+
+	// TraceFor returns the request trace generated at one conflict ratio.
+	//
+	// Required. Exp 2's stated purpose is the amortisation of blockchain cost
+	// AND its staleness price, and conflict rate is a primary driver of
+	// staleness: same-target requests must serialise, so a batch containing
+	// them strands more work on freshness revalidation. Measuring only at 0
+	// samples precisely the regime where staleness is least likely, which is
+	// the regime least able to show the effect being measured.
+	//
+	// One trace per ratio, shared across schemes, so the "same trace, same
+	// order, every system" rule still holds within each ratio.
+	TraceFor func(conflictRatio float64) ([]*scheme.Request, error)
 
 	Repetitions int
 
@@ -131,7 +148,6 @@ func Run(
 	ctx context.Context,
 	cfg Config,
 	schemesUnderTest []scheme.Scheme,
-	trace []*scheme.Request,
 ) (*Result, error) {
 	if len(cfg.BatchSizes) == 0 {
 		return nil, fmt.Errorf("exp2: no batch sizes configured")
@@ -144,8 +160,31 @@ func Run(
 	if cfg.Repetitions < 1 {
 		return nil, fmt.Errorf("exp2: repetitions must be >= 1, got %d", cfg.Repetitions)
 	}
-	if len(trace) == 0 {
-		return nil, fmt.Errorf("exp2: empty request trace")
+	if cfg.TraceFor == nil {
+		return nil, fmt.Errorf(
+			"exp2: TraceFor is required — the conflict ratio is a property of trace " +
+				"generation, so the sweep cannot run against one fixed trace")
+	}
+	if len(cfg.ConflictRatios) == 0 {
+		return nil, fmt.Errorf("exp2: no conflict ratios configured")
+	}
+
+	// One trace per ratio, built once and shared by every scheme, so within a
+	// ratio all four still see identical requests in identical order.
+	type ratioTrace struct {
+		ratio float64
+		trace []*scheme.Request
+	}
+	traces := make([]ratioTrace, 0, len(cfg.ConflictRatios))
+	for _, ratio := range cfg.ConflictRatios {
+		t, err := cfg.TraceFor(ratio)
+		if err != nil {
+			return nil, fmt.Errorf("exp2: trace at conflict ratio %v: %w", ratio, err)
+		}
+		if len(t) == 0 {
+			return nil, fmt.Errorf("exp2: empty request trace at conflict ratio %v", ratio)
+		}
+		traces = append(traces, ratioTrace{ratio: ratio, trace: t})
 	}
 
 	res := &Result{OptimalBatchSize: make(map[string]int)}
@@ -185,63 +224,91 @@ func Run(
 				sizes = []int{1}
 			}
 
-			for _, size := range sizes {
-				for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
-					for rep := 0; rep < cfg.Repetitions; rep++ {
-						// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
-						// scheme.
-						//
-						// A redaction advances its transaction's version, and
-						// an authorization carries the version it was granted
-						// against. So the previous configuration's redactions
-						// invalidate this configuration's authorizations:
-						// every request fails Fresh_i and is counted as stale
-						// rather than executed.
-						//
-						// Authorizing once produced a sweep in which only the
-						// FIRST point measured a redaction. Every later point
-						// reported 100% staleness, zero CryptoTime and a cost
-						// per request derived from no work at all — for
-						// ZK-Redact, Ref[13] and Ref[22] alike, since all three
-						// revalidate state. The batch-size curve, which is what
-						// Exp 2 exists to produce, was built from configurations
-						// that redacted nothing. Ref[10] was unaffected only
-						// because it performs no freshness check, which meant
-						// the one scheme that could not detect the problem was
-						// the one that looked healthy.
-						//
-						// NOT TIMED, so this costs the comparison nothing but
-						// wall clock. It is not free wall clock: for ZK-Redact
-						// it is one Groth16 proof per request per configuration,
-						// because the statement binds the transaction version
-						// and a new version needs a new proof. That is the real
-						// cost of the workload, not an artefact of the harness.
-						authorized, err := authorizeAll(ctx, s, trace)
-						if err != nil {
-							return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
-						}
-						if len(authorized) == 0 {
-							return nil, fmt.Errorf(
-								"exp2: %s authorized none of %d requests at batch size %d; "+
-									"there is nothing to redact", s.Name(), len(trace), size)
-						}
+			for _, rt := range traces {
+				for _, size := range sizes {
+					for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
+						for rep := 0; rep < cfg.Repetitions; rep++ {
+							// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
+							// scheme.
+							//
+							// A redaction advances its transaction's version, and
+							// an authorization carries the version it was granted
+							// against. So the previous configuration's redactions
+							// invalidate this configuration's authorizations:
+							// every request fails Fresh_i and is counted as stale
+							// rather than executed.
+							//
+							// Authorizing once produced a sweep in which only the
+							// FIRST point measured a redaction. Every later point
+							// reported 100% staleness, zero CryptoTime and a cost
+							// per request derived from no work at all — for
+							// ZK-Redact, Ref[13] and Ref[22] alike, since all three
+							// revalidate state. The batch-size curve, which is what
+							// Exp 2 exists to produce, was built from configurations
+							// that redacted nothing. Ref[10] was unaffected only
+							// because it performs no freshness check, which meant
+							// the one scheme that could not detect the problem was
+							// the one that looked healthy.
+							//
+							// NOT TIMED, so this costs the comparison nothing but
+							// wall clock. It is not free wall clock: for ZK-Redact
+							// it is one Groth16 proof per request per configuration,
+							// because the statement binds the transaction version
+							// and a new version needs a new proof. That is the real
+							// cost of the workload, not an artefact of the harness.
+							authorized, err := authorizeAll(ctx, s, rt.trace)
+							if err != nil {
+								return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
+							}
+							if len(authorized) == 0 {
+								return nil, fmt.Errorf(
+									"exp2: %s authorized none of %d requests at batch size %d, "+
+										"conflict ratio %v; there is nothing to redact",
+									s.Name(), len(rt.trace), size, rt.ratio)
+							}
 
-						p, err := runOne(ctx, s, authorized, size, wait)
-						if err != nil {
-							return nil, fmt.Errorf("exp2: %s at batch %d: %w", s.Name(), size, err)
+							p, err := runOne(ctx, s, authorized, size, wait)
+							if err != nil {
+								return nil, fmt.Errorf("exp2: %s at batch %d, conflict %v: %w",
+									s.Name(), size, rt.ratio, err)
+							}
+							p.Repetition = rep
+							p.SetupParams = overrides
+							p.ConflictRatio = rt.ratio
+							res.Points = append(res.Points, p)
 						}
-						p.Repetition = rep
-						p.SetupParams = overrides
-						res.Points = append(res.Points, p)
 					}
 				}
 			}
 		}
 
-		// Optimal batch size is found within this scheme's own points. Pooling
-		// arities would compare two different tree shapes and report the
-		// difference as a batching effect.
-		res.OptimalBatchSize[s.Name()] = findOptimalBatch(res.Points[schemeStart:], s.Name())
+		// Optimal batch size is found within this scheme's own points, AT ONE
+		// CONFLICT RATIO.
+		//
+		// findOptimalBatch aggregates by batch size alone, so handing it points
+		// from several ratios would average an optimum that genuinely moves
+		// with conflict — more conflict strands more work on revalidation, so
+		// the batch size where staleness starts costing more than amortisation
+		// saves is not the same number. Averaging them reports a batch size that
+		// is optimal at no ratio at all. The same argument the arity comment
+		// makes about tree shapes.
+		//
+		// The baseline ratio is the lowest configured one, which
+		// config/experiment.yaml describes as isolating the fully independent
+		// path. Every point is retained, so the per-ratio optima are recoverable.
+		baseline := cfg.ConflictRatios[0]
+		for _, r := range cfg.ConflictRatios {
+			if r < baseline {
+				baseline = r
+			}
+		}
+		atBaseline := make([]Point, 0, len(res.Points)-schemeStart)
+		for _, p := range res.Points[schemeStart:] {
+			if p.ConflictRatio == baseline {
+				atBaseline = append(atBaseline, p)
+			}
+		}
+		res.OptimalBatchSize[s.Name()] = findOptimalBatch(atBaseline, s.Name())
 	}
 	return res, nil
 }

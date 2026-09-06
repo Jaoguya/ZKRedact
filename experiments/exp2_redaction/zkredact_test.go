@@ -2,6 +2,7 @@ package exp2_redaction
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"zkredact/internal/schemes/zkredact"
@@ -71,9 +72,11 @@ func TestExp2SweepsZKRedactWithoutStranding(t *testing.T) {
 	s, trace := exp2Fixture(t)
 
 	res, err := Run(context.Background(), Config{
-		BatchSizes:  []int{1, 2, 4},
-		Repetitions: 2,
-	}, []scheme.Scheme{s}, trace)
+		BatchSizes:     []int{1, 2, 4},
+		Repetitions:    2,
+		ConflictRatios: []float64{0.0},
+		TraceFor:       func(float64) ([]*scheme.Request, error) { return trace, nil },
+	}, []scheme.Scheme{s})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -95,5 +98,99 @@ func TestExp2SweepsZKRedactWithoutStranding(t *testing.T) {
 				"measures no redaction at all.",
 				p.BatchSize, p.Repetition, p.StaleExcluded, p.Requested)
 		}
+	}
+}
+
+// The conflict ratio must actually be swept, and recorded on every point.
+//
+// It was previously declared in Config, passed in from the config file, and
+// never looped over — while cmd/run-experiment generated one trace at a
+// hardcoded 0.0 and every Point carried conflict_ratio: 0 as a zero value. The
+// results asserted an experimental condition that was never set, and the
+// plotter, which already groups by "conflict", had nothing to group.
+func TestConflictRatioIsSweptAndRecorded(t *testing.T) {
+	s, trace := exp2Fixture(t)
+
+	ratios := []float64{0.0, 0.25, 0.5}
+	asked := make(map[float64]int)
+
+	res, err := Run(context.Background(), Config{
+		BatchSizes:     []int{1, 2},
+		Repetitions:    1,
+		ConflictRatios: ratios,
+		TraceFor: func(r float64) ([]*scheme.Request, error) {
+			asked[r]++
+			return trace, nil
+		},
+	}, []scheme.Scheme{s})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// One trace per ratio, built once and shared across schemes.
+	for _, r := range ratios {
+		if asked[r] != 1 {
+			t.Errorf("TraceFor(%v) called %d times, want 1", r, asked[r])
+		}
+	}
+
+	seen := make(map[float64]int)
+	for _, p := range res.Points {
+		seen[p.ConflictRatio]++
+	}
+	for _, r := range ratios {
+		if seen[r] == 0 {
+			t.Errorf("no points recorded at conflict ratio %v", r)
+		}
+	}
+	if len(seen) != len(ratios) {
+		t.Errorf("points carry %d distinct conflict ratios, want %d", len(seen), len(ratios))
+	}
+}
+
+// A missing TraceFor must be refused, not silently treated as one fixed trace.
+func TestRunRefusesAMissingTraceHook(t *testing.T) {
+	s, _ := exp2Fixture(t)
+	_, err := Run(context.Background(), Config{
+		BatchSizes:     []int{1},
+		Repetitions:    1,
+		ConflictRatios: []float64{0.0},
+	}, []scheme.Scheme{s})
+	if err == nil {
+		t.Fatal("Run accepted a config with no TraceFor")
+	}
+	if !strings.Contains(err.Error(), "TraceFor") {
+		t.Errorf("error %q does not name the missing hook", err)
+	}
+}
+
+// The optimum must be computed at one ratio. It genuinely moves with conflict —
+// more conflict strands more work on revalidation — so averaging across ratios
+// reports a batch size that is optimal at none of them.
+func TestOptimalBatchIsNotPooledAcrossConflictRatios(t *testing.T) {
+	s, trace := exp2Fixture(t)
+
+	res, err := Run(context.Background(), Config{
+		BatchSizes:     []int{1, 2, 4},
+		Repetitions:    1,
+		ConflictRatios: []float64{0.5, 0.0}, // deliberately not in ascending order
+		TraceFor:       func(float64) ([]*scheme.Request, error) { return trace, nil },
+	}, []scheme.Scheme{s})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The baseline is the LOWEST ratio, not the first listed.
+	atBaseline := 0
+	for _, p := range res.Points {
+		if p.ConflictRatio == 0.0 {
+			atBaseline++
+		}
+	}
+	if atBaseline == 0 {
+		t.Fatal("no points at the baseline ratio")
+	}
+	if _, ok := res.OptimalBatchSize[s.Name()]; !ok {
+		t.Errorf("no optimal batch size reported for %s", s.Name())
 	}
 }

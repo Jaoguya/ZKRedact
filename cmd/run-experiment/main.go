@@ -344,7 +344,13 @@ func runExp2(
 		SetupSweeps: func(s scheme.Scheme) ([]map[string]any, error) {
 			return setupSweeps(cfg, s.Name())
 		},
-	}, systems, trace)
+		// Regenerated per ratio: conflict rate is decided when the trace is
+		// built, by how often a request targets an already-targeted
+		// transaction. It cannot be applied to a finished trace.
+		TraceFor: func(conflictRatio float64) ([]*scheme.Request, error) {
+			return traceAtConflict(cfg, ds, conflictRatio)
+		},
+	}, systems)
 	if err != nil {
 		return err
 	}
@@ -757,4 +763,31 @@ func findGrantedRequester(ctx context.Context, s scheme.Scheme, ds *scheme.Datas
 	}
 	return "", fmt.Errorf("%s authorized none of the %d identities; history cannot be built",
 		s.Name(), len(ds.Identities))
+}
+
+// traceAtConflict generates the request trace at one conflict ratio.
+//
+// Everything except the conflict ratio comes from the same config, and the seed
+// is unchanged, so two ratios differ only in how often a request revisits an
+// already-targeted transaction. That is what makes the ratio the swept variable
+// rather than a second, uncontrolled difference between traces.
+func traceAtConflict(cfg *config.Config, ds *scheme.Dataset, conflictRatio float64) ([]*scheme.Request, error) {
+	wp, err := cfg.WorkloadParams(conflictRatio)
+	if err != nil {
+		return nil, err
+	}
+	return workload.GenerateTrace(workload.Config{
+		Seed:                   wp.Seed,
+		BaseTransactions:       wp.BaseTransactions,
+		CorePayloadBytes:       wp.CorePayloadBytes,
+		RedactablePayloadBytes: wp.RedactablePayloadBytes,
+		IdentityCount:          wp.IdentityCount,
+		IdentityAttributes:     wp.IdentityAttributes,
+		PolicyCount:            wp.PolicyCount,
+		PredicateDepth:         wp.PredicateDepth,
+		TotalRequests:          wp.TotalRequests,
+		TargetDistribution:     wp.TargetDistribution,
+		ZipfS:                  wp.ZipfS,
+		ConflictRatio:          wp.ConflictRatio,
+	}, ds)
 }
