@@ -152,6 +152,7 @@ without that declaration appearing in the capability matrix the results carry.
 | `internal/pvl` | Phase 3 — sharding + batching, the standing verification layer |
 | `internal/schemes/ref10` | **All five algorithms, 75 tests** — networked voting verified live |
 | `internal/schemes/ref22` | **Accumulator + Algorithms 1, 2, 5-9**, wired end to end |
+| `internal/schemes/ref13` | **BAT** — tree, node commitments, Algorithms 1 and 2 |
 | `pkg/vc` | **Pointproofs vector commitment** — commit, open, verify, and Eq. 11 aggregation |
 | `cmd/build-zk` | Compiles and measures the circuit; fails on config drift |
 | `network/` | Chaincode + both topologies + smoke test, verified on a live peer |
@@ -818,12 +819,12 @@ immediately, because there the cost is real.
 ### 7. Ref[13] VRBC — cryptography ✅ done, BAT remaining ⬅️ **next**
 
 Ephemeral-trapdoor CH is **done** (`pkg/ch/ephemeral.go`). The vector
-commitment is **done** (`pkg/vc`), including cross-commitment aggregation.
-Remaining: the q-ary BAT on top of it — the tree itself (`Fam`, `Level`,
-`Parent`, `Path`, `#Child`), Algorithms 1-3, and the `ref13` scheme wiring.
+commitment is **done** (`pkg/vc`), including cross-commitment aggregation. The
+**BAT is done** (`internal/schemes/ref13/bat.go`): tree arithmetic, node
+commitments, Algorithm 1's path update, and Algorithm 2's path proof.
 
-**The cryptography is no longer the risk.** What is left is tree bookkeeping
-against a construction that is now built and checked.
+Remaining: Algorithm 3 (audit over z challenged blocks), the `ref13` scheme
+wiring, and the two sweeps in §7.1 below.
 
 #### The spike found a defect in the paper
 
@@ -917,6 +918,65 @@ SHA-256, because `security.hash` is SHA-256; the `ref13` Setup must call
 > If that forgeability test ever starts FAILING, the verification equation has
 > changed and the argument for the coefficients has to be redone. It is not a
 > test that should be "fixed" by making it pass.
+
+#### The BAT ✅ done, and a second under-specification
+
+`bat.go` is the q-ary tree: root at 0, children at `qi+1 … qi+q`, each node
+committing to `v_i = (m_i, C_{a_2}, …, C_{a_{q+1}})`. Position 1 is the block's
+own Merkle root, 2…q+1 the children — which is where `N = q+1` comes from.
+
+**Eq. 6 puts group elements in scalar position.** It writes
+`C_i = g1^{gamma_i + m_i a + C_{a_2} a^2 + …}`, but `C_{a_2}` is a G1 point and
+cannot be an exponent. `childScalar` resolves it by hashing the child
+commitment into the scalar field.
+
+The alternative reading — that the vector holds the trapdoors
+`kappa_{a_j} = H2(x || a_j)` rather than the commitments `g1^{kappa_{a_j}}` —
+cannot be right either, because Algorithm 1 line 7 propagates `(C' - C_i)`, a
+difference of COMMITMENTS, through the same position during redaction. Only the
+hashing reading makes Eq. 6 and Algorithm 1 consistent.
+
+> **Fidelity question, not a cost question.** Either reading commits to one
+> field element per child, so commitment, opening and path update all cost the
+> same. Recorded in `ref13-vrbc.md`.
+
+**One deviation that DOES cost, recorded rather than glossed.** `refreshPath`
+re-commits each ancestor (one MSM of width `q+1` per level) where the paper
+updates incrementally, `C'_b = C_b · g1^{(C'-C_i) a^c}`, one exponentiation per
+level. At `q <= 10` the two are within a small constant, but the difference is
+real and **favours the paper**. Revisit if Exp 2's redaction cost turns out to
+be path-update dominated.
+
+**The trap the aggregation invites, and the test for it.**
+`AggregateVerify` checks each opening against the commitment the PROVER
+supplied — so a prover serving its own tree has every opening verify, and the
+pairing check alone proves nothing about the verifier's chain. `VerifyPath`
+therefore anchors the top opening to the trusted root, checks each opening's
+value is the hash of the next commitment down, and REBINDS every coefficient
+before pairing. `TestVerifyPathRejectsAForeignRoot` builds a second internally
+consistent tree, confirms its proof verifies against its OWN root, then requires
+it to fail against the honest one.
+
+`TestStaleProofFailsAfterRedaction` covers the attack VRBC exists to stop: a
+full node serving a light node the pre-redaction version.
+
+### 7.1 Two more unswept sweeps, found before writing the wiring
+
+**`arity_q` is a fourth instance of the declared-but-unswept pattern.**
+`config.go` says *"arity_q is swept; the runner injects the value for each
+point"* and **no runner injects it**. This one fails LOUDLY — `ref13.Setup`
+errors on the missing parameter — so it is a blocker, not a silent bias, and
+ref13 cannot run at all until a runner supplies it.
+
+**`challenged_blocks[0]` beside it is the silent kind.** `[300, 460]` is the
+95%-vs-99% detection sweep, and only 300 would ever run. Its own config comment
+records that the derivation holds only while `corrupted_block_rate` is 0.01.
+
+Both are in scope for task 7, since ref13 cannot run without the first. Per the
+config's own reasoning, `arity_q` sweeps in **Exp 2 and Exp 3** — a single value
+"would let our choice decide the outcome" — and `challenged_blocks` in Exp 3,
+being an audit sample size. Extend the exp1 coverage test's pattern to whichever
+runner gets them.
 
 #### The original risk assessment, kept because two of three still stand
 
