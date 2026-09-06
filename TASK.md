@@ -4,9 +4,9 @@ Evaluation framework for **ZK-Redact**, comparing it against three
 re-implemented baselines on one shared Hyperledger Fabric harness.
 
 **Branch:** `main`
-**Code:** ~30,100 lines Go across 102 files, plus the Fabric network
+**Code:** ~31,400 lines Go across 107 files, plus the Fabric network
 **Verified:** ✅ Go 1.27.1 — `go build` and `go vet` clean across both modules,
-gofmt-clean, **292 tests (466 with subtests) passing**, `make validate-config`
+gofmt-clean, **301 tests (475 with subtests) across 19 packages passing**, `make validate-config`
 clean (one WARN, `vote_transport: in_process`), and the redaction chaincode verified on a live Fabric network: smoke
 10/10, the live suite green under `-race`, concurrent authorization holding at
 every level from 1 to 1024, and **Exp 1 running end to end over the fabric
@@ -21,9 +21,14 @@ Two tests SKIP on a coarse-clock host and pass on the Linux target: they assert
 on durations shorter than a Windows scheduler tick. Both check the same code
 structurally and unconditionally — see "A guard nobody can trip is not a guard".
 
-✅ **Task 5 is complete.** All six ZK-Redact phases are implemented, and
-ZK-Redact now runs **Exp 1, Exp 2 and Exp 3** end to end. Until this landed the
-three baselines could run Exp 2 and Exp 3 and the paper's own scheme could not.
+✅ **Tasks 5 and 8 are complete, and the code is done.** All six ZK-Redact
+phases are implemented, all four schemes run all three experiments end to end,
+and `cmd/plot` turns results into figures. Until task 5 landed, the three
+baselines could run Exp 2 and Exp 3 and the paper's own scheme could not.
+
+**Everything remaining needs the EC2 host.** Tasks 9 and 10 are a pilot run and
+the full runs; nothing further can be built on a developer machine, because what
+is left is measurement rather than code. See §3.5 for what to run first.
 
 ⚠️ All live verification above is on the **minimal** topology, on an
 8 vCPU / 8 GB macOS host. It establishes that the mechanism works; it produces
@@ -40,7 +45,9 @@ not macOS-dependent.
 
 ## Decisions waiting on you
 
-None block task 8; all three block the full runs.
+**All code is done, so these are the only things standing between the repo and
+results.** Every one of them is a budget or scope call that is yours, not the
+code's — nothing below can be resolved by writing more of it.
 
 **0. Exp 2's sweep size, which just grew.** Task 5 fixed a defect that had Exp 2
 measuring nothing after its first configuration (see task 5). The fix
@@ -1205,7 +1212,11 @@ curves would be indistinguishable in the results. `LedgerScaling` and
 arity 2 with arity 10 would compare two different trees and report the
 difference as ledger scaling or a batching effect. Exp 2 re-authorizes after
 every rebuild: Setup replaces the ledger, and stale authorizations would exclude
-every redaction rather than measure it.
+every redaction rather than measure it. **Task 5 widened this**: re-authorizing
+per REBUILD was not enough, because a redaction advances its transaction's
+version and so invalidates the next configuration's authorizations too. Exp 2
+now re-authorizes before every (batch size x wait bound x repetition). See
+task 5 for the measurement that showed it.
 
 Guarded by `experiments/exp3_audit/runner_test.go`, mutation-checked: disabling
 the sweep fails with "got 2 points, want 8 — a declared setup sweep is not being
@@ -1213,21 +1224,24 @@ executed" and names all four missing combinations.
 
 
 
-**`arity_q` is a fourth instance of the declared-but-unswept pattern.**
-`config.go` says *"arity_q is swept; the runner injects the value for each
-point"* and **no runner injects it**. This one fails LOUDLY — `ref13.Setup`
-errors on the missing parameter — so it is a blocker, not a silent bias, and
-ref13 cannot run at all until a runner supplies it.
+#### What it looked like before the fix
 
-**`challenged_blocks[0]` beside it is the silent kind.** `[300, 460]` is the
-95%-vs-99% detection sweep, and only 300 would ever run. Its own config comment
+Kept because the pattern recurs, not because any of it is still outstanding —
+everything below was resolved by the work described above.
+
+**`arity_q` was a fourth instance of the declared-but-unswept pattern.**
+`config.go` said *"arity_q is swept; the runner injects the value for each
+point"* and **no runner injected it**. That one failed LOUDLY — `ref13.Setup`
+errors on a missing parameter — so it was a blocker rather than a silent bias,
+and ref13 could not run at all until a runner supplied it.
+
+**`challenged_blocks[0]` beside it was the silent kind.** `[300, 460]` is the
+95%-vs-99% detection sweep, and only 300 would ever have run. Its own config comment
 records that the derivation holds only while `corrupted_block_rate` is 0.01.
 
-Both are in scope for task 7, since ref13 cannot run without the first. Per the
-config's own reasoning, `arity_q` sweeps in **Exp 2 and Exp 3** — a single value
-"would let our choice decide the outcome" — and `challenged_blocks` in Exp 3,
-being an audit sample size. Extend the exp1 coverage test's pattern to whichever
-runner gets them.
+Both were taken in task 7. Per the config's own reasoning, `arity_q` sweeps in
+**Exp 2 and Exp 3** — a single value "would let our choice decide the outcome" —
+and `challenged_blocks` in Exp 3, being an audit sample size.
 
 #### The original risk assessment, kept because two of three still stand
 
@@ -1322,8 +1336,9 @@ Three cautions before setting `meta.repetitions` from this:
 1. **It is Ref[10] only.** Ref[10] waits on a clock; ZK-Redact's path is ZKP
    verification and sharding, which is CPU-bound and therefore sensitive to
    scheduling, cache and thermal state. The repetition count must be set by the
-   **noisiest** system, and that system does not exist yet (task 5). This is why
-   task 9 comes after task 5.
+   **noisiest** system. That system now exists — task 5 landed — so the first
+   thing this pilot should do is take the same variance datum for ZK-Redact's
+   Exp 2 `CryptoTime` and set `meta.repetitions` from whichever is worse.
 2. **It is the minimal topology on a laptop.** Four orgs, cross-org endorsement,
    Raft and gossip will add variance — though the cost stays block-dominated.
 3. **Exp 2 and Exp 3 are unmeasured.** Exp 2's `CryptoTime` is CPU-bound and
@@ -1339,11 +1354,11 @@ Three cautions before setting `meta.repetitions` from this:
 > repetition-id flag on `run-experiment`, which does not exist: every instance
 > would otherwise label its rows `repetition: 0`.
 
-> **Nothing consumes repetitions yet.** All three runners append each repetition
-> as its own `Point` and never aggregate — there is no mean, median or interval
-> across repetitions anywhere. `metrics.Latency.StdDev` is within-run latency
-> spread, not between-run variance. Until `cmd/plot` (task 8) computes something
-> from them, extra repetitions are rows nobody reads.
+> **Repetitions are consumed now** — task 8 closed this. `cmd/plot` aggregates
+> them into mean, min, max and N per point, and pools two points only when they
+> differ in nothing but the repetition index. `metrics.Latency.StdDev` remains
+> within-run latency spread, not between-run variance; the between-run figure
+> comes from the plotter's min/max and the CSV beside each figure.
 
 ### 10. Full runs + write-up
 
