@@ -221,6 +221,16 @@ func checkSecurityUniformity(c *config.Config, r *report) {
 	check("security.chameleon_hash_curve", c.Security.ChameleonHashCurve, true, false)
 	check("security.pairing_curve", c.Security.PairingCurve, c.Baselines.Ref13.Enabled, true)
 
+	// The curve must also be one we actually operate on. ZK-Redact's circuit
+	// always uses a pairing curve, so this is checked whenever the field is set
+	// rather than only when Ref[13] is enabled.
+	if c.Security.PairingCurve != nil {
+		if err := crypto.RequireImplementedPairingCurve(*c.Security.PairingCurve); err != nil {
+			r.errf("security.pairing_curve", err.Error(),
+				"the results file records this value, so a curve that does not change what runs would be recorded as though it had")
+		}
+	}
+
 	if c.Security.AccumulatorBits != nil {
 		if err := crypto.RequireRSA(*c.Security.AccumulatorBits, target); err != nil {
 			r.errf("security.accumulator_bits", err.Error(),

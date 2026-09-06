@@ -119,6 +119,59 @@ func RequirePairingCurve(name string, target int) error {
 	return nil
 }
 
+// pairingImplemented lists the pairing curves this codebase can actually
+// operate on, as distinct from the ones the registry can describe.
+//
+// WHY THE DISTINCTION MATTERS. pairingCapable above answers "does this curve
+// support pairings at all", which is a fact about mathematics. This answers
+// "would selecting it change what runs", which is a fact about our code — and
+// the two diverge. pkg/zk pins BLS12-381 in a constant, and Ref[13]'s BAT and
+// vector commitments import gnark-crypto's bls12-381 package directly, so the
+// curve is compiled in at both consumers.
+//
+// Without this check, security.pairing_curve: BLS12-377 passes every gate — it
+// is 128-bit and pairing-capable — while both consumers keep running
+// BLS12-381. That is not merely a stale setting: pkg/results embeds the
+// resolved config in every output file, so the divergence would be RECORDED as
+// fact, and a reader would have a results file naming a curve the measurement
+// never used.
+//
+// The same shape as SignatureCurve refusing a registered curve with no
+// standard-library implementation, and as RequireHash refusing a
+// security.hash the challenge does not compute.
+var pairingImplemented = map[string]bool{
+	CurveBLS12381: true,
+}
+
+// RequireImplementedPairingCurve reports an error unless the named curve is one
+// this codebase actually operates on.
+//
+// Enforced at the config gate rather than at each point of use: today there is
+// no genuine choice to bind, because only one pairing curve is implemented. If
+// a second one is ever added, move this to the consumers, where the choice
+// would then be real.
+func RequireImplementedPairingCurve(name string) error {
+	if pairingImplemented[name] {
+		return nil
+	}
+	return fmt.Errorf(
+		"pairing curve %s has no implementation here (implemented: %s); "+
+			"pkg/zk pins its curve in a constant and Ref[13] imports one directly, so "+
+			"selecting %s would change the recorded config without changing what runs",
+		name, strings.Join(ImplementedPairingCurves(), ", "), name)
+}
+
+// ImplementedPairingCurves lists the pairing curves with an implementation,
+// sorted.
+func ImplementedPairingCurves() []string {
+	out := make([]string, 0, len(pairingImplemented))
+	for k := range pairingImplemented {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // KnownCurves lists registered curve names, sorted.
 func KnownCurves() []string {
 	out := make([]string, 0, len(curveBits))

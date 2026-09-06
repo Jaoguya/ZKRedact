@@ -357,3 +357,57 @@ func TestRequireHash(t *testing.T) {
 		}
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Pairing curve implementation support
+// -----------------------------------------------------------------------------
+
+// A curve can be pairing-capable and 128-bit and still not be one this codebase
+// runs on. That gap is what RequireImplementedPairingCurve closes.
+func TestRequireImplementedPairingCurve(t *testing.T) {
+	if err := RequireImplementedPairingCurve(CurveBLS12381); err != nil {
+		t.Errorf("rejected the implemented pairing curve: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		why  string
+	}{
+		{CurveBLS12377, "pairing-capable and 128-bit, but nothing here runs on it"},
+		{CurveBN382, "pairing-capable and 128-bit, but nothing here runs on it"},
+		{CurveBN254, "pairing-capable but below the target level"},
+		{CurveP256, "not pairing-capable at all"},
+		{"P-192", "not in the registry"},
+		{"", "empty"},
+	} {
+		if err := RequireImplementedPairingCurve(tc.name); err == nil {
+			t.Errorf("accepted %q (%s)", tc.name, tc.why)
+		}
+	}
+}
+
+// BLS12-377 is the case that motivates the check: it passes RequirePairingCurve
+// at the 128-bit target, so without a separate implementation check it would
+// pass the config gate while both consumers kept running BLS12-381.
+func TestUnimplementedPairingCurveStillPassesTheLevelCheck(t *testing.T) {
+	if err := RequirePairingCurve(CurveBLS12377, 128); err != nil {
+		t.Fatalf("fixture assumption broken — BLS12-377 no longer passes the level check: %v", err)
+	}
+	if err := RequireImplementedPairingCurve(CurveBLS12377); err == nil {
+		t.Errorf("BLS12-377 passes both checks; the implementation check adds nothing")
+	}
+}
+
+func TestImplementedPairingCurvesAreRegisteredAndStrongEnough(t *testing.T) {
+	impl := ImplementedPairingCurves()
+	if len(impl) == 0 {
+		t.Fatal("no pairing curve is implemented")
+	}
+	for _, name := range impl {
+		// Anything claimed as implemented must also survive the checks the
+		// registry applies, or the two tables disagree about the same curve.
+		if err := RequirePairingCurve(name, 128); err != nil {
+			t.Errorf("%s is listed as implemented but fails the 128-bit pairing check: %v", name, err)
+		}
+	}
+}
