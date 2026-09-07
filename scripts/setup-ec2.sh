@@ -115,6 +115,11 @@ command -v make    >/dev/null 2>&1 || need_pkgs+=(make)
 command -v protoc  >/dev/null 2>&1 || need_pkgs+=(protobuf-compiler)
 command -v gcc     >/dev/null 2>&1 || need_pkgs+=(build-essential)
 command -v jq      >/dev/null 2>&1 || need_pkgs+=(jq)
+# The AWS CLI is not a build dependency — it is how a shard PUBLISHES its
+# results before the instance stops. scripts/run-shard.sh --s3 needs it, and a
+# host without it finishes its work and then cannot hand it over. Found on a
+# provisioned c6i.8xlarge: go and the Fabric binaries were present, aws was not.
+command -v aws     >/dev/null 2>&1 || need_pkgs+=(awscli)
 command -v curl    >/dev/null 2>&1 || need_pkgs+=(curl)
 command -v git     >/dev/null 2>&1 || need_pkgs+=(git)
 
