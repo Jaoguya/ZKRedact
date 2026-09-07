@@ -60,6 +60,21 @@ need() {
 # different timeout than config/experiment.yaml records, the measured latency
 # cannot be traced to any recorded parameter.
 # -----------------------------------------------------------------------------
+# duration_to_ms converts a Go duration string to whole milliseconds.
+# Handles the forms an orderer config uses: 2s, 250ms, 1m. Prints nothing when
+# it cannot parse, so the caller can refuse rather than compare against zero.
+duration_to_ms() {
+  local d="${1:-}" n
+  n=$(printf '%s' "$d" | grep -oE '^[0-9]+' || true)
+  [[ -n "$n" ]] || return 0
+  case "$d" in
+    *ms) printf '%s' "$n" ;;
+    *m)  printf '%s' "$(( n * 60000 ))" ;;
+    *s)  printf '%s' "$(( n * 1000 ))" ;;
+    *)   return 0 ;;
+  esac
+}
+
 check_config_agreement() {
   local cfg="$REPO_ROOT/config/experiment.yaml"
   [[ -r "$cfg" ]] || { warn "cannot read $cfg; skipping batch-parameter check"; return 0; }
@@ -67,16 +82,26 @@ check_config_agreement() {
   local cfg_timeout cfg_max ctx_timeout ctx_max
   cfg_timeout=$(grep -E '^\s*block_timeout_ms:' "$cfg" | head -1 | grep -oE '[0-9]+' || true)
   cfg_max=$(grep -E '^\s*block_max_transactions:' "$cfg" | head -1 | grep -oE '[0-9]+' || true)
-  ctx_timeout=$(grep -E '^\s*BatchTimeout:' "$NET_DIR/configtx.yaml" | head -1 | grep -oE '[0-9]+' || true)
+  # BatchTimeout is a Go duration ("1s", "250ms"), not a number of seconds.
+  # Reading the digits alone and multiplying by 1000 was right only while the
+  # value happened to be whole seconds: at 250ms it computed 250000 and reported
+  # a mismatch against a config that agreed with it exactly.
+  ctx_raw=$(grep -E '^\s*BatchTimeout:' "$NET_DIR/configtx.yaml" | head -1 | awk '{print $2}' || true)
+  ctx_timeout=$(duration_to_ms "$ctx_raw")
   ctx_max=$(grep -E '^\s*MaxMessageCount:' "$NET_DIR/configtx.yaml" | head -1 | grep -oE '[0-9]+' || true)
 
   [[ -n "$cfg_timeout" && -n "$ctx_timeout" ]] || { warn "batch parameters not found in both files"; return 0; }
 
-  # configtx BatchTimeout is in seconds, the config is in milliseconds.
-  if (( ctx_timeout * 1000 != cfg_timeout )); then
-    die "channel BatchTimeout is ${ctx_timeout}s but config/experiment.yaml has block_timeout_ms=${cfg_timeout}.
-       A vote waits up to this long before ordering, so it is part of Exp 1's
-       measurement. Make them agree before bringing the network up."
+  # Both sides are milliseconds by the time they get here.
+  if [[ -z "$ctx_timeout" ]]; then
+    die "could not read a duration from configtx.yaml BatchTimeout (${ctx_raw:-empty}).
+       Supported forms: 2s, 1500ms, 1m."
+  fi
+  if (( ctx_timeout != cfg_timeout )); then
+    die "channel BatchTimeout is ${ctx_raw} (${ctx_timeout} ms) but config/experiment.yaml
+       has block_timeout_ms=${cfg_timeout}. A vote waits up to this long before
+       ordering, so it is part of Exp 1's measurement. Make them agree before
+       bringing the network up."
   fi
   if [[ -n "$cfg_max" && -n "$ctx_max" ]] && (( ctx_max != cfg_max )); then
     die "channel MaxMessageCount is $ctx_max but config has block_max_transactions=$cfg_max"

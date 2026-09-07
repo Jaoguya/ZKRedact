@@ -49,6 +49,10 @@ func main() {
 		transports = flag.String("transports", "", "comma-separated subset of "+
 			"baselines.ref10_emt.exp1_vote_transports to sweep in Exp 1; "+
 			"for splitting the fabric arm onto its own host")
+		arms = flag.String("arms", "", "shard Exp 2's and Exp 3's sweeps across "+
+			"hosts as i/N (e.g. 3/18): this process measures every Nth arm "+
+			"starting at i. Produces a PARTIAL sweep that cmd/merge-results must "+
+			"pool before plotting, and a shard claims no optimal batch size")
 		levels = flag.String("levels", "", "comma-separated subset of "+
 			"experiments.verification_throughput.concurrency_levels to measure; "+
 			"Exp 1's cost goes as 1/c, so c=1 alone is half the sweep and belongs "+
@@ -63,13 +67,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*configPath, *expName, *dryRun, *only, *transports, *levels); err != nil {
+	if err := run(*configPath, *expName, *dryRun, *only, *transports, *levels, *arms); err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, expName string, dryRun bool, only, transports, levels string) error {
+func run(configPath, expName string, dryRun bool, only, transports, levels, arms string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -92,6 +96,14 @@ func run(configPath, expName string, dryRun bool, only, transports, levels strin
 	// Likewise a subset, never an addition. partialLevels travels to the runner
 	// so it can relax its "sweep must start at 1" guard for a shard — the guard
 	// is about the reported sweep, which merge-results reassembles.
+	armIndex, armTotal := 0, 0
+	if arms != "" {
+		var err error
+		if armIndex, armTotal, err = parseArmShard(arms); err != nil {
+			return err
+		}
+	}
+
 	sweepLevels := cfg.Experiments.VerificationThroughput.ConcurrencyLevels
 	var partialLevels []int
 	if levels != "" {
@@ -278,6 +290,7 @@ func run(configPath, expName string, dryRun bool, only, transports, levels strin
 			PartialComparison: partial,
 			PartialLevels:     partialLevels,
 			PartialTransports: partialTransports,
+			PartialArms:       arms,
 		}
 	}
 
@@ -288,17 +301,17 @@ func run(configPath, expName string, dryRun bool, only, transports, levels strin
 	case "verification":
 		return runExp1(ctx, cfg, reps, systems, trace, writer, meta, sweepLevels, sweepTransports, len(partialLevels) > 0)
 	case "redaction":
-		return runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits)
+		return runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits, armIndex, armTotal)
 	case "audit":
-		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
+		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits, armIndex, armTotal)
 	case "all":
 		if err := runExp1(ctx, cfg, reps, systems, trace, writer, meta, sweepLevels, sweepTransports, len(partialLevels) > 0); err != nil {
 			return err
 		}
-		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits); err != nil {
+		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits, armIndex, armTotal); err != nil {
 			return err
 		}
-		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
+		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits, armIndex, armTotal)
 	default:
 		return fmt.Errorf("unknown experiment %q (want verification | redaction | audit | all)", expName)
 	}
@@ -359,6 +372,8 @@ func runExp2(
 	ds *scheme.Dataset,
 	seed int64,
 	targetBits int,
+	armIndex int,
+	armTotal int,
 ) error {
 	e := cfg.Experiments.RedactionThroughput
 	if !e.Enabled {
@@ -374,6 +389,8 @@ func runExp2(
 		BatchSizes:     cfg.ZKRedact.RedactionBatch.Sizes,
 		WaitBoundsMS:   cfg.ZKRedact.RedactionBatch.WaitBoundsMS,
 		ConflictRatios: cfg.Workload.ConflictRatios,
+		ArmShardIndex:  armIndex,
+		ArmShardTotal:  armTotal,
 		Repetitions:    reps,
 		Rebuild: func(ctx context.Context, s scheme.Scheme, overrides map[string]any) error {
 			return rebuildScheme(ctx, cfg, ds, seed, targetBits, s, overrides)
@@ -412,6 +429,8 @@ func runExp3(
 	ds *scheme.Dataset,
 	seed int64,
 	targetBits int,
+	armIndex int,
+	armTotal int,
 ) error {
 	e := cfg.Experiments.ProvenanceAudit
 	if !e.Enabled {
@@ -427,6 +446,8 @@ func runExp3(
 
 	res, err := exp3.Run(ctx, exp3.Config{
 		LedgerSizes:   e.LedgerSizes,
+		ArmShardIndex: armIndex,
+		ArmShardTotal: armTotal,
 		HistoryDepths: e.HistoryDepths,
 		Repetitions:   reps,
 		AuditorID:     "auditor-0",
@@ -633,6 +654,31 @@ func restrictSchemes(enabled []string, csv string) ([]string, error) {
 		return nil, fmt.Errorf("-schemes is empty")
 	}
 	return out, nil
+}
+
+// parseArmShard reads the i/N form.
+//
+// Both halves are required and i must name a real shard: "-arms 5/3" would
+// silently measure nothing at all, and a host that runs no arms and exits 0 is
+// indistinguishable from one that did its share.
+func parseArmShard(spec string) (index, total int, err error) {
+	parts := strings.Split(spec, "/")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("-arms must be i/N, got %q", spec)
+	}
+	if index, err = strconv.Atoi(strings.TrimSpace(parts[0])); err != nil {
+		return 0, 0, fmt.Errorf("-arms index %q is not a number", parts[0])
+	}
+	if total, err = strconv.Atoi(strings.TrimSpace(parts[1])); err != nil {
+		return 0, 0, fmt.Errorf("-arms total %q is not a number", parts[1])
+	}
+	if total < 1 {
+		return 0, 0, fmt.Errorf("-arms total must be >= 1, got %d", total)
+	}
+	if index < 0 || index >= total {
+		return 0, 0, fmt.Errorf("-arms index %d is outside 0..%d", index, total-1)
+	}
+	return index, total, nil
 }
 
 // restrictLevels narrows Exp 1's concurrency sweep to a named subset.

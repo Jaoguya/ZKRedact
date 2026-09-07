@@ -54,6 +54,10 @@ type Metadata struct {
 	// say which slice of them this process measured.
 	PartialLevels     []int    `json:"partial_levels,omitempty"`
 	PartialTransports []string `json:"partial_transports,omitempty"`
+
+	// PartialArms records an Exp 2 / Exp 3 sweep split across hosts, in the
+	// i/N form -arms takes. Empty for a whole-sweep run.
+	PartialArms string `json:"partial_arms,omitempty"`
 }
 
 // EnvFinger identifies the machine a run happened on.

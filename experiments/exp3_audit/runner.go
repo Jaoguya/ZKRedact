@@ -29,6 +29,16 @@ import (
 
 // Config parameterises one Exp 3 run.
 type Config struct {
+	// ArmShardIndex/Total split Exp 3 across hosts BY SETUP SWEEP.
+	//
+	// Deliberately not by ledger size. Every prepare calls Setup again, so the
+	// sweep is where the hours are — Ref[13] pays 24 of them, 6 sweeps x 4
+	// sizes. Sharding by sweep keeps all four ledger sizes together on one
+	// host, which is what classifyScaling needs: a scaling class read from a
+	// subset of the sizes would be a verdict about a curve nobody measured.
+	ArmShardIndex int
+	ArmShardTotal int
+
 	// LedgerSizes must span at least one order of magnitude: flat cannot be
 	// distinguished from linear over a narrow range.
 	LedgerSizes []int
@@ -180,7 +190,10 @@ func Run(
 
 		schemeStart := len(res.Points)
 
-		for _, overrides := range sweeps {
+		for sweepIdx, overrides := range sweeps {
+			if cfg.ArmShardTotal > 1 && sweepIdx%cfg.ArmShardTotal != cfg.ArmShardIndex {
+				continue
+			}
 			for _, ledger := range cfg.LedgerSizes {
 				// Rebuild at this ledger size and setup configuration before
 				// measuring anything at it.

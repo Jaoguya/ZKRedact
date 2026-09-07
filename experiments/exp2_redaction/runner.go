@@ -34,6 +34,19 @@ type Config struct {
 	// but strand more requests on freshness revalidation.
 	WaitBoundsMS []int
 
+	// ArmShard splits the sweep across hosts: this process measures only the
+	// arms whose index is congruent to Index modulo Total.
+	//
+	// An ARM is one (setup sweep, conflict ratio, batch size, wait bound)
+	// combination — 84 of them for ZK-Redact, each re-authorizing the whole
+	// trace before it can redact. That re-authorization is one Groth16 proof
+	// per request per arm, so the sweep is embarrassingly parallel and its
+	// per-host setup is 9.5 s: splitting it is nearly free.
+	//
+	// Total 0 or 1 means no split.
+	ArmShardIndex int
+	ArmShardTotal int
+
 	// ConflictRatios exercise the serialization rule: same-target requests must
 	// serialise while independent ones proceed in parallel.
 	//
@@ -157,6 +170,11 @@ func Run(
 			"exp2: batch_sizes must include 1 — it is the batching-disabled " +
 				"ablation and the point where every baseline sits")
 	}
+	if cfg.ArmShardTotal > 1 &&
+		(cfg.ArmShardIndex < 0 || cfg.ArmShardIndex >= cfg.ArmShardTotal) {
+		return nil, fmt.Errorf("exp2: arm shard %d is outside 0..%d",
+			cfg.ArmShardIndex, cfg.ArmShardTotal-1)
+	}
 	if cfg.Repetitions < 1 {
 		return nil, fmt.Errorf("exp2: repetitions must be >= 1, got %d", cfg.Repetitions)
 	}
@@ -203,6 +221,7 @@ func Run(
 		}
 
 		schemeStart := len(res.Points)
+		armIndex := 0
 
 		for _, overrides := range sweeps {
 			if overrides != nil {
@@ -227,6 +246,14 @@ func Run(
 			for _, rt := range traces {
 				for _, size := range sizes {
 					for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
+						// Arm index is counted over the FULL sweep, not over the
+						// arms this host runs, so every shard agrees on which
+						// arm is which and no arm is measured twice.
+						thisArm := armIndex
+						armIndex++
+						if !cfg.runsArm(thisArm) {
+							continue
+						}
 						for rep := 0; rep < cfg.Repetitions; rep++ {
 							// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
 							// scheme.
@@ -308,9 +335,25 @@ func Run(
 				atBaseline = append(atBaseline, p)
 			}
 		}
+		// A SHARD MUST NOT CLAIM AN OPTIMUM. findOptimalBatch compares batch
+		// sizes against each other, and a host holding a few arms is comparing
+		// a few points from a curve it cannot see. The optimum is a property of
+		// the POOLED sweep — the same rule that puts Exp 1's concurrency-1
+		// check in cmd/merge-results rather than in the runner.
+		if cfg.ArmShardTotal > 1 {
+			continue
+		}
 		res.OptimalBatchSize[s.Name()] = findOptimalBatch(atBaseline, s.Name())
 	}
 	return res, nil
+}
+
+// runsArm reports whether this host measures the arm at that index.
+func (c Config) runsArm(index int) bool {
+	if c.ArmShardTotal <= 1 {
+		return true
+	}
+	return index%c.ArmShardTotal == c.ArmShardIndex
 }
 
 // authorizeAll runs the shared trace through one scheme's own authorization

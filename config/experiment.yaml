@@ -219,7 +219,24 @@ environment:
     # cannot drift; changing it needs `network.sh up` (fresh volumes), not a
     # redeploy. Every Fabric figure measured before this change was at 2000 ms
     # and must be re-measured.
-    block_timeout_ms: 1000
+    # RESCALED 1000 -> 250. Ref[10] authorizes over the fabric transport at the
+    # cost of its block waits: a round is two blocks, so this value IS Exp 1's
+    # dominant cost for that baseline. Measured on c6i.8xlarge at 1000 ms:
+    # 0.534 authorizations/s at concurrency 1, i.e. 1.87 s per authorization,
+    # which put Exp 1's fabric arm at ~10.4 h and its c=1 point alone at 5.2 h.
+    #
+    # This is a MEASUREMENT SETTING, not a model. Every point is still executed;
+    # the system under test simply orders faster. It is the same lever pulled
+    # once before (2000 -> 1000, recorded below), and the alternative considered
+    # was predicting the high-concurrency points from the low ones, which
+    # SKILL.md rule 1 forbids outright: no analytical models. Exp 1 exists to
+    # find a saturation point and a crossover, and both are departures from the
+    # linear cost a model would assume.
+    #
+    # EVERY FABRIC FIGURE TAKEN AT 1000 ms MUST BE RE-MEASURED, and the two
+    # wait-bound sweeps below rescale with it — they are derived from the block
+    # interval, not from their digits.
+    block_timeout_ms: 250
 
   record_fingerprint: true
 
@@ -317,7 +334,27 @@ workload:
   #
   # The alternative considered and rejected was 1,000 requests x 3 repetitions:
   # cheaper, but p99 becomes noise and p99 is a reported metric of Exp 1.
-  total_requests: 10000
+  # RESCALED 10000 -> 5000.
+  #
+  # The 10,000 above was derived from ONE requirement: p99 needs >= 100 samples
+  # in the top percentile, which pkg/metrics/latency.go:180 encodes as
+  # P99Reliable = n >= 10000. Nothing else needed it.
+  #
+  # p99 IS NOT PLOTTED. cmd/plot draws two Exp 1 figures — throughput and p50
+  # latency — and contains no reference to p99 at all. It is written to the CSV
+  # and carries p99_reliable alongside it, so a reader is told the value is
+  # unreliable rather than misled by it. Exp 2 and Exp 3 report no percentile.
+  #
+  # What 5,000 costs: p99 keeps p99_reliable=false, as every pilot and probe run
+  # to date already did. What it buys: Exp 2 re-authorizes the whole trace once
+  # per arm — 84 arms for ZK-Redact, each a Groth16 proof per request — so the
+  # request count is a direct multiplier on the longest job in the run.
+  # Measured at 0.106 s per authorization on c6i.8xlarge: 10,000 puts
+  # ZK-Redact's Exp 2 at 24.7 h, 5,000 at 12.4 h.
+  #
+  # If a latency table with p99 is wanted in the write-up, this must go back to
+  # 10,000 and docs/experiments.md:192 stays as written.
+  total_requests: 5000
 
   # [METHOD] "uniform" isolates the mechanism and is the headline setting.
   # Run "zipf" as a robustness check once headline results are stable.
@@ -391,11 +428,13 @@ zkredact:
     # simply pushes work into the next block and the measurement conflates
     # batching with block cadence. Sweep spans 0.5% to 25% of a block interval.
     #
-    # RESCALED with the block interval, from [10, 50, 100, 500] at 2000 ms.
+    # RESCALED with the block interval: [10, 50, 100, 500] at 2000 ms, then
+    # [5, 25, 50, 250] at 1000 ms, now [1, 6, 13, 63] at 250 ms.
     # The derivation is the 0.5%-25% span, not the digits: keeping the old
-    # values at a 1000 ms block would silently widen the sweep to 1%-50%, and
-    # the top of it would then be half a block rather than a quarter.
-    wait_bound_ms: [5, 25, 50, 250]
+    # values at a shorter block would silently widen the sweep, and its top
+    # would become a whole block rather than a quarter of one. Rounded to whole
+    # milliseconds, which is the resolution the batcher's wait bound takes.
+    wait_bound_ms: [1, 6, 13, 63]
 
     # [METHOD] Tests the Phase 3 claim (ZK-Redact.md:508-509) that sharding
     # provides parallelism INDEPENDENTLY of native batch-verification support.
@@ -414,11 +453,12 @@ zkredact:
     # batch starts spanning multiple blocks — which is where Fresh_i failures
     # should begin climbing. A single value would hide the trade-off entirely.
     #
-    # RESCALED with the block interval, from [500, 1000, 2000, 4000] at 2000 ms.
+    # RESCALED with the block interval: [500, 1000, 2000, 4000] at 2000 ms, then
+    # [250, 500, 1000, 2000] at 1000 ms, now [63, 125, 250, 500] at 250 ms.
     # What transfers is the quarter-block-to-two-blocks span: at the old digits
-    # the sweep would start at half a block and end at four, and the crossing
-    # point this exists to capture would sit at the wrong end of it.
-    wait_bounds_ms: [250, 500, 1000, 2000]
+    # the sweep would start at a whole block and end at eight, and the crossing
+    # point this exists to capture would sit outside it entirely.
+    wait_bounds_ms: [63, 125, 250, 500]
 
   # ---------------------------------------------------------------------------
   # Phase 6 — Provenance Retrieval and Audit Verification
