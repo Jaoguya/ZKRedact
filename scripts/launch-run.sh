@@ -172,6 +172,15 @@ tar xzf code.tgz
 find /home/ubuntu/zkredact -name '._*' -delete
 chown -R ubuntu:ubuntu /home/ubuntu/zkredact
 cd /home/ubuntu/zkredact
+
+# Stop the meter if this host stops working. run-shard.sh deliberately does NOT
+# terminate on failure so a broken shard can be read — which is right for
+# debugging and wrong for the bill. The watchdog closes that gap without losing
+# the evidence: it publishes the logs to S3 before shutting down, so a failure
+# stays diagnosable after the instance is gone.
+chmod +x scripts/idle-watchdog.sh
+nohup ./scripts/idle-watchdog.sh "s3://$BUCKET/$RUN_ID" "$id" >/dev/null 2>&1 &
+
 sudo -u ubuntu -H bash -lc '
   cd ~/zkredact
   chmod +x scripts/*.sh network/scripts/*.sh
