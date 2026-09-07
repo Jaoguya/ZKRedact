@@ -37,6 +37,7 @@ EXP=""
 SCHEMES=""
 TRANSPORTS=""
 LEVELS=""
+ARMS=""
 CONFIG="config/experiment.yaml"
 S3=""
 FABRIC=""
@@ -51,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --schemes)    SCHEMES="${2:-}"; shift 2 ;;
     --transports) TRANSPORTS="${2:-}"; shift 2 ;;
     --levels)     LEVELS="${2:-}"; shift 2 ;;
+    --arms)       ARMS="${2:-}"; shift 2 ;;
     --config)     CONFIG="${2:-}"; shift 2 ;;
     --s3)         S3="${2:-}"; shift 2 ;;
     --fabric)     FABRIC="${2:-}"; shift 2 ;;   # minimal | full
@@ -101,9 +103,34 @@ if [[ -n "$FABRIC" ]]; then
   # the same round ids and the contract refuses a ballot it already holds. A
   # shard therefore starts from a chain that has never seen its votes.
   echo "bringing the $FABRIC topology up on a fresh ledger..."
-  ./network/scripts/network.sh down >/dev/null 2>&1
-  ./network/scripts/network.sh up "$FABRIC" || die "network.sh up $FABRIC failed"
-  ./network/scripts/network.sh deploy      || die "network.sh deploy failed"
+
+  # THE DOCKER GROUP IS NOT IN THIS SHELL. setup-ec2.sh adds it with usermod and
+  # works around its own absence internally, but network.sh calls docker
+  # directly and inherits this shell's groups — which is how three fabric
+  # workers provisioned cleanly and then died on "the Docker daemon is not
+  # reachable". Pick a route that works and use it for every network call.
+  NET=""
+  if ! docker info >/dev/null 2>&1; then
+    if command -v sg >/dev/null 2>&1 && sg docker -c "docker info" >/dev/null 2>&1; then
+      NET="sg docker -c"
+    elif sudo docker info >/dev/null 2>&1; then
+      NET="sudo -E"
+    else
+      die "no route to the Docker daemon; a fabric shard cannot run here"
+    fi
+    echo "docker reached via ${NET}"
+  fi
+  net_sh() {
+    case "$NET" in
+      "sg docker -c") sg docker -c "./network/scripts/network.sh $*" ;;
+      "sudo -E")      sudo -E ./network/scripts/network.sh "$@" ;;
+      *)              ./network/scripts/network.sh "$@" ;;
+    esac
+  }
+
+  net_sh down >/dev/null 2>&1
+  net_sh up "$FABRIC" || die "network.sh up $FABRIC failed"
+  net_sh deploy      || die "network.sh deploy failed"
 fi
 
 # -----------------------------------------------------------------------------
@@ -113,6 +140,7 @@ ARGS=(-config "$CONFIG" -exp "$EXP")
 [[ -n "$SCHEMES"    ]] && ARGS+=(-schemes "$SCHEMES")
 [[ -n "$TRANSPORTS" ]] && ARGS+=(-transports "$TRANSPORTS")
 [[ -n "$LEVELS"     ]] && ARGS+=(-levels "$LEVELS")
+[[ -n "$ARMS"       ]] && ARGS+=(-arms "$ARMS")
 
 RESULTS_DIR=$(grep -E '^\s*results_dir:' "$CONFIG" | head -1 | sed 's/.*"\(.*\)".*/\1/')
 RESULTS_DIR="${RESULTS_DIR:-results}"
