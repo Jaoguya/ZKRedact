@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +46,14 @@ func main() {
 		dryRun     = flag.Bool("dry-run", false, "prepare and report, but execute nothing")
 		only       = flag.String("schemes", "", "comma-separated subset of enabled systems to run; "+
 			"produces a PARTIAL comparison, recorded as such in results")
+		transports = flag.String("transports", "", "comma-separated subset of "+
+			"baselines.ref10_emt.exp1_vote_transports to sweep in Exp 1; "+
+			"for splitting the fabric arm onto its own host")
+		levels = flag.String("levels", "", "comma-separated subset of "+
+			"experiments.verification_throughput.concurrency_levels to measure; "+
+			"Exp 1's cost goes as 1/c, so c=1 alone is half the sweep and belongs "+
+			"on its own host. Produces a PARTIAL sweep that cmd/merge-results must "+
+			"pool before plotting")
 	)
 	flag.Parse()
 
@@ -54,16 +63,43 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*configPath, *expName, *dryRun, *only); err != nil {
+	if err := run(*configPath, *expName, *dryRun, *only, *transports, *levels); err != nil {
 		fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath, expName string, dryRun bool, only string) error {
+func run(configPath, expName string, dryRun bool, only, transports, levels string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
+	}
+
+	// A SUBSET OF THE CONFIGURED SWEEP, never an addition to it. The config
+	// remains the only place a transport can be introduced; this selects which
+	// of its entries this process runs, so the fabric arm — which needs a live
+	// peer and costs the bulk of Exp 1 — can be given its own host.
+	sweepTransports := cfg.Baselines.Ref10.VoteTransports
+	var partialTransports []string
+	if transports != "" {
+		picked, err := restrictTransports(cfg.Baselines.Ref10.VoteTransports, transports)
+		if err != nil {
+			return err
+		}
+		sweepTransports, partialTransports = picked, picked
+	}
+
+	// Likewise a subset, never an addition. partialLevels travels to the runner
+	// so it can relax its "sweep must start at 1" guard for a shard — the guard
+	// is about the reported sweep, which merge-results reassembles.
+	sweepLevels := cfg.Experiments.VerificationThroughput.ConcurrencyLevels
+	var partialLevels []int
+	if levels != "" {
+		picked, err := restrictLevels(cfg.Experiments.VerificationThroughput.ConcurrencyLevels, levels)
+		if err != nil {
+			return err
+		}
+		sweepLevels, partialLevels = picked, picked
 	}
 
 	seed, err := cfg.Seed()
@@ -240,6 +276,8 @@ func run(configPath, expName string, dryRun bool, only string) error {
 			Environment:       results.Fingerprint(),
 			ResolvedConfig:    cfg,
 			PartialComparison: partial,
+			PartialLevels:     partialLevels,
+			PartialTransports: partialTransports,
 		}
 	}
 
@@ -248,13 +286,13 @@ func run(configPath, expName string, dryRun bool, only string) error {
 	// -------------------------------------------------------------------------
 	switch expName {
 	case "verification":
-		return runExp1(ctx, cfg, reps, systems, trace, writer, meta)
+		return runExp1(ctx, cfg, reps, systems, trace, writer, meta, sweepLevels, sweepTransports, len(partialLevels) > 0)
 	case "redaction":
 		return runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits)
 	case "audit":
 		return runExp3(ctx, cfg, reps, systems, writer, meta, ds, seed, targetBits)
 	case "all":
-		if err := runExp1(ctx, cfg, reps, systems, trace, writer, meta); err != nil {
+		if err := runExp1(ctx, cfg, reps, systems, trace, writer, meta, sweepLevels, sweepTransports, len(partialLevels) > 0); err != nil {
 			return err
 		}
 		if err := runExp2(ctx, cfg, reps, systems, trace, writer, meta, ds, seed, targetBits); err != nil {
@@ -276,6 +314,9 @@ func runExp1(
 	trace []*scheme.Request,
 	w *results.Writer,
 	meta metaFn,
+	sweepLevels []int,
+	sweepTransports []string,
+	partialLevels bool,
 ) error {
 	e := cfg.Experiments.VerificationThroughput
 	if !e.Enabled {
@@ -285,11 +326,13 @@ func runExp1(
 	fmt.Println("\n=== Exp 1: Verification Throughput ===")
 
 	res, err := exp1.Run(ctx, exp1.Config{
-		ConcurrencyLevels: e.ConcurrencyLevels,
+		ConcurrencyLevels: sweepLevels,
 		Repetitions:       reps,
 		ShardCounts:       cfg.ZKRedact.Sharding.Counts,
 		NativeBatchVerify: cfg.ZKRedact.ProofBatch.NativeBatchVerify,
 		BatchSizes:        cfg.ZKRedact.ProofBatch.Sizes,
+		VoteTransports:    sweepTransports,
+		PartialLevels:     partialLevels,
 	}, systems, trace)
 	if err != nil {
 		return err
@@ -537,6 +580,7 @@ func printCapabilities(names []string, m map[string]scheme.Capabilities) {
 		{"per-tx provenance", func(c scheme.Capabilities) bool { return c.PerTxProvenance }},
 		{"ledger-independent audit", func(c scheme.Capabilities) bool { return c.LedgerIndependentAudit }},
 		{"state freshness check", func(c scheme.Capabilities) bool { return c.StateFreshnessCheck }},
+		{"consensus-bound auth", func(c scheme.Capabilities) bool { return c.ConsensusBoundAuth }},
 	}
 
 	fmt.Printf("\n%-26s", "capability")
@@ -587,6 +631,88 @@ func restrictSchemes(enabled []string, csv string) ([]string, error) {
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("-schemes is empty")
+	}
+	return out, nil
+}
+
+// restrictLevels narrows Exp 1's concurrency sweep to a named subset.
+//
+// Order is taken from the CONFIG, not from the flag, so a shard measures its
+// levels in the same order a full run would and "-levels 8,1" cannot silently
+// reverse the sweep.
+func restrictLevels(configured []int, csv string) ([]int, error) {
+	if len(configured) == 0 {
+		return nil, fmt.Errorf(
+			"-levels given, but experiments.verification_throughput.concurrency_levels lists none")
+	}
+	want := map[int]bool{}
+	for _, w := range strings.Split(csv, ",") {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		n, err := strconv.Atoi(w)
+		if err != nil {
+			return nil, fmt.Errorf("-levels value %q is not a number", w)
+		}
+		found := false
+		for _, c := range configured {
+			if c == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf(
+				"-levels names %d, which is not among the configured levels %v", n, configured)
+		}
+		want[n] = true
+	}
+	if len(want) == 0 {
+		return nil, fmt.Errorf("-levels is empty")
+	}
+	out := make([]int, 0, len(want))
+	for _, c := range configured {
+		if want[c] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// restrictTransports narrows Exp 1's transport sweep to a named subset.
+//
+// Refuses a name the config does not list. Inventing one here would sweep a
+// transport no recorded parameter mentions, and the resolved_config written
+// beside the results would not describe the run that produced them.
+func restrictTransports(configured []string, csv string) ([]string, error) {
+	if len(configured) == 0 {
+		return nil, fmt.Errorf(
+			"-transports given, but baselines.ref10_emt.exp1_vote_transports lists none")
+	}
+	want := strings.Split(csv, ",")
+	out := make([]string, 0, len(want))
+	for _, w := range want {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		found := false
+		for _, c := range configured {
+			if c == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf(
+				"-transports names %q, which is not among the configured transports %v",
+				w, configured)
+		}
+		out = append(out, w)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("-transports is empty")
 	}
 	return out, nil
 }

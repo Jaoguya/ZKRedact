@@ -137,6 +137,11 @@ func (s *Scheme) Capabilities() scheme.Capabilities {
 		PerTxProvenance:        true, // Phase 5 per-transaction history chain
 		LedgerIndependentAudit: true, // Phase 6 targeted retrieval
 		StateFreshnessCheck:    true, // Phase 4 Step 2 Fresh_i revalidation
+
+		// Phase 2/3 authorize at the gateway and the verification layer. No
+		// consensus is required to decide a request, and that is the design
+		// claim Exp 1 exists to test — not an artefact of running in-process.
+		ConsensusBoundAuth: false,
 	}
 }
 

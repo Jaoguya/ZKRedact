@@ -70,6 +70,13 @@ type Scheme struct {
 	// result can never be read as network-measured when it was not.
 	transport transport
 
+	// gatewayCfg and identities are what building a transport needs. Kept so
+	// Exp 1 can switch transports mid-sweep without re-running Setup, which
+	// would rebuild the ledger, registry and CA — untimed work, but it would
+	// also give the two arms different state to compare.
+	gatewayCfg *GatewayConfig
+	identities *identityMap
+
 	// policies indexes the shared corpus's policies by ID.
 	policies map[string]scheme.Policy
 
@@ -84,6 +91,11 @@ type Scheme struct {
 type roundRecord struct {
 	ContractAddr string
 	Approved     []ballot
+
+	// CertDigest identifies the P_C the committee voted on. Redact re-verifies
+	// Sigma (Algorithm 5 line 4) against the same message the members signed,
+	// and that message now binds the certificate.
+	CertDigest string
 }
 
 func New() *Scheme { return &Scheme{} }
@@ -100,7 +112,108 @@ func (s *Scheme) Capabilities() scheme.Capabilities {
 		PerTxProvenance:        false, // no per-transaction history index
 		LedgerIndependentAudit: false, // locating redaction transactions scans
 		StateFreshnessCheck:    false, // no execution-time revalidation
+		ConsensusBoundAuth:     true,  // the committee vote is ordered on the ledger
 	}
+}
+
+// Transport reports the transport currently carrying committee votes.
+func (s *Scheme) Transport() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.transport == nil {
+		return ""
+	}
+	return s.transport.Name()
+}
+
+// Retransport switches the vote transport between runs of the same sweep.
+//
+// Exp 1 measures Ref[10] on both: in_process is the control against the three
+// schemes that authorize locally by design, fabric is the deployed cost. Doing
+// it here rather than by re-running Setup keeps the ledger, the CA and the
+// registry identical across the two arms, so the only thing that differs is
+// what the arms are supposed to compare.
+//
+// The old transport is closed first — the fabric one holds gRPC connections and
+// a gateway per committee member, and leaking them across a sweep exhausts the
+// peer's connection limit long before the sweep ends.
+// buildIdentities maps the dataset's members onto cryptogen's identity files.
+func (s *Scheme) buildIdentities(gw *GatewayConfig, ds *scheme.Dataset) (*identityMap, error) {
+	if ds == nil {
+		return nil, fmt.Errorf("ref10: identities need the dataset, which Setup did not retain")
+	}
+	memberIDs := make([]string, 0, len(ds.Identities))
+	for _, id := range ds.Identities {
+		memberIDs = append(memberIDs, id.ID)
+	}
+	return buildIdentityMap(gw.CryptoPath, memberIDs)
+}
+
+func (s *Scheme) Retransport(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.ready {
+		return fmt.Errorf("ref10: Retransport before Setup")
+	}
+	if s.transport != nil && s.transport.Name() == name {
+		return nil
+	}
+	// Identities are read here when Setup did not need them — an in-process
+	// Setup followed by the sweep's fabric arm is the normal path.
+	if name == transportFabric && s.identities == nil && s.gatewayCfg != nil {
+		ids, err := s.buildIdentities(s.gatewayCfg, s.params.Dataset)
+		if err != nil {
+			return err
+		}
+		s.identities = ids
+	}
+
+	next, err := newTransport(name, s.gatewayCfg, s.identities)
+	if err != nil {
+		return err
+	}
+	if c, ok := s.transport.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			return fmt.Errorf("ref10: closing the %s transport: %w", s.transport.Name(), err)
+		}
+	}
+	s.transport = next
+
+	// The contract needs its round policy and node set under a transport that
+	// has just been built. registerRoundPolicy and registerNodes are no-ops for
+	// the in-process transport and idempotent for fabric.
+	ctx := context.Background()
+	if err := registerRoundPolicy(ctx, s.transport, s.registry.nodes,
+		s.committeeSize, s.voteThreshold, s.ca); err != nil {
+		return err
+	}
+	return registerNodes(ctx, s.transport, s.registry.nodes)
+}
+
+// AuthCost reports the structural cost of one authorization.
+//
+// Computed, not stored, because it depends on the transport: over fabric a
+// round is two ordered blocks — every member's ballot in one, then Close — and
+// 1 + committee_size gateway submissions. In-process it is the same
+// cryptography with no network at all, which is precisely what makes that
+// transport a lower bound rather than a measurement.
+//
+// It was three blocks until Algorithm 3's committee derivation moved into Vote;
+// a 3 appearing here means a round-opening transaction has come back.
+//
+// Signature verifications do not change with the transport: the CA certificate
+// once per member, every ballot verified in the contract, and Sigma
+// re-verified in full at the threshold (crypto.VerifyVotes, no early exit).
+func (s *Scheme) AuthCost() scheme.AuthCost {
+	c := scheme.AuthCost{
+		SignatureVerifications: 2*s.committeeSize + s.voteThreshold,
+	}
+	if s.transport != nil && s.transport.Name() == transportFabric {
+		c.ConsensusBlocks = 2
+		c.RoundTrips = 1 + s.committeeSize
+	}
+	return c
 }
 
 func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
@@ -180,22 +293,32 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	}
 
 	// The Fabric transport needs member ids mapped onto the identities cryptogen
-	// produced, before any session is opened. Built here so a mismatch fails at
-	// Setup with a message naming both counts, rather than at vote time as a
-	// missing file inside the SDK.
+	// produced, before any session is opened. Built so a mismatch fails with a
+	// message naming both counts, rather than at vote time as a missing file
+	// inside the SDK.
+	//
+	// BUILT ONLY FOR THE TRANSPORT IN FORCE. The gateway BLOCK is parsed
+	// whenever it is present, so Exp 1 can switch to fabric mid-sweep — but
+	// reading cryptogen's identity files is a different thing from reading the
+	// config, and doing it unconditionally made an in-process run demand
+	// material only a Fabric host has. Measured on a fresh c6i.8xlarge with no
+	// network: "cannot read Fabric identities ... no such file or directory",
+	// on a run whose transport was in_process and which needed none of it.
+	//
+	// Retransport builds them on the way to fabric, so the switch still fails
+	// at the switch rather than silently voting locally.
 	var ids *identityMap
-	if gw != nil {
-		memberIDs := make([]string, 0, len(p.Dataset.Identities))
-		for _, id := range p.Dataset.Identities {
-			memberIDs = append(memberIDs, id.ID)
-		}
-		if ids, err = buildIdentityMap(gw.CryptoPath, memberIDs); err != nil {
+	if gw != nil && transportName == transportFabric {
+		if ids, err = s.buildIdentities(gw, p.Dataset); err != nil {
 			return err
 		}
 	}
 	if s.transport, err = newTransport(transportName, gw, ids); err != nil {
 		return err
 	}
+	// Retained so Exp 1 can switch transports without re-running Setup, which
+	// would rebuild the ledger and the CA and time none of it.
+	s.gatewayCfg, s.identities = gw, ids
 
 	// Materialise the shared corpus into this scheme's own on-chain form. Not
 	// timed: the four systems cannot share a ledger format.
@@ -219,6 +342,10 @@ func (s *Scheme) Setup(ctx context.Context, p scheme.SetupParams) error {
 	// Without it the contract holds no node set and every round fails at Init
 	// with "no nodes registered", which reads as a chaincode fault rather than
 	// a missing setup step. No-op for the in-process transport.
+	if err = registerRoundPolicy(ctx, s.transport, s.registry.nodes,
+		s.committeeSize, s.voteThreshold, s.ca); err != nil {
+		return err
+	}
 	if err = registerNodes(ctx, s.transport, s.registry.nodes); err != nil {
 		return err
 	}
@@ -324,18 +451,19 @@ func (s *Scheme) Authorize(ctx context.Context, req *scheme.Request) (*scheme.Au
 	}
 
 	// The contract verifies Sigma in full before emitting tx_rdt.
-	if !verifySigma(addr, req.ID, approved, s.voteThreshold) {
+	digest := certDigest(cert)
+	if !verifySigma(addr, req.ID, digest, approved, s.voteThreshold) {
 		auth.Granted = false
 		auth.Reason = "aggregate signature Sigma failed verification"
 		return auth, nil
 	}
 
 	s.roundsMu.Lock()
-	s.rounds[req.ID] = &roundRecord{ContractAddr: addr, Approved: approved}
+	s.rounds[req.ID] = &roundRecord{ContractAddr: addr, Approved: approved, CertDigest: digest}
 	s.roundsMu.Unlock()
 
 	auth.Granted = true
-	auth.Evidence = sigmaBytes(approved)
+	auth.Evidence = sigmaBytes(digest, approved)
 	return auth, nil
 }
 
@@ -374,7 +502,7 @@ func (s *Scheme) Redact(ctx context.Context, batch []*scheme.Authorization) (*sc
 		// recompute the affected hashes. There is no chameleon hash here — that
 		// absence is the point of including this baseline in Exp 2.
 		cryptoStart := time.Now()
-		valid := verifySigma(rec.ContractAddr, a.Request.ID, rec.Approved, s.voteThreshold)
+		valid := verifySigma(rec.ContractAddr, a.Request.ID, rec.CertDigest, rec.Approved, s.voteThreshold)
 		res.CryptoTime += time.Since(cryptoStart)
 		if !valid {
 			res.Failed++
@@ -473,12 +601,15 @@ func (s *Scheme) verifyRedactionRecords(found []foundRedaction) bool {
 		if !ok {
 			return false
 		}
-		entries, err := parseSigma(f.Record.AuthEvidence)
+		// The digest comes from the evidence itself, which is all an auditor
+		// has. It is what the committee signed over, so a record whose
+		// certificate was swapped after the fact cannot verify.
+		digest, entries, err := parseSigma(f.Record.AuthEvidence)
 		if err != nil {
 			return false
 		}
 
-		msg := voteMessage(contractAddress(requestID), requestID, true)
+		msg := voteMessage(contractAddress(requestID), requestID, digest, true)
 		seen := make(map[string]bool, len(entries))
 		valid := 0
 		for _, e := range entries {

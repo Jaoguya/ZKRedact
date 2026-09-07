@@ -166,8 +166,39 @@ else
     sudo systemctl enable --now docker
     sudo usermod -aG docker "$USER"
     ok "installed"
-    warn "log out and back in before Docker works without sudo"
+    # A GROUP ADDED HERE IS NOT IN THIS SHELL. usermod edits /etc/group, but the
+    # running shell keeps the group set it was given at login, so every docker
+    # call for the rest of this script hits the socket unprivileged. Measured on
+    # a clean Ubuntu 22.04 c6i.8xlarge: the Fabric image pull failed with
+    # "permission denied ... /var/run/docker.sock" on EVERY image and the script
+    # exited 1 having installed Go and the binaries but no images.
+    #
+    # DOCKER_RUN re-enters the group for the commands that need it. Callers use
+    # it instead of bare docker, and a login shell later gets the membership the
+    # normal way.
+    warn "log out and back in before Docker works without sudo in a new shell"
 fi
+
+# How to invoke docker for the rest of THIS script. `sg docker -c` runs a
+# command with the group applied; where that is unavailable, sudo is the
+# fallback. An already-effective membership needs neither.
+DOCKER_RUN=""
+if ! docker info >/dev/null 2>&1; then
+    if command -v sg >/dev/null 2>&1 && sg docker -c "docker info" >/dev/null 2>&1; then
+        DOCKER_RUN="sg docker -c"
+    elif sudo docker info >/dev/null 2>&1; then
+        DOCKER_RUN="sudo_shell"
+    fi
+fi
+
+# run_docker executes a shell command with docker reachable, whichever route works.
+run_docker() {
+    case "$DOCKER_RUN" in
+        "sg docker -c") sg docker -c "$1" ;;
+        sudo_shell)     sudo -E bash -c "$1" ;;
+        *)              bash -c "$1" ;;
+    esac
+}
 
 if docker compose version >/dev/null 2>&1; then
     ok "$(docker compose version)"
@@ -175,10 +206,14 @@ else
     warn "docker compose v2 plugin not found"
 fi
 
-if docker info >/dev/null 2>&1; then
-    ok "docker daemon reachable"
+if run_docker "docker info" >/dev/null 2>&1; then
+    if [[ -n "$DOCKER_RUN" ]]; then
+        ok "docker daemon reachable (via ${DOCKER_RUN/sudo_shell/sudo}, group not yet in this shell)"
+    else
+        ok "docker daemon reachable"
+    fi
 else
-    warn "cannot reach the docker daemon — log out and back in for group membership"
+    warn "cannot reach the docker daemon by any route — Fabric images cannot be pulled"
 fi
 
 # -----------------------------------------------------------------------------
@@ -199,8 +234,8 @@ else
         || die "could not download install-fabric.sh"
     chmod +x install-fabric.sh
     # binary + docker: skip the samples repo, we have our own network config
-    ./install-fabric.sh --fabric-version "$FABRIC_VERSION" \
-                        --ca-version "$FABRIC_CA_VERSION" binary docker \
+    run_docker "./install-fabric.sh --fabric-version '$FABRIC_VERSION' \
+                        --ca-version '$FABRIC_CA_VERSION' binary docker" \
         || die "Fabric install failed"
     popd >/dev/null
 

@@ -170,7 +170,7 @@ Orderer: &OrdererDefaults
   # MUST match environment.network.block_timeout_ms in config/experiment.yaml.
   # A vote waits up to this long before ordering, so it is part of what Exp 1
   # measures.
-  BatchTimeout: 2s
+  BatchTimeout: 1s
 
   BatchSize:
     # MUST match environment.network.block_max_transactions.

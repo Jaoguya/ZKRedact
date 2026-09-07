@@ -92,6 +92,7 @@ func (s *Scheme) Capabilities() scheme.Capabilities {
 		PerTxProvenance:        false, // audits ledger integrity, not tx history
 		LedgerIndependentAudit: true,  // BAT gives sublinear audit cost
 		StateFreshnessCheck:    false,
+		ConsensusBoundAuth:     false, // the trapdoor check is local
 	}
 }
 

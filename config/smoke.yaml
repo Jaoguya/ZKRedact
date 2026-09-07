@@ -1,68 +1,38 @@
 # =============================================================================
-# PILOT CONFIG — SMOKE TEST ONLY. NOT A SOURCE OF RESULTS.
+# SMOKE CONFIG — SHARD REHEARSAL. MEASURES NOTHING.
 # =============================================================================
 #
-# A scaled-down copy of experiment.yaml for exercising the harness end to end on
-# a development machine. Every sweep here is deliberately too small to measure
-# anything: 500 requests cannot support a stable p99 (the real config's comment
-# explains why >= 10,000 is needed), and 3 repetitions cannot establish variance.
+# A deliberately tiny copy of experiment.yaml whose only job is to run EVERY
+# shard command the AWS run will issue, in seconds instead of hours, so a
+# configuration or wiring fault shows up before an instance is paid for.
 #
-# Numbers produced with this file are for confirming that code RUNS, never for
-# reporting. Results are written to results/pilot/ to keep them separate.
+# Nothing here is a result. 20 requests cannot support a percentile, 1000
+# transactions cannot support a scaling class, and every sweep is truncated to
+# its first two values. If a number from this file reaches a table, that is a
+# defect.
 #
-# WHY THIS FILE EXISTS. The full config is a c6i.8xlarge workload: 11 concurrency
-# levels x 30 repetitions x 10,000 requests is 3.3M authorizations, each costing
-# roughly 15 elliptic-curve operations for Ref[10]. That is correct for the real
-# run and useless as a smoke test.
+# WHAT IT IS FOR. scripts/smoke-shards.sh runs one command per planned shard
+# against this file and reports pass/fail plus wall clock. A shard that fails
+# here fails on EC2 for the same reason, minus the bill.
 #
-# KNOWN PILOT ARTIFACTS — Exp 3 scaling class is not meaningful at this scale.
+# TWO OVERRIDES ARE NOT JUST SCALE, and they exist for a reason:
 #
-# Two effects, both of which vanish at the real config's ledger sizes:
+#   block_max_transactions 100 -> 10
+#       Exp 3 builds ledger_size x block_max_transactions transactions per
+#       point. At 100 the smallest useful ledger sweep would need 10,000
+#       transactions and Ref[22] would spend four minutes per prepare.
+#       NOTE: this value must match network/configtx.yaml when the Fabric
+#       network is up (network.sh checks it against experiment.yaml, not this
+#       file). Never bring a network up against this config.
 #
-#   1. Building history adds one block per redaction, so depths 1,2,4,8,16 add
-#      31 blocks plus genesis to EVERY ledger. A 10 -> 100 sweep is only
-#      42 -> 132 real blocks, a 3.1x span rather than 10x.
+#   challenged_blocks [300, 460] -> [10, 20]
+#       Ref[13].Setup refuses challenged_blocks > len(transactions), and Exp 3
+#       slices the dataset down to ledger_size x block_max_transactions = 100
+#       at the smallest ledger. The real sample sizes cannot fit in it.
+#       These numbers carry NO detection guarantee. They exercise the code path.
 #
-#   2. classifyScaling compares TotalTime, which is retrieval PLUS verification.
-#      Ref[10]'s verification cost tracks history depth, not ledger size, so at
-#      these tiny ledgers it is a large constant that swamps the ledger-dependent
-#      part. Measured at depth 1: retrieval 1.9us -> 18.2us across the sweep
-#      (x9.5, cleanly linear in ledger size), against a flat ~290us of
-#      verification. Total therefore reads "flat" while the mechanism underneath
-#      is exactly linear.
-#
-# Do not tune the classifier from either observation. The per-point retrieval and
-# verification times are recorded separately for exactly this reason — decompose
-# before drawing a conclusion.
-#
-# OPEN QUESTION FOR THE REAL RUN. Effect 2 may not fully disappear at
-# 1000 -> 10000 blocks. Extrapolating the pilot's retrieval cost gives roughly
-# 180us -> 1.8ms against a ~290us verification floor, a total ratio near 4.4 —
-# still under the linear threshold of sizeRatio * 0.5 = 5.0. If that holds,
-# Ref[10] will be labelled sublinear despite retrieval being linear, and the
-# headline plot should show the decomposition rather than the total. Decide this
-# from pilot measurements on the real host, not from this file.
-#
-# DRIFT WARNING. This is a copy, so it can fall out of step with
-# experiment.yaml. It is only ever used with -config config/pilot.yaml, and the
-# real config remains the single source of truth for anything reported. If you
-# change a parameter that affects correctness rather than scale, change both.
-#
-# REGENERATED from experiment.yaml on 2026-09-07, rather than hand-patched.
-# It had drifted: block_timeout_ms still read 2000 against a 1 s channel, and
-# both wait-bound sweeps still carried the digits derived from the old cadence.
-# Every value below now comes from the real config with only the overrides
-# listed here applied, each marked "PILOT OVERRIDE" in place. Regenerate the
-# same way rather than editing a parameter in one file.
-#
-# Overrides from experiment.yaml:
-#   meta.repetitions                1       -> 3      (RAISED, see the note there)
-#   dataset.base_transactions       1000000 -> 20000
-#   workload.total_requests         10000   -> 500
-#   exp1 concurrency_levels         1..1024 -> 1,2,4,8
-#   exp1_vote_transports            both    -> in_process only
-#   exp3 ledger_sizes               1k..10k -> 10,20,50,100  (10x span kept)
-#   output.results_dir              results -> results/pilot
+# REGENERATE, do not hand-edit: rerun the generator in scripts/ against
+# experiment.yaml so this file cannot drift into being a second source of truth.
 # =============================================================================
 
 # =============================================================================
@@ -136,11 +106,7 @@ meta:
   # The repetition count must be set by the NOISIEST system. Task 9's first job
   # is to take the same variance datum for ZK-Redact's Exp 2 CryptoTime on the
   # full topology and raise this if that CV is worse.
-  # PILOT OVERRIDE: 1 -> 3. RAISED, not lowered. The real config runs one
-  # repetition because the measured variance does not justify more; a smoke test
-  # needs more than one so the repetition loop is actually exercised and a point
-  # that pools across repetitions is actually produced.
-  repetitions: 3
+  repetitions: 1
 
 
 # -----------------------------------------------------------------------------
@@ -230,9 +196,12 @@ environment:
   #
   # If the pilot shows contention even at this size, split the network and the
   # system under test onto separate instances in the same placement group.
-  instance_type: "c6i.8xlarge"
-  vcpus: 32
-  memory_gb: 64
+  # SMOKE OVERRIDE: declares the rehearsal host, not the measurement host.
+  # validate-config ties zkredact.sharding.counts max to this value, so a
+  # truncated shard sweep needs a truncated vcpu count to stay consistent.
+  instance_type: "smoke-rehearsal"
+  vcpus: 2
+  memory_gb: 8
 
   # [PROPOSED] Explicit per-peer limits so results do not drift with host load.
   # Reproducibility requires bounded, declared resources, not "whatever was
@@ -263,7 +232,7 @@ environment:
     # Fabric block-cutting parameters. Held CONSTANT across all four systems —
     # block cadence directly affects redaction commit latency, so varying it
     # between systems would corrupt Exp 2 outright.
-    block_max_transactions: 100
+    block_max_transactions: 10
 
     # [DERIVED from Ref[10]'s own experimental settings] 1000 ms.
     #
@@ -299,15 +268,24 @@ environment:
 # SOURCE DATASET — generated once, consumed by all four systems
 # -----------------------------------------------------------------------------
 dataset:
-  # [DERIVED] ledger_sizes.max x block_max_transactions = 10000 x 100.
-  # Sized so Exp 3's largest ledger can be built without regenerating source
-  # data, and so no system runs short mid-sweep.
-  # PILOT OVERRIDE: 1000000 -> 20000. Setup materialises this corpus into four
-  # different on-chain structures, and Ref[13]'s BAT and Ref[22]'s accumulator
-  # walk all of it. Untimed, but not free wall clock: at the real size a
-  # four-scheme smoke run spends longer in Setup than the whole pilot should
-  # take.
-  base_transactions: 20000
+  # [PROPOSED] 100,000 — set deliberately, overriding the derivation below.
+  #
+  # The derived value was ledger_sizes.max x block_max_transactions =
+  # 10000 x 100 = 1,000,000, sized so Exp 3's largest ledger could be built
+  # without regenerating source data. That is no longer the binding constraint:
+  # Ref[13] and Ref[22] both build their structures in ONE PASS over this
+  # dataset, single-threaded (ref13/wiring.go:86, ref22/wiring.go:70), measured
+  # at 9.0 ms and 24.7 ms per transaction. At 1,000,000 that is ~2.5 h and
+  # ~6.9 h of setup before a single measurement, and 32 vCPU does not help it.
+  #
+  # At 100,000 the same setup is ~15 min and ~41 min.
+  #
+  # The capacity rule (validate-config:531) enforces
+  # base_transactions >= ledger_sizes.max x block_max_transactions.
+  # experiments.provenance_audit.ledger_sizes was cut to a max of 1000 to
+  # match: 1000 x 100 = 100,000. See the rationale there before raising
+  # either one.
+  base_transactions: 1000
 
   transaction:
     # [PROPOSED] A structured business record (identifiers, parties, amounts,
@@ -379,9 +357,7 @@ workload:
   #
   # The alternative considered and rejected was 1,000 requests x 3 repetitions:
   # cheaper, but p99 becomes noise and p99 is a reported metric of Exp 1.
-  # PILOT OVERRIDE: 10000 -> 500. Too small for a stable p99 by the real
-  # config's own criterion, which is the point — this file measures nothing.
-  total_requests: 500
+  total_requests: 20
 
   # [METHOD] "uniform" isolates the mechanism and is the headline setting.
   # Run "zipf" as a robustness check once headline results are stable.
@@ -442,13 +418,13 @@ zkredact:
     # most likely the shards are not doing real verification work.
     #
     # N=1 is mandatory — it is the sharding-disabled ablation baseline.
-    counts: [1, 2, 4, 8, 16, 32, 64]
+    counts: [1, 2]
 
   proof_batch:
     # [METHOD] Geometric, including 1 (batching disabled). Upper bound 64 is a
     # starting point: extend it if per-doubling gain has not yet fallen into
     # the noise floor at 64. Where the gain vanishes IS the result.
-    sizes: [1, 2, 4, 8, 16, 32, 64]
+    sizes: [1, 2]
 
     # [DERIVED from environment.network.block_timeout_ms = 1000]
     # Verification batching must complete well within one block interval, or it
@@ -459,7 +435,7 @@ zkredact:
     # The derivation is the 0.5%-25% span, not the digits: keeping the old
     # values at a 1000 ms block would silently widen the sweep to 1%-50%, and
     # the top of it would then be half a block rather than a quarter.
-    wait_bound_ms: [5, 25, 50, 250]
+    wait_bound_ms: [5]
 
     # [METHOD] Tests the Phase 3 claim (ZK-Redact.md:508-509) that sharding
     # provides parallelism INDEPENDENTLY of native batch-verification support.
@@ -471,7 +447,7 @@ zkredact:
     # point where all three baselines sit. Upper bound extends until per-request
     # cost flattens toward the CH.Adapt floor; locating that flattening is the
     # purpose of Exp 2. Extend past 64 if it has not flattened.
-    sizes: [1, 2, 4, 8, 16, 32, 64]
+    sizes: [1, 2]
 
     # [DERIVED from block_timeout_ms = 1000] The staleness knob. Spans a
     # quarter-block to two blocks, so the sweep crosses the boundary where a
@@ -482,7 +458,7 @@ zkredact:
     # What transfers is the quarter-block-to-two-blocks span: at the old digits
     # the sweep would start at half a block and end at four, and the crossing
     # point this exists to capture would sit at the wrong end of it.
-    wait_bounds_ms: [250, 500, 1000, 2000]
+    wait_bounds_ms: [250]
 
   # ---------------------------------------------------------------------------
   # Phase 6 — Provenance Retrieval and Audit Verification
@@ -637,10 +613,10 @@ baselines:
     #
     # ⚠️ The fabric arm needs a running network. Drop it to ["in_process"] for a
     # dry run; a results file then carries one arm and says so in every row.
-    # PILOT OVERRIDE: in_process only. The fabric arm needs a running network,
-    # and `make pilot` must work on a machine with no Docker. Restoring the pair
-    # here is correct as soon as a network is up — the transport sweep itself is
-    # exercised either way, since one arm still drives Retransport.
+    # SMOKE OVERRIDE: in_process only. The fabric arm needs a live peer, and
+    # this file must never have a network brought up against it (see the
+    # block_max_transactions note in the header). Rehearse the fabric arm
+    # with the real config: smoke-shards.sh --fabric.
     exp1_vote_transports: ["in_process"]
 
     # [DECIDE] Gateway settings — required when vote_transport is "fabric",
@@ -703,7 +679,7 @@ baselines:
     # The DERIVATION transfers, not the digits — and it holds ONLY while
     # corrupted_block_rate stays at the 1% it assumes. Change that rate and
     # these must be recomputed, never carried over.
-    challenged_blocks: [300, 460]
+    challenged_blocks: [10, 20]
     corrupted_block_rate: 0.01
     detection_precision: [0.95, 0.99]
 
@@ -730,7 +706,7 @@ baselines:
     # [DERIVED] Mirrors zkredact.redaction_batch.sizes exactly. Misaligned
     # ranges would put the two curves on incomparable axes and quietly break
     # the Exp 2 comparison. If you change one, change both.
-    delete_set_sizes: [1, 2, 4, 8, 16, 32, 64]
+    delete_set_sizes: [1, 2]
 
     # [METHOD] The paper's own split, mapping onto ZK-Redact's independent vs
     # serialized distinction.
@@ -764,10 +740,7 @@ experiments:
     # overtakes the baselines' single serialization point — falls INSIDE the
     # plot. If no crossover appears by 1024, extend rather than concluding
     # there is none.
-    # PILOT OVERRIDE: 1..1024 -> 1,2,4,8. A dev machine's peer runs out of
-    # gateway connections long before 1024, and the sweep still starts at 1,
-    # which the runner requires.
-    concurrency_levels: [1, 2, 4, 8]
+    concurrency_levels: [1, 2]
 
     systems: ["zkredact", "ref10_emt", "ref13_vrbc", "ref22_shen"]
 
@@ -827,18 +800,43 @@ experiments:
 
     systems: ["zkredact", "ref13_vrbc", "ref10_emt", "ref22_shen"]
 
-    # [DERIVED] HEADLINE PLOT: history depth fixed, ledger grows.
-    # Spans one full order of magnitude (1k -> 10k blocks), the minimum needed
-    # to separate O(1) from O(n) convincingly. The range also overlaps both
-    # Ref[13] (5k, 10k) and Ref[22] (100-1100), so each baseline is exercised
-    # in the regime its own authors tested.
-    # PILOT OVERRIDE: 1k..10k -> 10..100. The 10x span is kept, because the
-    # span is what separates O(1) from O(n); the magnitude is not.
-    ledger_sizes: [10, 20, 50, 100]
+    # [PROPOSED] HEADLINE PLOT: history depth fixed, ledger grows.
+    #
+    # Spans exactly one order of magnitude (100 -> 1000 blocks). That is the
+    # minimum the validator and the runner both enforce
+    # (validate-config:594, exp3_audit/runner.go:153): below 10x, O(1) cannot
+    # be separated from O(n) convincingly. The span sits ON the floor, so
+    # trimming either end fails validation.
+    #
+    # WHY IT MOVED DOWN. It was 1k -> 10k. The largest ledger costs
+    # max(ledger_sizes) x block_max_transactions source transactions, so 10000
+    # blocks required dataset.base_transactions = 1,000,000 -- and that dataset
+    # costs ~9.4 h of single-threaded setup in Ref[13] and Ref[22] before any
+    # measurement. base_transactions went to 100,000; this sweep follows it.
+    # The alternative was cutting block_max_transactions to 10, rejected
+    # because that parameter is SHARED with Exp 1 and Exp 2 and would move the
+    # block cadence every system is measured on.
+    #
+    # WHAT THIS COSTS, AND HOW TO READ AROUND IT. Two things:
+    #
+    #   1. Ref[13]'s authors tested 5k and 10k blocks; that overlap is gone.
+    #      Ref[22]'s 100-1100 range still overlaps this sweep completely.
+    #
+    #   2. classifyScaling may misread the scaling class here. It compares
+    #      TotalTime = retrieval + verification, and Ref[10]'s verification
+    #      tracks history depth rather than ledger size -- a large constant
+    #      that swamps the ledger-dependent part at small ledgers. The pilot
+    #      documents this exact effect and expected it to vanish by 1k-10k;
+    #      at 100-1000 it may not.
+    #
+    # So treat the classifier's verdict as unreliable at this scale and read
+    # the decomposition instead: retrieval_latency and verification_time are
+    # recorded separately for precisely this reason.
+    ledger_sizes: [10, 100]
 
     # [METHOD] SECOND PLOT: ledger fixed, history depth grows. Geometric, since
     # cost is expected to scale with depth rather than step linearly.
-    history_depths: [1, 2, 4, 8, 16]
+    history_depths: [1, 2]
 
     metrics:
       - "retrieval_latency"
@@ -857,7 +855,7 @@ experiments:
 # OUTPUT
 # -----------------------------------------------------------------------------
 output:
-  results_dir: "results/pilot"
+  results_dir: "results/smoke"
   plots_dir: "results/plots"
   formats: ["csv", "json"]
 

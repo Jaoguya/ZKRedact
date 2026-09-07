@@ -53,8 +53,12 @@ CA verifies requester validity `V(n_i, C)`, then returns signed policy
 ### 1.4 Algorithm 3 — Redaction Smart Contract
 
 - `init()` — select the authorized committee
-  `RS_SHA256(addr(con_k), N_all, A_r) → N_auth` (Eq. 7)
-- `query()` — expose `{req, σ}` to committee members
+  `RS_SHA256(addr(con_k), N_all, A_r) → N_auth` (Eq. 7). **Implemented as a
+  derivation inside `vote()`, not as a stored round** — see the deviation table
+  in §6, which records why and which system it favours
+- `query()` — expose `{req, σ}` to committee members. **Not implemented as a
+  ledger read:** `{req, σ}` reaches each member on the ballot, carrying the CA's
+  signature, which is what Algorithm 4 line 1 verifies against
 - `vote()` — collect votes within time window `t`, verify each signature, count
   approvals, compare against threshold, emit `tx_rdt = {req, Σ}`
 
@@ -167,6 +171,8 @@ the shared dataset) or an unrelated comparison.
 |---|---|---|
 | Voting round closes on threshold, not on full window `t` | See §2 note | **Favours Ref[10]** — reduces its measured latency |
 | The tally is a separate `Close` transaction, not part of `vote()` | Algorithm 3 closes the round when the threshold is reached, without saying in which transaction. Counting requires reading every committee member's ballot key; doing that inside `Vote` puts all of them in each ballot's read set, so two ballots cannot share a block and a round costs `(1 + committee_size)` blocks — verified, the ledger returns `MVCC_READ_CONFLICT` when ballots are submitted together. Splitting the tally out lets all ballots share one block, which is how independent committee members would actually vote. | **Marginally against Ref[10]** — a round costs 3 blocks (Init, ballots, Close) rather than the 2 an implicit close would need. Cost is now flat in committee size: 6.14 s / 6.18 s / 6.17 s at sizes 3 / 5 / 7 against a 2 s block, per-member slope 0 s. Before the split it was 8.1 / 12.3 / 16.3 s. Pinned by `TestLiveAuthorizationCostIsBlockTime`. |
+| **Algorithm 3 `init()` is not its own transaction.** Line 4 says *"Store `N_auth` in `con_k`"*; we do not store it. `Vote` recomputes `N_auth = RS_SHA256(addr(con_k), N_all, A_r)` (Eq. 7) per ballot, and `{req, sigma}` travels on the ballot instead of being read back from the ledger | **This is a departure from the printed algorithm and is recorded as one.** The justification is that storing `N_auth` cost a full block before any ballot could read it, and Eq. 7 is a pure function of the contract address, the registered node set and `A_r` — every peer can derive it. What the stored round also provided was the thing Algorithm 4 line 1 requires a member to check, and that line says *"verify the validity of `{req, sigma}` against `P_C` **from the CA**"*, with [`:317`](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L317) defining the CA's reply as a **signed** message `msg = {P_C, sigma}`. The trust anchor the paper names is the CA's signature, not the ledger write. `PolicyCert` now carries that signature and the contract verifies it before deriving anything — **including `cert.Attributes`, which selects the committee**. `committee_size` and `threshold` moved to `RegisterRoundPolicy`, called once at untimed setup, so no voter can name its own | **Favours Ref[10] on cost, against it on work.** A round costs **2 blocks instead of 3** (6.17 s → ~2.06 s at a 1 s block), which is the largest single reduction in its measured latency. Against it: one extra CA signature verification per ballot. **It also strengthens the baseline** — the contract previously accepted an *unsigned* certificate, because the CA signed `P_C` in `validate()` and the wire encoder discarded the signature. Pinned by `TestUnsignedCertificateIsRejected`, `TestBallotSignatureBindsTheCertificate`, `TestEncodeBallotCarriesTheCASignature`, and `TestLiveAuthorizationCostIsBlockTime` (which now asserts 2 blocks and a per-member slope of 0); both chaincode guards are mutation-verified |
+| **Block cadence is 1000 ms, not Fabric's default 2000** | Ref[10]'s published throughput comes from Hyperledger Caliper driving **100 tps sustained** ([`:438`](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L438)). At `block_max_transactions: 100` that regime cuts blocks by **message count**, so the `BatchTimeout` never fires. Our harness sends one authorization at a time into an idle network and therefore paid the timeout in full on every block — a cost Ref[10]'s own measurements never carried. `100 tps / 100 tx per block = 1 block per second` is the effective cadence it published | **Favours Ref[10]**, and applies identically to all four systems since it is a network parameter, not a scheme's. It also works **against ZK-Redact**: a shorter block is less blockchain cost for Phase 4's batching to amortise in Exp 2. Every Fabric figure measured before this change was at 2000 ms and is void |
 | Redaction consensus **is** included | The paper explicitly excluded it ([Ref[10].md:466](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L466)): *"the consensus mechanism for redaction operations was not included"* | **Raises** Ref[10]'s measured cost vs. its published figures — but is required, since ZK-Redact's batching amortizes exactly this cost. Excluding it would hide the effect we are measuring. |
 | Our network topology, not theirs | One shared environment across all systems | Absolute numbers differ from published; relative comparison is valid |
 | Redaction PRUNES: `d_w` is replaced with a reference to `tx_rdt`, and `d_new` lives in the redaction transaction | Not a deviation — this is Algorithm 5 line 9 and §V-C ("we use the pruning technology to delete target data"). Recorded because the shared harness hands every scheme a `NewContent`, and writing that into the block would silently turn Ref[10] into a content-replacement scheme | **Neutral on cost** (a short reference is hashed instead of a 512-byte payload), but it is a real *capability* difference: Ref[10] deletes where ZK-Redact replaces. Pinned by `TestRedactAppliesAndReportsCostSplit` |
@@ -175,6 +181,27 @@ the shared dataset) or an unrelated comparison.
 > Because of the second row, **our Ref[10] numbers are not comparable to the numbers
 > printed in the paper**, and must never be presented as such. They are comparable
 > only to the other systems in this evaluation, which is the point.
+
+> **Ref[10] is the ONLY system charged consensus, and it is charged in an
+> unsaturated regime its own paper never measured.** Its published throughput
+> comes from Caliper driving **100 tps sustained**
+> ([Ref[10].md:438](../../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L438)), where the
+> orderer cuts blocks by message count. Our concurrency-1 point sends one
+> transaction into an idle network, so every one of the round's three blocks
+> waits the full `BatchTimeout` — 6.17 s of waiting, not of work. That Fabric
+> latency tracks block-formation configuration rather than protocol work is the
+> established characterisation of the platform (Thakkar, Nathan and
+> Viswanathan, *IEEE MASCOTS*, 2018, doi:10.1109/MASCOTS.2018.00034; Xu, Sun,
+> Luo et al., *Information Processing & Management* 58, 2021).
+>
+> **Required mitigation, all three parts.** Report Ref[10] on **both**
+> transports — `in_process` as the like-for-like control against the other three
+> systems, `fabric` as the deployed cost; never publish one alone. Never present
+> the ZK-Redact-vs-Ref[10] latency ratio as an implementation speedup; it is
+> consensus-bound authorization against consensus-free authorization, and the
+> capability matrix carries that. State the block cadence beside every figure,
+> since it is the parameter the number is most sensitive to.
+> See [`docs/experiments.md` §1.3.1](../experiments.md#131-on-chain--off-chain-measurement-boundary).
 
 ---
 

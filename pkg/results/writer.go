@@ -42,6 +42,18 @@ type Metadata struct {
 	// plot. Recording it here means a partial run cannot be mistaken for a
 	// complete one later, when nobody remembers which flags were passed.
 	PartialComparison []string `json:"partial_comparison,omitempty"`
+
+	// PartialLevels and PartialTransports record an Exp 1 sweep narrowed by
+	// -levels or -transports, for the same reason PartialComparison exists.
+	//
+	// THEY ARE RECORDED BESIDE THE RESOLVED CONFIG, NOT INSIDE IT. Narrowing
+	// the config itself would make every shard carry a different
+	// resolved_config, and merge-results rightly refuses to pool documents
+	// whose parameters disagree — so the split would have made its own output
+	// unmergeable. The resolved config stays the run's full parameters; these
+	// say which slice of them this process measured.
+	PartialLevels     []int    `json:"partial_levels,omitempty"`
+	PartialTransports []string `json:"partial_transports,omitempty"`
 }
 
 // EnvFinger identifies the machine a run happened on.
@@ -113,6 +125,36 @@ func NewWriter(dir string, formats []string) (*Writer, error) {
 	return &Writer{dir: dir, formats: formats}, nil
 }
 
+// disambiguate appends a counter when a name is already taken.
+//
+// Suffixes are -2, -3 and so on, so the first writer in a second keeps the
+// plain name and nothing that already exists is renamed. Checked across EVERY
+// configured format: a run that writes .json and .csv must not take the .json
+// name from one earlier run and the .csv from another.
+func (w *Writer) disambiguate(base string) string {
+	taken := func(b string) bool {
+		for _, f := range w.formats {
+			ext := strings.ToLower(strings.TrimSpace(f))
+			if ext == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(w.dir, b+"."+ext)); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	if !taken(base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !taken(candidate) {
+			return candidate
+		}
+	}
+}
+
 // Write emits one document under a timestamped name.
 //
 // Timestamps are part of the filename so a re-run never silently overwrites an
@@ -121,6 +163,14 @@ func NewWriter(dir string, formats []string) (*Writer, error) {
 func (w *Writer) Write(doc Document) ([]string, error) {
 	stamp := doc.Metadata.Timestamp.UTC().Format("20060102-150405")
 	base := fmt.Sprintf("%s-%s", doc.Metadata.Experiment, stamp)
+
+	// The stamp resolves to ONE SECOND, which is not fine enough to keep two
+	// shards apart. Sharding by scheme runs several short commands in a row —
+	// Ref[10]'s Exp 1 takes well under a second — and two finishing in the same
+	// second produced the same filename, so os.Create truncated the first.
+	// Measured: four shards run in sequence, all exiting 0, left three files;
+	// Ref[22]'s results were gone with nothing reporting it.
+	base = w.disambiguate(base)
 
 	var written []string
 	for _, f := range w.formats {

@@ -38,6 +38,17 @@ type Config struct {
 	ConcurrencyLevels []int
 	Repetitions       int
 
+	// PartialLevels marks a run that was deliberately given a SUBSET of the
+	// configured concurrency sweep, so one host can take c=1 while another
+	// takes the rest.
+	//
+	// It relaxes the "must start at 1" rule below, and nothing else. The rule
+	// protects the REPORTED sweep, not each process: c=1 is where the trapdoor
+	// baselines legitimately win, and a plot without it is selection. That
+	// property belongs to the pooled result, so cmd/merge-results enforces it
+	// there and refuses to emit an Exp 1 document whose levels lack 1.
+	PartialLevels bool
+
 	// ShardCounts applies to ZK-Redact only. Baselines run once per concurrency
 	// level, since they have no equivalent knob.
 	ShardCounts []int
@@ -52,6 +63,17 @@ type Config struct {
 	// and both verification modes take the same path — so a mode sweep on its own
 	// measures nothing and reports it as a comparison.
 	BatchSizes []int
+
+	// VoteTransports applies to Ref[10] only: the transports its authorization
+	// is measured over.
+	//
+	// BOTH ARMS BELONG IN ONE RUN. in_process is the like-for-like control
+	// against the three schemes that authorize locally by design; fabric is the
+	// deployed cost. Reporting one alone misrepresents the comparison in one
+	// direction or the other, and running them as two separate experiments does
+	// not work: cmd/plot keeps only the newest document per experiment, so the
+	// second run would silently replace the first.
+	VoteTransports []string
 }
 
 // Ablation is one cell of the sharding x batching grid.
@@ -83,6 +105,26 @@ type Point struct {
 	// Kept separate from Ablation.Batching: batching is B > 1, while this is
 	// whether the aggregated pairing check ran, and the two are independent.
 	NativeBatchVerify bool `json:"native_batch_verify"`
+
+	// AuthCost is the STRUCTURAL cost of one authorization — blocks, round
+	// trips, signature verifications — for schemes that can report it.
+	//
+	// Recorded because the latency column alone is unreadable across these four
+	// systems: one of them waits on ledger consensus and three do not, and a
+	// duration does not say which. These counters are independent of block
+	// time, hardware and language, so a reader can re-derive the comparison
+	// under their own configuration instead of trusting ours.
+	AuthCost *scheme.AuthCost `json:"auth_cost,omitempty"`
+
+	// ConsensusBoundAuth repeats the scheme's own capability declaration on
+	// every row, so a plotted point cannot be separated from the fact that its
+	// authorization needed agreement among nodes.
+	ConsensusBoundAuth bool `json:"consensus_bound_auth"`
+
+	// VoteTransport names the transport this point was measured over, empty for
+	// a scheme with only one. A point measured in-process is a LOWER BOUND on a
+	// networked protocol's cost, and nothing else in the row says so.
+	VoteTransport string `json:"vote_transport,omitempty"`
 
 	Throughput float64         `json:"authorized_requests_per_second"`
 	Latency    metrics.Summary `json:"latency"`
@@ -124,7 +166,7 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 	if len(trace) == 0 {
 		return nil, fmt.Errorf("exp1: empty request trace")
 	}
-	if cfg.ConcurrencyLevels[0] != 1 {
+	if cfg.ConcurrencyLevels[0] != 1 && !cfg.PartialLevels {
 		return nil, fmt.Errorf(
 			"exp1: concurrency sweep must start at 1; the single-request point is " +
 				"where the trapdoor baselines legitimately lead, and omitting it makes " +
@@ -176,70 +218,97 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 			batchSizes = cfg.BatchSizes
 		}
 
-		for _, shards := range shardCounts {
-			if sharded && shards > 0 {
-				if err := resharder.Reshard(shards); err != nil {
-					return nil, fmt.Errorf("exp1: %s reshard to %d: %w", s.Name(), shards, err)
+		// The transport arm. Only Ref[10] has one; the other three authorize
+		// locally by design, so sweeping them over transports would fabricate a
+		// difference their designs cannot produce — the same rule the shard and
+		// batch sweeps follow.
+		transports := []string{""} // "" means "not applicable"
+		retransporter, switchable := s.(scheme.Retransporter)
+		if switchable && len(cfg.VoteTransports) > 0 {
+			transports = cfg.VoteTransports
+		}
+
+		for _, tName := range transports {
+			if switchable && tName != "" {
+				if err := retransporter.Retransport(tName); err != nil {
+					return nil, fmt.Errorf("exp1: %s switch to transport %s: %w",
+						s.Name(), tName, err)
 				}
 			}
 
-			for _, batch := range batchSizes {
-				if rebatchable && batch > 0 {
-					if err := rebatcher.Rebatch(batch); err != nil {
-						return nil, fmt.Errorf("exp1: %s rebatch to %d: %w", s.Name(), batch, err)
+			for _, shards := range shardCounts {
+				if sharded && shards > 0 {
+					if err := resharder.Reshard(shards); err != nil {
+						return nil, fmt.Errorf("exp1: %s reshard to %d: %w", s.Name(), shards, err)
 					}
 				}
 
-				for _, native := range batchModes {
-					if tunable {
-						if err := tuner.SetNativeBatchVerify(native); err != nil {
-							return nil, fmt.Errorf("exp1: %s set batch mode %v: %w", s.Name(), native, err)
+				for _, batch := range batchSizes {
+					if rebatchable && batch > 0 {
+						if err := rebatcher.Rebatch(batch); err != nil {
+							return nil, fmt.Errorf("exp1: %s rebatch to %d: %w", s.Name(), batch, err)
 						}
 					}
 
-					for _, conc := range cfg.ConcurrencyLevels {
-						for rep := 0; rep < cfg.Repetitions; rep++ {
-							replay := replayTrace(trace, conc, rep)
+					for _, native := range batchModes {
+						if tunable {
+							if err := tuner.SetNativeBatchVerify(native); err != nil {
+								return nil, fmt.Errorf("exp1: %s set batch mode %v: %w", s.Name(), native, err)
+							}
+						}
 
-							// Requester-side work and per-replay state resets happen
-							// here, OUTSIDE the timed region. For ZK-Redact that is
-							// proof generation, which costs an order of magnitude more
-							// than the verification Exp 1 measures.
-							if prep, ok := s.(scheme.TracePreparer); ok {
-								if err := prep.PrepareTrace(ctx, replay); err != nil {
-									return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+						for _, conc := range cfg.ConcurrencyLevels {
+							for rep := 0; rep < cfg.Repetitions; rep++ {
+								replay := replayTrace(trace, conc, rep)
+
+								// Requester-side work and per-replay state resets happen
+								// here, OUTSIDE the timed region. For ZK-Redact that is
+								// proof generation, which costs an order of magnitude more
+								// than the verification Exp 1 measures.
+								if prep, ok := s.(scheme.TracePreparer); ok {
+									if err := prep.PrepareTrace(ctx, replay); err != nil {
+										return nil, fmt.Errorf("exp1: %s prepare trace: %w", s.Name(), err)
+									}
 								}
-							}
 
-							p, err := runOne(ctx, s, replay, conc)
-							if err != nil {
-								return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
-							}
-							p.Repetition = rep
-							p.ShardCount = shards
-							p.BatchSize = batch
-							p.NativeBatchVerify = native
-
-							// Recorded per point, so a plot cannot mix the arms.
-							// Sharding is "on" above one shard; batching is on above
-							// a batch of one, which is the config's own disabled arm.
-							if tunable || sharded || rebatchable {
-								p.Ablation = &Ablation{
-									Sharding: shards > 1,
-									Batching: batch > 1,
+								p, err := runOne(ctx, s, replay, conc)
+								if err != nil {
+									return nil, fmt.Errorf("exp1: %s at concurrency %d: %w", s.Name(), conc, err)
 								}
-							}
+								p.Repetition = rep
+								p.ConsensusBoundAuth = s.Capabilities().ConsensusBoundAuth
+								if switchable {
+									p.VoteTransport = retransporter.Transport()
+								}
+								if r, ok := s.(scheme.AuthCostReporter); ok {
+									cost := r.AuthCost()
+									p.AuthCost = &cost
+								}
+								p.ShardCount = shards
+								p.BatchSize = batch
+								p.NativeBatchVerify = native
 
-							// The scaling baseline is per shard count: comparing a
-							// 64-shard run against a 1-shard single-worker measurement
-							// would report the sharding speedup as scaling efficiency.
-							// Pinned to the first batch size and mode for the same
-							// reason — one baseline cannot span two configurations.
-							if conc == 1 && shards == baselineShards(shardCounts) &&
-								native == batchModes[0] && batch == batchSizes[0] {
-								baseSamples = append(baseSamples, p.Throughput)
+								// Recorded per point, so a plot cannot mix the arms.
+								// Sharding is "on" above one shard; batching is on above
+								// a batch of one, which is the config's own disabled arm.
+								if tunable || sharded || rebatchable {
+									p.Ablation = &Ablation{
+										Sharding: shards > 1,
+										Batching: batch > 1,
+									}
+								}
+
+								// The scaling baseline is per shard count: comparing a
+								// 64-shard run against a 1-shard single-worker measurement
+								// would report the sharding speedup as scaling efficiency.
+								// Pinned to the first batch size and mode for the same
+								// reason — one baseline cannot span two configurations.
+								if conc == 1 && shards == baselineShards(shardCounts) &&
+									native == batchModes[0] && batch == batchSizes[0] {
+									baseSamples = append(baseSamples, p.Throughput)
+								}
+								res.Points = append(res.Points, p)
 							}
-							res.Points = append(res.Points, p)
 						}
 					}
 				}

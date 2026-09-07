@@ -114,9 +114,19 @@ type ledger struct {
 
 	blocks []*Block
 
-	// current maps a block's accumulator element to its witness against the
-	// CURRENT accumulator state. Maintained by the ledger owner, which is whose
-	// job witness upkeep is in an RSA accumulator.
+	// current caches a block's witness against the CURRENT accumulator state.
+	//
+	// A CACHE, NOT AN INVARIANT. Every accumulator update invalidates every
+	// witness, and refreshing all of them eagerly cost O(n log n) 3072-bit
+	// exponentiations per redaction — 13.66 s at 1,000 blocks, ~37 min at
+	// 100,000. Algorithm 5 does not ask for it: Ref[22].md:441 has Modify give
+	// w_{i'} for the MODIFIED block, and line 506 defines w_{i'} as that
+	// block's NI-PoE/NI-PoKE tuple. Refreshing the other n-1 was our
+	// bookkeeping to keep ValChain happy, and charging the baseline for it
+	// would report our upkeep as its cryptographic cost.
+	//
+	// Entries are dropped when the accumulator moves and recomputed on demand,
+	// one exponentiation each via the regulator's phi(N).
 	current map[string]*big.Int
 
 	// lastDeletion holds w_i from the most recent Delete: the four proofs of
@@ -194,9 +204,9 @@ func (l *ledger) ValApp(b *Block) error {
 	if !l.key.Verify(b.Hash, b.Content(), b.Check) {
 		return fmt.Errorf("ref22: block %d: chameleon hash does not verify", b.Seq)
 	}
-	w, ok := l.current[string(b.element())]
-	if !ok {
-		return fmt.Errorf("ref22: block %d has no current accumulator witness", b.Seq)
+	w, err := l.witnessFor(b.element())
+	if err != nil {
+		return fmt.Errorf("ref22: block %d: %w", b.Seq, err)
 	}
 	// With the published nonce, so verification is one primality test rather
 	// than a ~177-candidate search. Searching per block made ledger
@@ -256,9 +266,12 @@ func (l *ledger) Modify(seq uint64, newPayload []byte) error {
 	_ = witness
 
 	// Every other block's witness is now stale: an RSA accumulator invalidates
-	// them on any update. Regenerating them is part of what Modify costs, and
-	// skipping it would make ValChain fail for reasons unrelated to redaction.
-	return l.regenerateWitnesses()
+	// them on any update. They are DROPPED rather than rebuilt — witnessFor
+	// recomputes one on demand in a single exponentiation when a validator
+	// actually asks for it. Rebuilding all n here is not part of Algorithm 5
+	// (Ref[22].md:441) and dominated the redaction cost Exp 2 reports.
+	l.invalidateWitnesses()
+	return nil
 }
 
 // ValMod is Algorithm 6: validate one modified block, including that the
@@ -390,9 +403,7 @@ func (l *ledger) Delete(positions []uint64) (adaptations int, err error) {
 	}
 	l.lastDeletion = proof
 
-	if err := l.regenerateWitnesses(); err != nil {
-		return adaptations, err
-	}
+	l.invalidateWitnesses()
 	return adaptations, nil
 }
 
@@ -610,6 +621,34 @@ func (l *ledger) ValChain() (blocksVisited int, err error) {
 // Required after any accumulator update: RSA accumulators invalidate all
 // outstanding witnesses. This is real work Ref[22] pays on every redaction, and
 // it is one reason its Modify cost is not flat.
+// invalidateWitnesses drops the cache after the accumulator moves.
+func (l *ledger) invalidateWitnesses() {
+	if len(l.current) > 0 {
+		l.current = make(map[string]*big.Int, len(l.blocks))
+	}
+}
+
+// witnessFor returns one block's membership witness, computing it if the cache
+// was invalidated by a redaction.
+//
+// The regulator holds phi(N) (Ref[22] §3, and pkg/accumulator Config.GroupOrder),
+// so this is ONE exponentiation. Without it the fallback walks every element,
+// which is the cost a party without the trapdoor genuinely pays — so the
+// fallback is kept rather than turned into an error.
+func (l *ledger) witnessFor(element []byte) (*big.Int, error) {
+	if w, ok := l.current[string(element)]; ok {
+		return w, nil
+	}
+	w, err := l.acc.TrapdoorMembershipWitness(element)
+	if err != nil {
+		if w, err = l.acc.MembershipWitness(element); err != nil {
+			return nil, fmt.Errorf("no current accumulator witness: %w", err)
+		}
+	}
+	l.current[string(element)] = w
+	return w, nil
+}
+
 func (l *ledger) regenerateWitnesses() error {
 	// Computed as a batch. One witness at a time is O(n^2) exponentiations, and
 	// Exp 3 builds ledgers of 10,000 blocks — at which point this baseline

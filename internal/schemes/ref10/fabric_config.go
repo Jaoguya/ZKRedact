@@ -14,19 +14,28 @@ import (
 // the output — the numbers are real, they just describe the wrong deployment —
 // so every field is required and a missing one stops Setup.
 
-// gatewayConfigFrom extracts gateway settings when the fabric transport is
-// selected.
+// gatewayConfigFrom extracts gateway settings whenever they are supplied.
 //
-// Returns (nil, nil) for the in-process transport, which needs none.
+// PARSED REGARDLESS OF THE CONFIGURED TRANSPORT. Exp 1 sweeps Ref[10] over
+// exp1_vote_transports and calls Retransport("fabric") mid-run, which needs the
+// settings Setup captured. Parsing them only when vote_transport was already
+// "fabric" left gatewayCfg nil under the in-process setting, so the sweep's
+// fabric arm failed with "no gateway configuration was supplied" on a config
+// that carried a complete gateway block.
+//
+// Returns (nil, nil) only when no gateway block is present AND the transport in
+// force does not need one. A fabric transport without settings is still
+// refused, rather than falling back to in-process voting and reporting a lower
+// bound as a measurement.
 func gatewayConfigFrom(params map[string]any) (*GatewayConfig, error) {
 	name, _ := params["vote_transport"].(string)
-	if name != transportFabric {
-		return nil, nil
-	}
 
 	raw, ok := params["gateway"]
 	if !ok {
-		return nil, ErrGatewayUnconfigured
+		if name == transportFabric {
+			return nil, ErrGatewayUnconfigured
+		}
+		return nil, nil
 	}
 	m, ok := raw.(map[string]any)
 	if !ok {

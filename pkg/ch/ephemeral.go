@@ -120,12 +120,46 @@ func EphemeralHash(curve elliptic.Curve, Xx, Xy, Yx, Yy *big.Int, ctx, m []byte,
 	return &Value{X: hx, Y: hy}, nil
 }
 
-// Hash computes the chameleon hash under the key's current ephemeral component.
+// EphemeralPointFor returns the ephemeral component in force for a message:
+// y_s = H2(x ‖ m_s) and Y_s = y_s·P.
+//
+// PER MESSAGE, NOT PER KEY. Ref[13] §3.2.3 stores the ephemeral point WITH the
+// block — B_s = (ch_s, m_s, Y_s, r_s) — and Eq. 8 computes the block's trapdoor
+// from y_s, the component belonging to that block. A key-wide "current Y" can
+// serve only one block at a time, which is what a ledger never has.
+//
+// Callers hashing a block need Y_s to record alongside it, so this is exported:
+// asking the key for its Public() Y after a Hash would hand back a component
+// that says nothing about the message just hashed.
+func (k *EphemeralKey) EphemeralPointFor(m []byte) (y, yx, yy *big.Int, err error) {
+	if k == nil || k.x == nil {
+		return nil, nil, nil, errors.New("ch/ephemeral: nil key")
+	}
+	n := k.Curve.Params().N
+	y = deriveEphemeral(k.x, m, n)
+	if y.Sign() == 0 {
+		return nil, nil, nil, errors.New("ch/ephemeral: derived ephemeral component is zero")
+	}
+	yx, yy = k.Curve.ScalarBaseMult(y.Bytes())
+	return y, yx, yy, nil
+}
+
+// Hash computes the chameleon hash of m under the ephemeral component derived
+// for m, per Ref[13] Eq. 5.
+//
+// The component comes from the MESSAGE, not from mutable key state. Eq. 9
+// derives the post-redaction component as y'_s = H2(x ‖ m'_s); deriving the
+// pre-redaction one by the same rule is what lets a block be redacted twice,
+// and lets two different blocks be redacted at all.
 func (k *EphemeralKey) Hash(ctx, m []byte, r *big.Int) (*Value, error) {
 	if k == nil {
 		return nil, errors.New("ch/ephemeral: nil key")
 	}
-	return EphemeralHash(k.Curve, k.Xx, k.Xy, k.Yx, k.Yy, ctx, m, r)
+	_, yx, yy, err := k.EphemeralPointFor(m)
+	if err != nil {
+		return nil, err
+	}
+	return EphemeralHash(k.Curve, k.Xx, k.Xy, yx, yy, ctx, m, r)
 }
 
 // Verify checks a hash against a message and its randomness.
@@ -163,26 +197,37 @@ func (k *EphemeralKey) EphemeralAdapt(ctx, oldM []byte, oldR EphemeralRandomness
 		return out, ErrZeroRandomness
 	}
 
-	// y' = H2(x ‖ m') mod n, deterministic per (trapdoor, new message).
+	// y' = H2(x ‖ m') mod n, deterministic per (trapdoor, new message). Eq. 9.
 	yPrime := deriveEphemeral(k.x, newM, n)
 	if yPrime.Sign() == 0 {
 		return out, errors.New("ch/ephemeral: derived ephemeral component is zero")
 	}
 	ypx, ypy := k.Curve.ScalarBaseMult(yPrime.Bytes())
 
+	// y_s for the OLD message, by the same rule. Eq. 8 needs the component that
+	// belongs to THIS block, which is why it cannot be read off the key: a
+	// ledger redacts many blocks and a key holds one current component.
+	yOld, yoldx, yoldy, err := k.EphemeralPointFor(oldM)
+	if err != nil {
+		return out, err
+	}
+
 	// e over the OLD ephemeral point, e' over the new one.
 	e := ephemeralChallenge(k.Curve, ctx, oldM, oldR.Yx, oldR.Yy)
 	ePrime := ephemeralChallenge(k.Curve, ctx, newM, ypx, ypy)
 
-	// The y matching oldR.Y is the key's current component; a caller passing an
-	// unrelated Y would silently produce a non-collision, so refuse it.
-	if k.Yx.Cmp(oldR.Yx) != 0 || k.Yy.Cmp(oldR.Yy) != 0 {
+	// The randomness must carry the point this trapdoor derives for oldM. A
+	// caller passing an unrelated Y would silently produce a non-collision.
+	// Checking against the DERIVED point rather than a key-wide "current Y" is
+	// what makes the check correct for every block rather than the last one
+	// adapted — the previous form rejected every block but one.
+	if yoldx.Cmp(oldR.Yx) != 0 || yoldy.Cmp(oldR.Yy) != 0 {
 		return out, errors.New(
 			"ch/ephemeral: randomness carries an ephemeral point this key did not produce")
 	}
 
 	// lhs = e(x+y) + r
-	sum := new(big.Int).Add(k.x, k.y)
+	sum := new(big.Int).Add(k.x, yOld)
 	sum.Mod(sum, n)
 	lhs := new(big.Int).Mul(e, sum)
 	lhs.Add(lhs, oldR.R)
@@ -200,10 +245,12 @@ func (k *EphemeralKey) EphemeralAdapt(ctx, oldM []byte, oldR EphemeralRandomness
 		return out, ErrZeroRandomness
 	}
 
-	// Advance the key's ephemeral state, as Ref[13] does per block.
-	k.y = yPrime
-	k.Yx, k.Yy = ypx, ypy
-
+	// The new ephemeral state travels with the BLOCK, in the returned
+	// randomness — B'_s = (ch_s, m'_s, Y'_s, r'_s), Ref[13] §3.2.3. The key is
+	// deliberately NOT mutated: advancing a key-wide component here made every
+	// other block's stored Y stale, so a second redaction against a different
+	// block was refused and counted as a failure. Ref[13] indexes y and Y by
+	// the block s throughout; nothing about them is key-wide.
 	return EphemeralRandomness{R: rPrime, Yx: ypx, Yy: ypy}, nil
 }
 

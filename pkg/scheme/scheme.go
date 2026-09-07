@@ -137,11 +137,88 @@ type Capabilities struct {
 	// StateFreshnessCheck: revalidation that the authorized state still holds at
 	// execution time.
 	StateFreshnessCheck bool
+
+	// ConsensusBoundAuth: authorization requires agreement among nodes, so it
+	// cannot complete without the ledger.
+	//
+	// EXP 1'S LATENCY COLUMN IS UNREADABLE WITHOUT THIS. Only Ref[10] declares
+	// it: its Algorithm 3 vote genuinely needs consensus, while ZK-Redact's
+	// Phase 2/3, Ref[13]'s trapdoor check and Ref[22]'s key check complete
+	// in-process by design. A reader comparing 2 s against 1.34 ms is otherwise
+	// comparing a networked protocol with a function call and has nothing in
+	// the results telling them so — and the difference is the finding, not an
+	// implementation gap.
+	//
+	// A scheme declaring this is expected to record non-zero ConsensusBlocks
+	// and RoundTrips in AuthCost.
+	ConsensusBoundAuth bool
+}
+
+// AuthCost is the STRUCTURAL cost of one authorization: what the scheme did,
+// counted, rather than how long it took.
+//
+// WHY THIS EXISTS. Wall-clock latency for Ref[10] is dominated by block
+// cadence, a network parameter, and every figure it produces is therefore only
+// meaningful beside the block time that produced it. Counting the blocks, round
+// trips and signature verifications instead gives a reader something they can
+// re-derive under their own configuration, and makes the asymmetry visible
+// rather than buried inside a duration: three of the four systems report zero
+// blocks and zero round trips because they genuinely touch no network.
+//
+// It advantages no scheme. Each reports what its own design performs.
+type AuthCost struct {
+	// ConsensusBlocks is how many ledger blocks one authorization waits for.
+	ConsensusBlocks int `json:"consensus_blocks"`
+
+	// RoundTrips is how many times one authorization crosses the network.
+	RoundTrips int `json:"round_trips"`
+
+	// SignatureVerifications counts the public-key verifications performed.
+	// Non-zero for every scheme; it is the part of the work that does not
+	// depend on the network at all.
+	SignatureVerifications int `json:"signature_verifications"`
+}
+
+// AuthCostReporter is an OPTIONAL interface for a scheme that can report the
+// structural cost of one authorization.
+//
+// Optional rather than part of Scheme because a scheme that cannot count these
+// honestly must not guess: a fabricated zero would read as "touches no network"
+// and that is exactly the claim the counters exist to substantiate.
+type AuthCostReporter interface {
+	// AuthCost reports the structural cost of a single authorization under the
+	// scheme's CURRENT configuration. It must not be a stored constant if the
+	// configuration can change it — Ref[10]'s transport changes it.
+	AuthCost() AuthCost
 }
 
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
+
+// Retransporter is an OPTIONAL interface for a scheme whose authorization can
+// travel by more than one transport.
+//
+// WHY EXP 1 SWEEPS THIS RATHER THAN RUNNING TWICE. Only Ref[10] implements it,
+// and its two transports answer different questions: in_process is the
+// like-for-like control against the three schemes that authorize locally by
+// design, while fabric is the deployed cost. Publishing either alone
+// misrepresents the comparison — the first understates Ref[10], the second
+// compares a networked protocol against three function calls.
+//
+// They must be arms of ONE run, not two. cmd/plot keeps only the newest results
+// document per experiment, deliberately, so that runs under different configs
+// are never pooled — two separate runs would mean the second silently replaced
+// the first.
+type Retransporter interface {
+	// Retransport switches the authorization transport. It must rebuild
+	// whatever the transport owns rather than mutating a field a running
+	// component already snapshotted.
+	Retransport(name string) error
+
+	// Transport reports the transport currently in use, for the results row.
+	Transport() string
+}
 
 // Resharder is an OPTIONAL interface for a scheme with logical proof shards.
 //

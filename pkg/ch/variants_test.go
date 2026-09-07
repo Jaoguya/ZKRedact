@@ -3,9 +3,13 @@ package ch
 import (
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"testing"
 )
+
+// errNoCollision reports an adaptation that verified against the wrong hash.
+var errNoCollision = errors.New("adapted randomness does not collide onto the original hash")
 
 // -----------------------------------------------------------------------------
 // Ref[13] — ephemeral trapdoor (Ref[13].md Eq. 5)
@@ -30,8 +34,14 @@ func TestEphemeralHashMatchesPaperEquation(t *testing.T) {
 
 	// Independently compute g^{H1(...)·(x+y) + r}, the right-hand form of Eq. 5,
 	// so the implementation is checked against the paper rather than itself.
-	e := ephemeralChallenge(curve, ctx, m, k.Yx, k.Yy)
-	sum := new(big.Int).Add(k.x, k.y)
+	// y_s = H2(x ‖ m_s), the component Eq. 5 hashes m_s under. Derived from the
+	// message, not read off the key: Ref[13] indexes y by the block.
+	y, yx, yy, err := k.EphemeralPointFor(m)
+	if err != nil {
+		t.Fatalf("EphemeralPointFor: %v", err)
+	}
+	e := ephemeralChallenge(curve, ctx, m, yx, yy)
+	sum := new(big.Int).Add(k.x, y)
 	sum.Mod(sum, n)
 	exp := new(big.Int).Mul(e, sum)
 	exp.Add(exp, r)
@@ -52,7 +62,11 @@ func TestEphemeralAdaptProducesCollision(t *testing.T) {
 	newM := []byte("[redacted]")
 
 	r, _ := NewRandomness(curve, rand.Reader)
-	oldR := EphemeralRandomness{R: r, Yx: k.Yx, Yy: k.Yy}
+	_, oldYx, oldYy, err := k.EphemeralPointFor(oldM)
+	if err != nil {
+		t.Fatalf("EphemeralPointFor: %v", err)
+	}
+	oldR := EphemeralRandomness{R: r, Yx: oldYx, Yy: oldYy}
 
 	oldH, err := k.Hash(ctx, oldM, r)
 	if err != nil {
@@ -74,27 +88,79 @@ func TestEphemeralAdaptProducesCollision(t *testing.T) {
 }
 
 // TestEphemeralAdaptRotatesY covers the behaviour that distinguishes this
-// construction from the classic one: Y is per-block state and must change.
+// construction from the classic one: Y is per-BLOCK state, derived from the
+// message, and must change when the message does.
+//
+// It also pins the invariant that makes a ledger redactable at all. Adapt must
+// NOT advance a key-wide component: Ref[13] §3.2.3 stores Y_s with the block
+// (B_s = (ch_s, m_s, Y_s, r_s)) and Eq. 8 uses the y_s belonging to that block.
+// A key-wide Y serves one block, so mutating it here left every other block
+// carrying a point the key would no longer accept — Exp 2 redacted 20 blocks
+// and committed 1.
 func TestEphemeralAdaptRotatesY(t *testing.T) {
 	curve := testCurve()
 	k, _ := EphemeralKeyGen(curve, rand.Reader)
 
 	ctx := []byte("ctx")
 	r, _ := NewRandomness(curve, rand.Reader)
-	oldR := EphemeralRandomness{R: r, Yx: k.Yx, Yy: k.Yy}
+	_, oldYx, oldYy, err := k.EphemeralPointFor([]byte("m"))
+	if err != nil {
+		t.Fatalf("EphemeralPointFor: %v", err)
+	}
+	oldR := EphemeralRandomness{R: r, Yx: oldYx, Yy: oldYy}
 
-	beforeX, beforeY := new(big.Int).Set(k.Yx), new(big.Int).Set(k.Yy)
+	keyYx, keyYy := new(big.Int).Set(k.Yx), new(big.Int).Set(k.Yy)
 
 	newR, err := k.EphemeralAdapt(ctx, []byte("m"), oldR, []byte("m'"))
 	if err != nil {
 		t.Fatalf("EphemeralAdapt: %v", err)
 	}
 
-	if newR.Yx.Cmp(beforeX) == 0 && newR.Yy.Cmp(beforeY) == 0 {
+	if newR.Yx.Cmp(oldYx) == 0 && newR.Yy.Cmp(oldYy) == 0 {
 		t.Errorf("ephemeral point Y did not change; the per-redaction key derivation is missing")
 	}
-	if k.Yx.Cmp(newR.Yx) != 0 || k.Yy.Cmp(newR.Yy) != 0 {
-		t.Errorf("key state was not advanced to the new ephemeral point")
+	if k.Yx.Cmp(keyYx) != 0 || k.Yy.Cmp(keyYy) != 0 {
+		t.Errorf("EphemeralAdapt mutated key-wide ephemeral state; Y_s belongs to the block")
+	}
+}
+
+// TestEphemeralAdaptIndependentBlocks is the regression for the defect Exp 2
+// and Exp 3 hit: two blocks hashed under the same key must BOTH be adaptable,
+// in either order, with neither adaptation disturbing the other.
+func TestEphemeralAdaptIndependentBlocks(t *testing.T) {
+	curve := testCurve()
+	k, _ := EphemeralKeyGen(curve, rand.Reader)
+	ctx := []byte("ctx")
+
+	adapt := func(oldM, newM string) error {
+		r, _ := NewRandomness(curve, rand.Reader)
+		_, yx, yy, err := k.EphemeralPointFor([]byte(oldM))
+		if err != nil {
+			return err
+		}
+		oldR := EphemeralRandomness{R: r, Yx: yx, Yy: yy}
+		h, err := k.Hash(ctx, []byte(oldM), r)
+		if err != nil {
+			return err
+		}
+		newR, err := k.EphemeralAdapt(ctx, []byte(oldM), oldR, []byte(newM))
+		if err != nil {
+			return err
+		}
+		if !k.Verify(ctx, []byte(newM), newR, h) {
+			return errNoCollision
+		}
+		return nil
+	}
+
+	if err := adapt("block-A", "A redacted"); err != nil {
+		t.Fatalf("first block: %v", err)
+	}
+	if err := adapt("block-B", "B redacted"); err != nil {
+		t.Fatalf("second block, after the first was adapted: %v", err)
+	}
+	if err := adapt("block-A", "A redacted twice"); err != nil {
+		t.Fatalf("first block again: %v", err)
 	}
 }
 
@@ -106,7 +172,11 @@ func TestEphemeralVerifyNeedsCorrectY(t *testing.T) {
 
 	ctx := []byte("ctx")
 	r, _ := NewRandomness(curve, rand.Reader)
-	staleY := EphemeralRandomness{R: r, Yx: new(big.Int).Set(k.Yx), Yy: new(big.Int).Set(k.Yy)}
+	_, mYx, mYy, err := k.EphemeralPointFor([]byte("m"))
+	if err != nil {
+		t.Fatalf("EphemeralPointFor: %v", err)
+	}
+	staleY := EphemeralRandomness{R: r, Yx: mYx, Yy: mYy}
 
 	h, _ := k.Hash(ctx, []byte("m"), r)
 	newR, err := k.EphemeralAdapt(ctx, []byte("m"), staleY, []byte("m'"))

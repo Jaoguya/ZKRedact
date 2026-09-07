@@ -30,7 +30,8 @@ type tunableScheme struct {
 	native bool
 
 	// seen records one entry per (shards, batch, native) actually exercised.
-	seen map[string]int
+	seen      map[string]int
+	transport string
 }
 
 func newTunableScheme() *tunableScheme {
@@ -38,6 +39,19 @@ func newTunableScheme() *tunableScheme {
 }
 
 func (f *tunableScheme) Name() string { return "fake" }
+
+func (f *tunableScheme) Retransport(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transport = name
+	return nil
+}
+
+func (f *tunableScheme) Transport() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.transport
+}
 
 func (f *tunableScheme) Capabilities() scheme.Capabilities {
 	// PolicyBound false keeps the all-granted guard out of the way; the scheme
@@ -49,7 +63,7 @@ func (f *tunableScheme) Setup(context.Context, scheme.SetupParams) error { retur
 
 func (f *tunableScheme) Authorize(_ context.Context, req *scheme.Request) (*scheme.Authorization, error) {
 	f.mu.Lock()
-	f.seen[fmt.Sprintf("%d/%d/%v", f.shards, f.batch, f.native)]++
+	f.seen[fmt.Sprintf("%d/%d/%v/%s", f.shards, f.batch, f.native, f.transport)]++
 	f.mu.Unlock()
 
 	// Deny a fixed minority: a scheme that grants everything trips one guard,
@@ -106,6 +120,7 @@ func TestRunSweepsEveryConfiguredDimension(t *testing.T) {
 		ShardCounts:       []int{1, 4},
 		BatchSizes:        []int{1, 8},
 		NativeBatchVerify: []bool{false, true},
+		VoteTransports:    []string{"in_process", "fabric"},
 	}
 
 	f := newTunableScheme()
@@ -114,21 +129,39 @@ func TestRunSweepsEveryConfiguredDimension(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// 2 shards x 2 batch sizes x 2 modes x 2 concurrency levels x 1 repetition.
-	if want := 16; len(res.Points) != want {
+	// 2 transports x 2 shards x 2 batch sizes x 2 modes x 2 concurrency levels
+	// x 1 repetition.
+	if want := 32; len(res.Points) != want {
 		t.Errorf("got %d points, want %d — a declared sweep is not being executed",
 			len(res.Points), want)
 	}
 
 	// Every cell of the knob grid must have been exercised at the scheme.
-	for _, shards := range cfg.ShardCounts {
-		for _, batch := range cfg.BatchSizes {
-			for _, native := range cfg.NativeBatchVerify {
-				key := fmt.Sprintf("%d/%d/%v", shards, batch, native)
-				if f.seen[key] == 0 {
-					t.Errorf("configuration %s never reached the scheme", key)
+	for _, tName := range cfg.VoteTransports {
+		for _, shards := range cfg.ShardCounts {
+			for _, batch := range cfg.BatchSizes {
+				for _, native := range cfg.NativeBatchVerify {
+					key := fmt.Sprintf("%d/%d/%v/%s", shards, batch, native, tName)
+					if f.seen[key] == 0 {
+						t.Errorf("configuration %s never reached the scheme", key)
+					}
 				}
 			}
+		}
+	}
+
+	// BOTH TRANSPORT ARMS MUST BE DISTINGUISHABLE IN THE OUTPUT. A sweep that
+	// runs both and labels neither produces one curve out of two protocols —
+	// the in-process arm is a lower bound on the networked one, and pooling
+	// them reports a Ref[10] cost that no configuration produced.
+	byTransport := map[string]int{}
+	for _, p := range res.Points {
+		byTransport[p.VoteTransport]++
+	}
+	for _, tName := range cfg.VoteTransports {
+		if byTransport[tName] == 0 {
+			t.Errorf("no point records vote_transport %q; the arms cannot be "+
+				"separated in a plot", tName)
 		}
 	}
 }

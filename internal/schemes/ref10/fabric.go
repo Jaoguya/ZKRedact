@@ -113,21 +113,17 @@ func (t *fabricTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, 
 		return nil, fmt.Errorf("ref10: vote round has no members")
 	}
 
-	// The round is opened by the requester's session. Any member's identity
-	// would do for Init, but using the first member keeps the ordering
-	// deterministic across runs.
-	opener, err := t.session(r.Members[0].Identity.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	roundJSON, err := encodeRound(r)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := opener.Submit(ctx, "Init", roundJSON); err != nil {
-		return nil, fmt.Errorf("ref10: open round %s: %w", r.ContractAddr, err)
-	}
+	// NO INIT TRANSACTION. Algorithm 3 line 4 says "Store N_auth in con_k", and
+	// storing it cost a whole block before any vote could read it — on an
+	// unsaturated network, a full BatchTimeout of pure latency per
+	// authorization. N_auth is a pure function of addr(con_k), the registered
+	// node set and A_r (Eq. 7), so the contract recomputes it per ballot
+	// instead. What the stored round also carried, {req, sigma}, now travels on
+	// the ballot with the CA's signature over it — which is the trust anchor
+	// Algorithm 4 line 1 actually names.
+	//
+	// A round therefore costs TWO blocks: ballots, then Close. Recorded as a
+	// deviation in docs/baselines/ref10-emt.md.
 
 	// Ballots are submitted CONCURRENTLY, because Ref[10]'s committee members
 	// are independent nodes. Algorithm 3 does not serialize them, and a loop
@@ -160,23 +156,15 @@ func (t *fabricTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, 
 				return
 			}
 
-			// Algorithm 4 line 1: read {req, sigma} from the ledger and verify
-			// it there. A member that took the requester's word for the policy
-			// would not be voting on anything.
-			raw, err := sess.Evaluate(ctx, "Query", r.ContractAddr)
-			if err != nil {
-				results <- voteResult{err: fmt.Errorf("ref10: query round for %s: %w", m.Identity.ID, err)}
-				return
-			}
-			var onChain chainRound
-			if err := json.Unmarshal(raw, &onChain); err != nil {
-				results <- voteResult{err: fmt.Errorf("ref10: decode round for %s: %w", m.Identity.ID, err)}
-				return
-			}
-
-			// The CA signature is checked against the local certificate, not
-			// against what the ledger returned, so a tampered on-chain round
-			// cannot talk a member into voting.
+			// Algorithm 4 line 1: verify {req, sigma} against P_C from the CA.
+			//
+			// This used to Evaluate("Query") first, to read the round from the
+			// ledger. It never decided anything — the signature was always
+			// checked against the local certificate, precisely so a tampered
+			// on-chain round could not talk a member into voting — so the read
+			// was a round trip whose result was discarded. What makes a member
+			// more than a rubber stamp is the CA signature below, and it is
+			// verified here exactly as before.
 			if !r.CA.verifyCert(r.Cert) {
 				results <- voteResult{}
 				return
@@ -186,14 +174,14 @@ func (t *fabricTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, 
 			approve := r.Cert.Granted()
 
 			// Line 6: xi_j.
-			msg := voteMessage(r.ContractAddr, r.RequestID, approve)
+			msg := voteMessage(r.ContractAddr, r.RequestID, certDigest(r.Cert), approve)
 			xi, err := m.Key.Sign(msg, nil)
 			if err != nil {
 				results <- voteResult{err: fmt.Errorf("ref10: vote signature for %s: %w", m.Identity.ID, err)}
 				return
 			}
 
-			ballotJSON, err := encodeBallot(m.Identity.ID, approve, xi)
+			ballotJSON, err := encodeBallot(m.Identity.ID, approve, r, xi)
 			if err != nil {
 				results <- voteResult{err: err}
 				return
@@ -278,17 +266,18 @@ func (t *fabricTransport) Close() error {
 // identical to the contract's. TestWireFormatMatchesChaincode pins the JSON.
 // -----------------------------------------------------------------------------
 
-type chainRound struct {
-	ContractAddr  string          `json:"contract_addr"`
-	RequestID     string          `json:"request_id"`
-	TargetTxID    string          `json:"target_tx_id"`
-	RequesterID   string          `json:"requester_id"`
-	Cert          chainPolicyCert `json:"cert"`
-	Committee     []string        `json:"committee"`
-	CommitteeSize int             `json:"committee_size"`
-	Threshold     int             `json:"threshold"`
-	Closed        bool            `json:"closed"`
-	Approved      bool            `json:"approved"`
+// chainRoundPolicy is registered once at setup: the protocol parameters a
+// voter must not be able to choose, plus the CA key that makes P_C checkable.
+//
+// These left the per-round payload when Init did. A voter that could name its
+// own threshold would authorize alone, and one that could name its own
+// committee size would shrink N_auth until it held a majority — so they live in
+// contract state that voting never writes.
+type chainRoundPolicy struct {
+	CommitteeSize int    `json:"committee_size"`
+	Threshold     int    `json:"threshold"`
+	CAPubX        string `json:"ca_pub_x"`
+	CAPubY        string `json:"ca_pub_y"`
 }
 
 type chainPolicyCert struct {
@@ -300,13 +289,24 @@ type chainPolicyCert struct {
 	PolicyID       string `json:"policy_id"`
 	PolicyVer      uint64 `json:"policy_ver"`
 	Attributes     string `json:"attributes"`
+
+	// SigE, SigS carry the CA's signature. Dropping them here is what made the
+	// contract accept an unsigned certificate — the CA signed P_C and the
+	// encoder discarded the signature at the boundary.
+	SigE string `json:"sig_e"`
+	SigS string `json:"sig_s"`
 }
 
+// chainBallot is one vote together with the request it votes on. The request
+// rides with the ballot because no stored round holds it any more.
 type chainBallot struct {
-	NodeID  string `json:"node_id"`
-	Approve bool   `json:"approve"`
-	E       string `json:"e"`
-	S       string `json:"s"`
+	NodeID     string          `json:"node_id"`
+	Approve    bool            `json:"approve"`
+	RequestID  string          `json:"request_id"`
+	TargetTxID string          `json:"target_tx_id"`
+	Cert       chainPolicyCert `json:"cert"`
+	E          string          `json:"e"`
+	S          string          `json:"s"`
 }
 
 type chainNode struct {
@@ -316,41 +316,56 @@ type chainNode struct {
 	PubY       string            `json:"pub_y"`
 }
 
-func encodeRound(r *voteRound) (string, error) {
-	cr := chainRound{
-		ContractAddr: r.ContractAddr,
-		RequestID:    r.RequestID,
-		TargetTxID:   r.Cert.TargetTxID,
-		RequesterID:  r.Cert.RequesterID,
-		Cert: chainPolicyCert{
-			TargetTxID:     r.Cert.TargetTxID,
-			RequesterID:    r.Cert.RequesterID,
-			RequesterKnown: r.Cert.RequesterKnown,
-			Redactable:     r.Cert.Redactable,
-			Satisfies:      r.Cert.Satisfies,
-			PolicyID:       r.Cert.PolicyID,
-			PolicyVer:      r.Cert.PolicyVer,
-			Attributes:     r.Cert.Attributes,
-		},
-		CommitteeSize: len(r.Members),
-		Threshold:     r.Threshold,
+func encodeRoundPolicy(committeeSize, threshold int, ca *certAuthority) (string, error) {
+	if ca == nil {
+		return "", fmt.Errorf("ref10: no CA, so the contract could not verify any certificate")
 	}
-	b, err := json.Marshal(cr)
+	b, err := json.Marshal(chainRoundPolicy{
+		CommitteeSize: committeeSize,
+		Threshold:     threshold,
+		CAPubX:        hex.EncodeToString(ca.key.X.Bytes()),
+		CAPubY:        hex.EncodeToString(ca.key.Y.Bytes()),
+	})
 	if err != nil {
-		return "", fmt.Errorf("ref10: encode round: %w", err)
+		return "", fmt.Errorf("ref10: encode round policy: %w", err)
 	}
 	return string(b), nil
 }
 
-func encodeBallot(nodeID string, approve bool, sig *crypto.SchnorrSignature) (string, error) {
+func encodeCert(c *policyCert) chainPolicyCert {
+	out := chainPolicyCert{
+		TargetTxID:     c.TargetTxID,
+		RequesterID:    c.RequesterID,
+		RequesterKnown: c.RequesterKnown,
+		Redactable:     c.Redactable,
+		Satisfies:      c.Satisfies,
+		PolicyID:       c.PolicyID,
+		PolicyVer:      c.PolicyVer,
+		Attributes:     c.Attributes,
+	}
+	if c.Sig != nil && c.Sig.E != nil && c.Sig.S != nil {
+		out.SigE = hex.EncodeToString(c.Sig.E.Bytes())
+		out.SigS = hex.EncodeToString(c.Sig.S.Bytes())
+	}
+	return out
+}
+
+func encodeBallot(nodeID string, approve bool, r *voteRound, sig *crypto.SchnorrSignature) (string, error) {
 	if sig == nil || sig.E == nil || sig.S == nil {
 		return "", fmt.Errorf("ref10: ballot for %s has no signature", nodeID)
 	}
+	if r.Cert == nil {
+		return "", fmt.Errorf("ref10: ballot for %s carries no certificate; the "+
+			"contract would have nothing to verify against P_C", nodeID)
+	}
 	b, err := json.Marshal(chainBallot{
-		NodeID:  nodeID,
-		Approve: approve,
-		E:       hex.EncodeToString(sig.E.Bytes()),
-		S:       hex.EncodeToString(sig.S.Bytes()),
+		NodeID:     nodeID,
+		Approve:    approve,
+		RequestID:  r.RequestID,
+		TargetTxID: r.Cert.TargetTxID,
+		Cert:       encodeCert(r.Cert),
+		E:          hex.EncodeToString(sig.E.Bytes()),
+		S:          hex.EncodeToString(sig.S.Bytes()),
 	})
 	if err != nil {
 		return "", fmt.Errorf("ref10: encode ballot: %w", err)

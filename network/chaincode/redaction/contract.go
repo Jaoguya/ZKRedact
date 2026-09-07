@@ -7,6 +7,29 @@
 //	query(con_k)  return {req, sigma}
 //	vote(n_j, con_k, t)  verify xi_j; count yes; on threshold emit tx_rdt
 //
+// A ROUND COSTS TWO BLOCKS, NOT THREE, AND THE MISSING ONE IS init().
+//
+// Algorithm 3 line 4 says "Store N_auth in con_k", which we implemented as its
+// own Init transaction. A ballot then had to WAIT for that write to commit
+// before it could read the round, so every authorization paid a block of pure
+// latency before any vote existed. On an unsaturated network that is a full
+// BatchTimeout, and it is an artefact of storing N_auth rather than of
+// authorizing anything.
+//
+// N_auth is a pure function of addr(con_k), the registered node set and A_r
+// (Eq. 7), so every peer can recompute it instead of reading it. Vote does
+// exactly that. What the stored round also carried was {req, sigma}, which
+// Algorithm 4 line 1 requires a member to verify "against P_C from the CA" —
+// and :317 defines the CA's reply as a SIGNED message, msg = {P_C, sigma}.
+// So the trust anchor Algorithm 4 names is the CA's signature, not the ledger
+// write. Each ballot now carries the CA-signed certificate and this contract
+// verifies that signature before deriving anything from it.
+//
+// Recorded as a deviation in docs/baselines/ref10-emt.md with its direction:
+// it removes a block from Ref[10]'s measured cost (favours Ref[10]) while
+// adding one CA signature verification per ballot (counts against it), and it
+// strengthens the contract, which until now accepted an UNSIGNED certificate.
+//
 // WHY THIS IS CHAINCODE AND NOT A GO STRUCT. The in-process implementation in
 // internal/schemes/ref10 runs the same algorithm by function call. It produces
 // correct cryptography and incorrect timings: Ref[10]'s authorization cost is
@@ -31,6 +54,7 @@ package main
 import (
 	"crypto/elliptic"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -45,10 +69,18 @@ import (
 // State keys. Namespaced so several concurrent redaction contracts can share a
 // channel without colliding — Exp 1 drives many rounds at once.
 const (
-	keyRound   = "round"  // round/<contractAddr>
 	keyBallot  = "ballot" // ballot/<contractAddr>/<nodeID>
 	keyRdt     = "rdt"    // rdt/<contractAddr>
 	keyNodeSet = "nodes"  // nodes  (the network's registered nodes)
+
+	// keyPolicy holds |N_auth| and the threshold, plus the CA's verification
+	// key. Registered once at setup, never per round.
+	//
+	// These must NOT arrive with a ballot. A voter that could name the
+	// threshold could set it to 1 and authorize alone, and a voter that could
+	// name the committee size could shrink N_auth until its own vote was a
+	// majority. They are protocol parameters, not per-request input.
+	keyPolicy = "roundpolicy" // roundpolicy
 )
 
 // SmartContract is the redaction contract con_k.
@@ -68,36 +100,6 @@ type Node struct {
 	PubY string `json:"pub_y"`
 }
 
-// Round is one redaction request awaiting authorization: the {req, sigma} that
-// query() returns and vote() tallies against.
-type Round struct {
-	ContractAddr string `json:"contract_addr"`
-	RequestID    string `json:"request_id"`
-	TargetTxID   string `json:"target_tx_id"`
-	RequesterID  string `json:"requester_id"`
-
-	// Cert is the CA's signed policy decision, P_C. Members re-derive their vote
-	// from it rather than trusting the requester.
-	Cert PolicyCert `json:"cert"`
-
-	// Committee is N_auth, the output of RS_SHA256(addr, N_all, A_r).
-	Committee []string `json:"committee"`
-
-	// CommitteeSize is |N_auth|, from the fault assumption in config.
-	//
-	// Carried explicitly rather than inferred from the eligible pool: selecting
-	// every eligible node would let a registered node that was NOT selected have
-	// its vote counted, which is the membership guard failing open. The pool is
-	// usually much larger than the committee, so the difference is not marginal.
-	CommitteeSize int `json:"committee_size"`
-
-	// Threshold is the approvals required, from the fault assumption in config.
-	Threshold int `json:"threshold"`
-
-	Closed   bool `json:"closed"`
-	Approved bool `json:"approved"`
-}
-
 // PolicyCert mirrors the CA's signed P_C.
 //
 // RequesterKnown is kept separate from Redactable for the same reason as in the
@@ -113,6 +115,67 @@ type PolicyCert struct {
 	PolicyID       string `json:"policy_id"`
 	PolicyVer      uint64 `json:"policy_ver"`
 	Attributes     string `json:"attributes"`
+
+	// SigE, SigS are the CA's Schnorr signature over Bytes(), hex-encoded.
+	//
+	// Algorithm 4 line 1 has each member verify {req, sigma} "against P_C from
+	// the CA", and :317 defines the CA's reply as msg = {P_C, sigma}. Without
+	// this the certificate is just a struct the caller filled in, and every
+	// eligibility decision below rests on it.
+	SigE string `json:"sig_e"`
+	SigS string `json:"sig_s"`
+}
+
+// Bytes serialises P_C for signature verification.
+//
+// MUST match internal/schemes/ref10.policyCert.bytes() byte for byte. The CA
+// signs there and this verifies here, so a divergence makes every honest
+// certificate fail — and the symptom is rounds that never reach threshold,
+// which reads as a slow network. TestChaincodeVerifiesCACertificate pins it.
+func (c PolicyCert) Bytes() []byte {
+	var b []byte
+	b = append(b, c.TargetTxID...)
+	b = append(b, 0x1f)
+	b = append(b, c.RequesterID...)
+	b = append(b, 0x1f)
+	b = append(b, c.PolicyID...)
+	b = append(b, 0x1f)
+	b = append(b, c.Attributes...)
+	b = append(b, 0x1f)
+	var ver [8]byte
+	binary.BigEndian.PutUint64(ver[:], c.PolicyVer)
+	b = append(b, ver[:]...)
+	for _, flag := range []bool{c.RequesterKnown, c.Redactable, c.Satisfies} {
+		if flag {
+			b = append(b, 1)
+		} else {
+			b = append(b, 0)
+		}
+	}
+	return b
+}
+
+// Digest identifies WHICH certificate a ballot voted on.
+//
+// Every ballot signs it, and Close counts only ballots that agree on it. Two
+// members handed different certificates for the same contract address are not
+// voting on the same thing, and counting them together would let a requester
+// assemble a threshold out of votes on different requests.
+func (c PolicyCert) Digest() string {
+	sum := sha256.Sum256(c.Bytes())
+	return hex.EncodeToString(sum[:])
+}
+
+// RoundPolicy is the protocol parameter set, registered once at setup.
+type RoundPolicy struct {
+	// CommitteeSize is |N_auth| and Threshold is the approvals required, both
+	// from the fault assumption in config/experiment.yaml.
+	CommitteeSize int `json:"committee_size"`
+	Threshold     int `json:"threshold"`
+
+	// CAPubX, CAPubY verify PolicyCert.SigE/SigS.
+	CAPubX string `json:"ca_pub_x"`
+	CAPubY string `json:"ca_pub_y"`
 }
 
 // Granted reports whether P_C authorises the redaction: Eq. 5's two conditions,
@@ -121,10 +184,22 @@ func (c PolicyCert) Granted() bool {
 	return c.RequesterKnown && c.Redactable && c.Satisfies
 }
 
-// Ballot is one member's vote, xi_j.
+// Ballot is one member's vote, xi_j, together with the request it votes on.
+//
+// The request travels WITH the ballot rather than being read from a stored
+// round, which is what removes init()'s block. It is safe because Cert carries
+// the CA's signature: a member is not taking the requester's word for P_C, it
+// is checking the CA's, which is what Algorithm 4 line 1 asks for.
 type Ballot struct {
 	NodeID  string `json:"node_id"`
 	Approve bool   `json:"approve"`
+
+	// RequestID and TargetTxID identify the redaction request req.
+	RequestID  string `json:"request_id"`
+	TargetTxID string `json:"target_tx_id"`
+
+	// Cert is the CA's signed P_C. Verified before anything is derived from it.
+	Cert PolicyCert `json:"cert"`
 
 	// E, S are the Schnorr signature scalars, hex-encoded.
 	E string `json:"e"`
@@ -192,72 +267,105 @@ func (s *SmartContract) nodes(ctx contractapi.TransactionContextInterface) ([]No
 }
 
 // -----------------------------------------------------------------------------
-// Algorithm 3: init
+// Algorithm 3: init, without a transaction
 // -----------------------------------------------------------------------------
 
-// Init opens a voting round: selects N_auth and stores the round state.
+// RegisterRoundPolicy stores |N_auth|, the threshold, and the CA's key.
 //
-// Implements Algorithm 3 init():
+// Called once during setup, which is not timed — the same place RegisterNodes
+// is called. This is what lets init() disappear from the per-round path: the
+// only parts of the stored round that a client must not choose are these, and
+// they do not vary per request.
 //
-//	N_all  <- RegisterNodes()
-//	N_auth <- RS_SHA256(addr(con_k), N_all, A_r)      (Eq. 7)
-//	store N_auth in con_k
-func (s *SmartContract) Init(ctx contractapi.TransactionContextInterface, roundJSON string) error {
-	var r Round
-	if err := json.Unmarshal([]byte(roundJSON), &r); err != nil {
-		return fmt.Errorf("redaction: decode round: %w", err)
+// Registering them here rather than accepting them per ballot is the whole
+// guard. A voter that named its own threshold could authorize alone; a voter
+// that named its own committee size could shrink N_auth until it held a
+// majority. Neither is reachable once the values live in state that voting
+// never writes.
+func (s *SmartContract) RegisterRoundPolicy(ctx contractapi.TransactionContextInterface, policyJSON string) error {
+	var p RoundPolicy
+	if err := json.Unmarshal([]byte(policyJSON), &p); err != nil {
+		return fmt.Errorf("redaction: decode round policy: %w", err)
 	}
-	if r.ContractAddr == "" || r.RequestID == "" {
-		return fmt.Errorf("redaction: round needs a contract address and request id")
+	if p.CommitteeSize <= 0 {
+		return fmt.Errorf("redaction: committee_size must be positive, got %d", p.CommitteeSize)
 	}
-	if r.Threshold <= 0 {
-		return fmt.Errorf("redaction: threshold must be positive, got %d", r.Threshold)
+	if p.Threshold <= 0 {
+		return fmt.Errorf("redaction: threshold must be positive, got %d", p.Threshold)
 	}
-	if r.CommitteeSize <= 0 {
-		return fmt.Errorf("redaction: committee_size must be positive, got %d", r.CommitteeSize)
-	}
-	if r.Threshold > r.CommitteeSize {
+	if p.Threshold > p.CommitteeSize {
 		return fmt.Errorf(
 			"redaction: threshold %d exceeds committee size %d; no redaction could be approved",
-			r.Threshold, r.CommitteeSize)
+			p.Threshold, p.CommitteeSize)
 	}
-
-	key := stateKey(keyRound, r.ContractAddr)
-	existing, err := ctx.GetStub().GetState(key)
+	if p.CAPubX == "" || p.CAPubY == "" {
+		return fmt.Errorf(
+			"redaction: round policy has no CA verification key; every ballot's " +
+				"certificate would then be unverifiable and P_C would mean nothing")
+	}
+	b, err := json.Marshal(p)
 	if err != nil {
-		return fmt.Errorf("redaction: read round: %w", err)
+		return fmt.Errorf("redaction: encode round policy: %w", err)
 	}
-	if len(existing) > 0 {
-		return fmt.Errorf("redaction: round %s already exists", r.ContractAddr)
+	return ctx.GetStub().PutState(keyPolicy, b)
+}
+
+func (s *SmartContract) roundPolicy(ctx contractapi.TransactionContextInterface) (*RoundPolicy, error) {
+	b, err := ctx.GetStub().GetState(keyPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("redaction: read round policy: %w", err)
 	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("redaction: no round policy registered; call RegisterRoundPolicy first")
+	}
+	var p RoundPolicy
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("redaction: decode round policy: %w", err)
+	}
+	return &p, nil
+}
+
+// verifyCert checks the CA's signature on P_C.
+//
+// This is Algorithm 4 line 1's "against P_C from the CA". It runs before the
+// committee is derived, because the derivation consumes cert.Attributes: an
+// unverified certificate could otherwise name an attribute policy that selects
+// a committee of the caller's choosing.
+func verifyCert(p *RoundPolicy, cert PolicyCert) (bool, error) {
+	if cert.SigE == "" || cert.SigS == "" {
+		return false, nil
+	}
+	return verifySchnorr(p.CAPubX, p.CAPubY, cert.Bytes(), cert.SigE, cert.SigS)
+}
+
+// committeeFor recomputes N_auth = RS_SHA256(addr(con_k), N_all, A_r), Eq. 7.
+//
+// Algorithm 3 line 4 stores this; we derive it. The inputs are the contract
+// address, the registered node set and the attribute policy, all of which are
+// either fixed or carried on the CA-signed certificate, so every peer reaches
+// the same answer without a stored round to read.
+func (s *SmartContract) committeeFor(
+	ctx contractapi.TransactionContextInterface,
+	contractAddr string,
+	cert PolicyCert,
+	size int,
+) ([]string, []Node, error) {
 
 	all, err := s.nodes(ctx)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-
-	// The committee is computed here, not accepted from the caller. A client
-	// choosing its own N_auth could stack the round with colluding members and
-	// the threshold would carry no meaning.
-	committee, err := selectCommittee(r.ContractAddr, all, r.Cert.Attributes, r.CommitteeSize)
+	committee, err := selectCommittee(contractAddr, all, cert.Attributes, size)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	if len(committee) < r.CommitteeSize {
-		return fmt.Errorf(
+	if len(committee) < size {
+		return nil, nil, fmt.Errorf(
 			"redaction: only %d nodes satisfy the policy but committee_size is %d; "+
 				"a silently shrunken committee would weaken the threshold",
-			len(committee), r.CommitteeSize)
+			len(committee), size)
 	}
-	r.Committee = committee
-	r.Closed = false
-	r.Approved = false
-
-	b, err := json.Marshal(r)
-	if err != nil {
-		return fmt.Errorf("redaction: encode round: %w", err)
-	}
-	return ctx.GetStub().PutState(key, b)
+	return committee, all, nil
 }
 
 // selectCommittee implements Eq. 7, RS_SHA256(addr(con_k), N_all, A_r).
@@ -344,39 +452,16 @@ func compareBytes(a, b []byte) int {
 }
 
 // -----------------------------------------------------------------------------
-// Algorithm 3: query
-// -----------------------------------------------------------------------------
-
-// Query returns {req, sigma} for a round, so members can verify P_C and derive
-// their own decision.
-//
-// Read-only: evaluated on a peer without ordering, which is what Ref[10]'s
-// query() is.
-func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, contractAddr string) (*Round, error) {
-	b, err := ctx.GetStub().GetState(stateKey(keyRound, contractAddr))
-	if err != nil {
-		return nil, fmt.Errorf("redaction: read round: %w", err)
-	}
-	if len(b) == 0 {
-		return nil, fmt.Errorf("redaction: no round for contract %s", contractAddr)
-	}
-	var r Round
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, fmt.Errorf("redaction: decode round: %w", err)
-	}
-	return &r, nil
-}
-
-// -----------------------------------------------------------------------------
 // Algorithm 3: vote
 // -----------------------------------------------------------------------------
 
 // Vote submits one ballot and verifies it. It does NOT tally.
 //
 // Implements Algorithm 3 vote() together with Algorithm 4's verification step.
-// Three checks make the threshold meaningful, and each corresponds to a way a
+// Four checks make the threshold meaningful, and each corresponds to a way a
 // client could otherwise manufacture authorization:
 //
+//	CA signature the certificate is the CA's, not the caller's invention
 //	membership   a non-member's vote is rejected, not counted
 //	signature    verified here, so ballots cannot be fabricated for absent members
 //	one-per-node a member cannot pad Sigma to the threshold alone
@@ -389,10 +474,14 @@ func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, contr
 // (1 + committee_size) blocks.
 //
 // Nothing in Algorithm 3 or 4 requires that. Ref[10]'s committee members are
-// independent nodes and their ballots belong in one block. Keeping the tally
-// out means a Vote reads only round metadata (never written during voting) and
-// writes only its own ballot key, so ballots are conflict-free and concurrent.
-// Close() does the counting afterwards, in its own transaction.
+// independent nodes and their ballots belong in one block. Close() does the
+// counting afterwards, in its own transaction.
+//
+// WHAT THIS READS AND WRITES, which is the property that keeps ballots in one
+// block: it reads the node set, the round policy and its OWN ballot key — none
+// of which another ballot writes — and it writes only its own ballot key. Add
+// a read of anything voting writes and the concurrency collapses silently back
+// to one ballot per block.
 //
 // Returns nil on success: the ballot is recorded, and whether the round reached
 // threshold is Close()'s answer, not this one's.
@@ -401,23 +490,37 @@ func (s *SmartContract) Vote(ctx contractapi.TransactionContextInterface, contra
 	if err := json.Unmarshal([]byte(ballotJSON), &bal); err != nil {
 		return nil, fmt.Errorf("redaction: decode ballot: %w", err)
 	}
+	if bal.NodeID == "" || bal.RequestID == "" {
+		return nil, fmt.Errorf("redaction: ballot needs a node id and a request id")
+	}
 
-	round, err := s.Query(ctx, contractAddr)
+	policy, err := s.roundPolicy(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if round.Closed {
-		// Not an error: the round reached threshold while this vote was in
-		// flight, which is normal under concurrency. Return the existing result.
-		return s.Result(ctx, contractAddr)
+
+	// Algorithm 4 line 1, and it runs FIRST. Everything below derives from the
+	// certificate — eligibility, the committee, the message signed — so an
+	// unverified one would let the caller choose all three.
+	certOK, err := verifyCert(policy, bal.Cert)
+	if err != nil {
+		return nil, err
+	}
+	if !certOK {
+		return nil, fmt.Errorf(
+			"redaction: certificate for %s does not carry a valid CA signature", contractAddr)
 	}
 
-	if !contains(round.Committee, bal.NodeID) {
+	committee, all, err := s.committeeFor(ctx, contractAddr, bal.Cert, policy.CommitteeSize)
+	if err != nil {
+		return nil, err
+	}
+	if !contains(committee, bal.NodeID) {
 		return nil, fmt.Errorf(
 			"redaction: %s is not on the committee for %s", bal.NodeID, contractAddr)
 	}
 
-	// One member, one vote.
+	// One member, one vote. Reads only this member's own key.
 	ballotKey := stateKey(keyBallot, contractAddr, bal.NodeID)
 	prev, err := ctx.GetStub().GetState(ballotKey)
 	if err != nil {
@@ -427,17 +530,13 @@ func (s *SmartContract) Vote(ctx contractapi.TransactionContextInterface, contra
 		return nil, fmt.Errorf("redaction: %s has already voted in %s", bal.NodeID, contractAddr)
 	}
 
-	all, err := s.nodes(ctx)
-	if err != nil {
-		return nil, err
-	}
 	node, ok := findNode(all, bal.NodeID)
 	if !ok {
 		return nil, fmt.Errorf("redaction: unknown node %s", bal.NodeID)
 	}
 
 	// Algorithm 4 line 5: verify xi_j before counting it.
-	ok, err = verifyBallot(node, contractAddr, round.RequestID, bal)
+	ok, err = verifyBallot(node, contractAddr, bal.RequestID, bal)
 	if err != nil {
 		return nil, err
 	}
@@ -465,66 +564,115 @@ func (s *SmartContract) Vote(ctx contractapi.TransactionContextInterface, contra
 // Idempotent: a round already closed returns its existing tx_rdt rather than
 // recomputing, so a retry cannot emit a second result.
 func (s *SmartContract) Close(ctx contractapi.TransactionContextInterface, contractAddr string) (*RedactionTx, error) {
-	round, err := s.Query(ctx, contractAddr)
-	if err != nil {
-		return nil, err
-	}
-	if round.Closed {
+	if existing, err := ctx.GetStub().GetState(stateKey(keyRdt, contractAddr)); err != nil {
+		return nil, fmt.Errorf("redaction: read tx_rdt: %w", err)
+	} else if len(existing) > 0 {
 		return s.Result(ctx, contractAddr)
 	}
-	return s.tally(ctx, round)
+	return s.tally(ctx, contractAddr)
 }
 
 // tally counts approvals and, on reaching the threshold, emits tx_rdt.
-func (s *SmartContract) tally(ctx contractapi.TransactionContextInterface, round *Round) (*RedactionTx, error) {
-	approving := make([]Ballot, 0, len(round.Committee))
+//
+// The committee is recomputed here rather than read from a stored round, from
+// the certificate the ballots themselves carry. Every ballot got past Vote's
+// CA-signature check, so any of them can supply it.
+//
+// BALLOTS ARE GROUPED BY CERTIFICATE DIGEST, and only the largest agreeing
+// group can reach the threshold. Without this, a requester holding two
+// CA-signed certificates for the same contract address could collect votes on
+// one from half the committee and votes on the other from the rest, and present
+// the sum as authorization for either. Members would each have voted honestly
+// on something they never jointly approved.
+func (s *SmartContract) tally(ctx contractapi.TransactionContextInterface, contractAddr string) (*RedactionTx, error) {
+	policy, err := s.roundPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	for _, id := range round.Committee {
-		b, err := ctx.GetStub().GetState(stateKey(keyBallot, round.ContractAddr, id))
+	// Read every ballot the address could hold. The committee depends on the
+	// certificate, which is on the ballots, so the node set is scanned instead
+	// — a ballot from a non-member cannot exist, because Vote rejected it.
+	all, err := s.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	byCert := make(map[string][]Ballot)
+	certs := make(map[string]PolicyCert)
+	for _, n := range all {
+		b, err := ctx.GetStub().GetState(stateKey(keyBallot, contractAddr, n.ID))
 		if err != nil {
-			return nil, fmt.Errorf("redaction: read ballot for %s: %w", id, err)
+			return nil, fmt.Errorf("redaction: read ballot for %s: %w", n.ID, err)
 		}
 		if len(b) == 0 {
 			continue
 		}
 		var bal Ballot
 		if err := json.Unmarshal(b, &bal); err != nil {
-			return nil, fmt.Errorf("redaction: decode ballot for %s: %w", id, err)
+			return nil, fmt.Errorf("redaction: decode ballot for %s: %w", n.ID, err)
 		}
-		if bal.Approve {
-			approving = append(approving, bal)
+		if !bal.Approve {
+			continue
 		}
+		d := bal.Cert.Digest()
+		byCert[d] = append(byCert[d], bal)
+		certs[d] = bal.Cert
 	}
 
-	if len(approving) < round.Threshold {
+	// The winning group, chosen deterministically: most approvals, ties broken
+	// by digest so every peer emits the same tx_rdt and endorsement matches.
+	var bestDigest string
+	for d, group := range byCert {
+		switch {
+		case bestDigest == "":
+			bestDigest = d
+		case len(group) > len(byCert[bestDigest]):
+			bestDigest = d
+		case len(group) == len(byCert[bestDigest]) && d < bestDigest:
+			bestDigest = d
+		}
+	}
+	if bestDigest == "" || len(byCert[bestDigest]) < policy.Threshold {
 		// Round stays open; the caller sees a nil result and keeps collecting.
 		return nil, nil
 	}
 
+	approving := byCert[bestDigest]
+	cert := certs[bestDigest]
+
+	// Membership is re-checked at tally time, not trusted from Vote. Vote
+	// checked it against the committee derived from this same certificate, but
+	// re-deriving here means a ballot stored under an earlier node registration
+	// cannot be counted after the set changed.
+	committee, _, err := s.committeeFor(ctx, contractAddr, cert, policy.CommitteeSize)
+	if err != nil {
+		return nil, err
+	}
+	counted := make([]Ballot, 0, len(approving))
+	for _, bal := range approving {
+		if contains(committee, bal.NodeID) {
+			counted = append(counted, bal)
+		}
+	}
+	if len(counted) < policy.Threshold {
+		return nil, nil
+	}
+
 	rdt := &RedactionTx{
-		ContractAddr: round.ContractAddr,
-		RequestID:    round.RequestID,
-		TargetTxID:   round.TargetTxID,
-		Sigma:        approving,
-		Approvals:    len(approving),
-		Threshold:    round.Threshold,
+		ContractAddr: contractAddr,
+		RequestID:    counted[0].RequestID,
+		TargetTxID:   cert.TargetTxID,
+		Sigma:        counted,
+		Approvals:    len(counted),
+		Threshold:    policy.Threshold,
 	}
 	rb, err := json.Marshal(rdt)
 	if err != nil {
 		return nil, fmt.Errorf("redaction: encode tx_rdt: %w", err)
 	}
-	if err := ctx.GetStub().PutState(stateKey(keyRdt, round.ContractAddr), rb); err != nil {
+	if err := ctx.GetStub().PutState(stateKey(keyRdt, contractAddr), rb); err != nil {
 		return nil, fmt.Errorf("redaction: store tx_rdt: %w", err)
-	}
-
-	round.Closed = true
-	round.Approved = true
-	rounb, err := json.Marshal(round)
-	if err != nil {
-		return nil, fmt.Errorf("redaction: encode round: %w", err)
-	}
-	if err := ctx.GetStub().PutState(stateKey(keyRound, round.ContractAddr), rounb); err != nil {
-		return nil, fmt.Errorf("redaction: close round: %w", err)
 	}
 	return rdt, nil
 }
@@ -558,41 +706,52 @@ func (s *SmartContract) Result(ctx contractapi.TransactionContextInterface, cont
 // including the public key in the challenge — a divergence here would make
 // valid votes look invalid on chain and quietly starve every round.
 func verifyBallot(n Node, contractAddr, requestID string, bal Ballot) (bool, error) {
+	msg := voteMessage(contractAddr, requestID, bal.Cert.Digest(), bal.Approve)
+	ok, err := verifySchnorr(n.PubX, n.PubY, msg, bal.E, bal.S)
+	if err != nil {
+		return false, fmt.Errorf("redaction: ballot from %s: %w", bal.NodeID, err)
+	}
+	return ok, nil
+}
+
+// verifySchnorr checks one Schnorr signature against a hex-encoded public key.
+//
+// Shared by ballot verification and by the CA-certificate check, so both use
+// exactly the same verifier. Two copies of this arithmetic would be two places
+// for the sign of e to drift, and a wrong sign rejects every honest signature
+// while looking like a slow or unreachable network.
+//
+// MUST match pkg/crypto.SchnorrPublicKey.Verify.
+// TestChaincodeVerifiesPkgCryptoSignatures pins the agreement.
+func verifySchnorr(pubX, pubY string, msg []byte, sigE, sigS string) (bool, error) {
 	curve := elliptic.P256()
 
-	px, ok := new(big.Int).SetString(n.PubX, 16)
+	px, ok := new(big.Int).SetString(pubX, 16)
 	if !ok {
-		return false, fmt.Errorf("redaction: node %s has a malformed public key x", n.ID)
+		return false, fmt.Errorf("malformed public key x")
 	}
-	py, ok := new(big.Int).SetString(n.PubY, 16)
+	py, ok := new(big.Int).SetString(pubY, 16)
 	if !ok {
-		return false, fmt.Errorf("redaction: node %s has a malformed public key y", n.ID)
+		return false, fmt.Errorf("malformed public key y")
 	}
-	e, ok := new(big.Int).SetString(bal.E, 16)
+	e, ok := new(big.Int).SetString(sigE, 16)
 	if !ok {
-		return false, fmt.Errorf("redaction: ballot from %s has a malformed e", bal.NodeID)
+		return false, fmt.Errorf("malformed signature scalar e")
 	}
-	sv, ok := new(big.Int).SetString(bal.S, 16)
+	sv, ok := new(big.Int).SetString(sigS, 16)
 	if !ok {
-		return false, fmt.Errorf("redaction: ballot from %s has a malformed s", bal.NodeID)
+		return false, fmt.Errorf("malformed signature scalar s")
 	}
 
 	if !curve.IsOnCurve(px, py) {
-		return false, fmt.Errorf("redaction: node %s has an off-curve public key", n.ID)
+		return false, fmt.Errorf("off-curve public key")
 	}
 	nOrder := curve.Params().N
 	if e.Sign() <= 0 || e.Cmp(nOrder) >= 0 || sv.Sign() <= 0 || sv.Cmp(nOrder) >= 0 {
 		return false, nil
 	}
 
-	msg := voteMessage(contractAddr, requestID, bal.Approve)
-
 	// R' = s*G - e*P, computed as s*G + (n-e)*P.
-	//
-	// MUST match pkg/crypto.SchnorrPublicKey.Verify. Getting the sign wrong here
-	// would reject every honest vote, and the symptom would be rounds that never
-	// reach threshold — which reads as a slow network rather than a broken
-	// verifier. TestChaincodeVerifiesPkgCryptoSignatures pins the agreement.
 	sgx, sgy := curve.ScalarBaseMult(sv.Bytes())
 	negE := new(big.Int).Sub(nOrder, e)
 	epx, epy := curve.ScalarMult(px, py, negE.Bytes())
@@ -609,11 +768,21 @@ func verifyBallot(n Node, contractAddr, requestID string, bal Ballot) (bool, err
 }
 
 // voteMessage must match internal/schemes/ref10.voteMessage byte for byte.
-func voteMessage(contractAddr, requestID string, approve bool) []byte {
+func voteMessage(contractAddr, requestID, certDigest string, approve bool) []byte {
 	h := sha256.New()
 	h.Write([]byte(contractAddr))
 	h.Write([]byte{0x1f})
 	h.Write([]byte(requestID))
+	h.Write([]byte{0x1f})
+	// THE CERTIFICATE IS PART OF WHAT A MEMBER SIGNS.
+	//
+	// The certificate travels with the ballot now that no stored round holds
+	// it. Without binding it here, a ballot collected for one CA-signed
+	// certificate could be re-submitted verbatim alongside a different one and
+	// would verify, because the signature would say nothing about which P_C the
+	// member actually saw. Close's grouping would then count it in the wrong
+	// group. TestBallotSignatureBindsTheCertificate pins this.
+	h.Write([]byte(certDigest))
 	h.Write([]byte{0x1f})
 	if approve {
 		h.Write([]byte("yes"))

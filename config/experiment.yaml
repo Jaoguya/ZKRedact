@@ -35,12 +35,41 @@ meta:
   # Vary ONLY across repetitions, never between systems within one comparison.
   seed: 20260905
 
-  # [PROPOSED] 30 repetitions per configuration point; report median + p95.
-  # Basis: Ref[13] used 30 for the same class of measurement, and 30 sits above
-  # the conventional n>=10 floor for latency work. Verify against pilot variance
-  # — if the confidence interval is wider than the smallest difference you
-  # intend to claim, raise it and record the measured variance here.
-  repetitions: 30
+  # [DERIVED from measured variance] 1 repetition per configuration point;
+  # report median + p95.
+  #
+  # Was 30, on the basis that Ref[13] used 30 for the same class of measurement.
+  # That is the digit, not the derivation — and the derivation is available here
+  # because the variance has now been measured. Ref[10] over vote_transport:
+  # fabric, minimal topology, 5 repetitions:
+  #
+  #   concurrency 1  mean 0.1960 auth/s  stddev 0.00023  CV 0.12%
+  #   concurrency 8  mean 1.3033 auth/s  stddev 0.00214  CV 0.16%
+  #
+  # SEM is CV/sqrt(n), so even n=1 carries 0.16% against comparisons whose
+  # effects run to hundreds of percent, and n=30 buys 0.13 percentage points at
+  # thirty times the wall clock. The budget went into SAMPLE SIZE instead: 1
+  # repetition of 10,000 requests keeps p99 reliable, which 3 repetitions of
+  # 1,000 does not (see workload.total_requests).
+  #
+  # Structurally low, not accidentally: Ref[10]'s cost over fabric is block
+  # waits, and BatchTimeout is a clock rather than a contended resource.
+  #
+  # ⚠️ TWO THINGS THIS COSTS, both real.
+  #
+  # 1. cmd/plot has no min/max band per point. Between-run spread is not
+  #    measured at all, only within-run latency spread.
+  # 2. A run CANNOT be split across EC2 instances. One repetition per instance
+  #    confounds run-to-run variance with machine-to-machine variance, and a
+  #    degraded host becomes an undetectable outlier. Single host only.
+  #
+  # ⚠️ AND IT IS SET FROM THE QUIETEST SYSTEM, WHICH IS THE WRONG ONE.
+  # ZK-Redact's path is Groth16 verification under sharding — CPU-bound, and so
+  # sensitive to scheduling, cache and thermal state in a way a clock is not.
+  # The repetition count must be set by the NOISIEST system. Task 9's first job
+  # is to take the same variance datum for ZK-Redact's Exp 2 CryptoTime on the
+  # full topology and raise this if that CV is worse.
+  repetitions: 1
 
 
 # -----------------------------------------------------------------------------
@@ -160,11 +189,37 @@ environment:
     # minimises platform-induced difference against the closest baseline.
     consensus: "raft"
 
-    # [PROPOSED] Fabric block-cutting parameters. Held CONSTANT across all four
-    # systems — block cadence directly affects redaction commit latency, so
-    # varying it between systems would corrupt Exp 2 outright.
+    # Fabric block-cutting parameters. Held CONSTANT across all four systems —
+    # block cadence directly affects redaction commit latency, so varying it
+    # between systems would corrupt Exp 2 outright.
     block_max_transactions: 100
-    block_timeout_ms: 2000
+
+    # [DERIVED from Ref[10]'s own experimental settings] 1000 ms.
+    #
+    # Was 2000, Fabric's default, and it made Ref[10] the only system in the
+    # evaluation charged for an idle network. A block is cut at whichever comes
+    # first, block_max_transactions or this timeout. Ref[10] reports its
+    # throughput under Hyperledger Caliper driving 100 tps sustained
+    # (Ref[10].md:438), where 100 transactions arrive every second and blocks
+    # are therefore cut by COUNT — the timeout never fires. Our harness sends
+    # one authorization at a time, so every block waits the timeout out in full.
+    #
+    # Derivation: 100 tps / block_max_transactions 100 = one block per second,
+    # the effective cadence of the regime Ref[10] published. 1000 ms reproduces
+    # it on an unsaturated network instead of charging the baseline for a wait
+    # its own measurements never paid.
+    #
+    # This is a network parameter, not a scheme's: it is applied identically to
+    # all four systems, and it changes no algorithm. It also works AGAINST our
+    # own headline — a shorter block is less blockchain cost for ZK-Redact's
+    # batching to amortise in Exp 2 — which is the conservative direction.
+    #
+    # ⚠️ MUST match network/configtx.yaml BatchTimeout. network.sh refuses to
+    # start a network whose channel disagrees with this value, so the two
+    # cannot drift; changing it needs `network.sh up` (fresh volumes), not a
+    # redeploy. Every Fabric figure measured before this change was at 2000 ms
+    # and must be re-measured.
+    block_timeout_ms: 1000
 
   record_fingerprint: true
 
@@ -173,10 +228,24 @@ environment:
 # SOURCE DATASET — generated once, consumed by all four systems
 # -----------------------------------------------------------------------------
 dataset:
-  # [DERIVED] ledger_sizes.max x block_max_transactions = 10000 x 100.
-  # Sized so Exp 3's largest ledger can be built without regenerating source
-  # data, and so no system runs short mid-sweep.
-  base_transactions: 1000000
+  # [PROPOSED] 100,000 — set deliberately, overriding the derivation below.
+  #
+  # The derived value was ledger_sizes.max x block_max_transactions =
+  # 10000 x 100 = 1,000,000, sized so Exp 3's largest ledger could be built
+  # without regenerating source data. That is no longer the binding constraint:
+  # Ref[13] and Ref[22] both build their structures in ONE PASS over this
+  # dataset, single-threaded (ref13/wiring.go:86, ref22/wiring.go:70), measured
+  # at 9.0 ms and 24.7 ms per transaction. At 1,000,000 that is ~2.5 h and
+  # ~6.9 h of setup before a single measurement, and 32 vCPU does not help it.
+  #
+  # At 100,000 the same setup is ~15 min and ~41 min.
+  #
+  # The capacity rule (validate-config:531) enforces
+  # base_transactions >= ledger_sizes.max x block_max_transactions.
+  # experiments.provenance_audit.ledger_sizes was cut to a max of 1000 to
+  # match: 1000 x 100 = 100,000. See the rationale there before raising
+  # either one.
+  base_transactions: 100000
 
   transaction:
     # [PROPOSED] A structured business record (identifiers, parties, amounts,
@@ -222,8 +291,32 @@ dataset:
 # REQUEST TRACE — same trace, same order, for every system
 # -----------------------------------------------------------------------------
 workload:
-  # [DERIVED] p99 latency needs >= 100 samples in the top percentile to be
-  # stable, hence >= 10,000 requests per run. Below this, reported p99 is noise.
+  # [DERIVED] 10,000 requests per run.
+  #
+  # p99 latency needs >= 100 samples in the top percentile to be stable, which
+  # is what pkg/metrics.Latency checks before setting p99_reliable. This is the
+  # smallest value that satisfies it, and it is affordable only because two
+  # other things changed.
+  #
+  # THE COST IT HAD TO FIT. Ref[10] authorizes over vote_transport: fabric at
+  # the cost of its block waits, and Exp 1's bill for it is:
+  #
+  #   total_requests x SUM(1/c) x per-authorization cost x meta.repetitions
+  #
+  # SUM(1/c) = 1.999 over the 11 configured concurrency levels. At 10,000
+  # requests, 30 repetitions and the old 6.17 s round that was 42.8 DAYS for one
+  # scheme. Removing Algorithm 3's init() transaction took the round from three
+  # blocks to two, halving block_timeout_ms took each block from 2 s to 1 s, and
+  # meta.repetitions went to 1 — leaving roughly 12 h.
+  #
+  # WHY THE SWEEP CANNOT ABSORB A CUT INSTEAD. Cost goes as 1/c, so concurrency
+  # 1 alone is 50% of the bill and levels 1-2 are 75%. Dropping the high levels
+  # saves 12.5% and deletes the crossover the experiment exists to find;
+  # dropping level 1 is refused by the runner, since it is where the trapdoor
+  # baselines legitimately lead.
+  #
+  # The alternative considered and rejected was 1,000 requests x 3 repetitions:
+  # cheaper, but p99 becomes noise and p99 is a reported metric of Exp 1.
   total_requests: 10000
 
   # [METHOD] "uniform" isolates the mechanism and is the headline setting.
@@ -262,8 +355,8 @@ zkredact:
     # must therefore cover a replay, not a round trip.
     #
     # Derivation: the longest Exp 1 cell is concurrency 1, which admits
-    # workload.total_requests sequentially. At 10,000 requests and the
-    # ~1 ms verification a Groth16 proof costs, that is well under a minute for
+    # workload.total_requests sequentially. At 1,000 requests and the
+    # ~1 ms verification a Groth16 proof costs, that is a few seconds for
     # ZK-Redact; 3600000 ms leaves the bound far above anything the sweep can
     # produce while still rejecting a replay from an earlier run.
     #
@@ -293,11 +386,16 @@ zkredact:
     # the noise floor at 64. Where the gain vanishes IS the result.
     sizes: [1, 2, 4, 8, 16, 32, 64]
 
-    # [DERIVED from environment.network.block_timeout_ms = 2000]
+    # [DERIVED from environment.network.block_timeout_ms = 1000]
     # Verification batching must complete well within one block interval, or it
     # simply pushes work into the next block and the measurement conflates
     # batching with block cadence. Sweep spans 0.5% to 25% of a block interval.
-    wait_bound_ms: [10, 50, 100, 500]
+    #
+    # RESCALED with the block interval, from [10, 50, 100, 500] at 2000 ms.
+    # The derivation is the 0.5%-25% span, not the digits: keeping the old
+    # values at a 1000 ms block would silently widen the sweep to 1%-50%, and
+    # the top of it would then be half a block rather than a quarter.
+    wait_bound_ms: [5, 25, 50, 250]
 
     # [METHOD] Tests the Phase 3 claim (ZK-Redact.md:508-509) that sharding
     # provides parallelism INDEPENDENTLY of native batch-verification support.
@@ -311,11 +409,16 @@ zkredact:
     # purpose of Exp 2. Extend past 64 if it has not flattened.
     sizes: [1, 2, 4, 8, 16, 32, 64]
 
-    # [DERIVED from block_timeout_ms = 2000] The staleness knob. Spans a
+    # [DERIVED from block_timeout_ms = 1000] The staleness knob. Spans a
     # quarter-block to two blocks, so the sweep crosses the boundary where a
     # batch starts spanning multiple blocks — which is where Fresh_i failures
     # should begin climbing. A single value would hide the trade-off entirely.
-    wait_bounds_ms: [500, 1000, 2000, 4000]
+    #
+    # RESCALED with the block interval, from [500, 1000, 2000, 4000] at 2000 ms.
+    # What transfers is the quarter-block-to-two-blocks span: at the old digits
+    # the sweep would start at half a block and end at four, and the crossing
+    # point this exists to capture would sit at the wrong end of it.
+    wait_bounds_ms: [250, 500, 1000, 2000]
 
   # ---------------------------------------------------------------------------
   # Phase 6 — Provenance Retrieval and Audit Verification
@@ -404,15 +507,22 @@ baselines:
     # timeout ever triggers during a run, the result is invalid and must be
     # discarded.
     #
-    # Derivation. Over vote_transport: fabric a round issues one Init plus one
-    # Vote per committee member, submitted SERIALLY, and each submit waits for
-    # its transaction to be ordered into a block:
+    # Derivation. The floor validate-config enforces is the WORST CASE, not the
+    # cost of a round:
     #
     #     floor = (1 + committee_size) x block_timeout_ms
-    #           = (1 + 7) x 2000 = 16000 ms
+    #           = (1 + 7) x 1000 = 8000 ms
     #
-    # 2x that floor is the headroom for endorsement and the commit-status round
-    # trip, which measured ~2.1 s per submit against a 2.0 s block timeout.
+    # It assumes every submit is serialised into its own block, which is what
+    # happened before the tally was split out of Vote. A round now costs TWO
+    # blocks — ballots share one, Close takes the second — so the real cost is
+    # ~2 x block_timeout_ms and the floor is roughly 4x conservative. That is
+    # deliberate: this window must never fire, and a guard sized to the happy
+    # path fires the first time a block is slow.
+    #
+    # vote_window_ms stays at 32000 rather than tracking the halved block
+    # interval down, for the same reason. It is a timeout that invalidates a run
+    # when it triggers, not a parameter anything is measured against.
     #
     # It was 5000 — sized for in_process voting, where a round costs
     # microseconds. Over fabric the window expired mid-round every time, and
@@ -443,6 +553,28 @@ baselines:
     # baseline. validate-config warns while this reads in_process.
     vote_transport: "in_process"
 
+    # [METHOD] The transports Exp 1 measures this baseline over. BOTH ARMS, in
+    # ONE run.
+    #
+    # in_process is the like-for-like control: the other three systems in this
+    # evaluation authorize locally BY DESIGN, so comparing them against a
+    # networked Ref[10] alone compares a consensus protocol with three function
+    # calls. fabric is what Ref[10] actually costs to deploy. Publishing either
+    # one on its own misrepresents the comparison in one direction or the
+    # other, so both are recorded and every results row names its transport.
+    #
+    # They must be arms of one run. cmd/plot keeps only the newest results
+    # document per experiment — deliberately, so runs under different configs
+    # are never pooled — so two separate runs would end with the second
+    # silently replacing the first.
+    #
+    # Only Exp 1 sweeps this. Exp 2 and Exp 3 use vote_transport above, since
+    # neither is measuring authorization.
+    #
+    # ⚠️ The fabric arm needs a running network. Drop it to ["in_process"] for a
+    # dry run; a results file then carries one arm and says so in every row.
+    exp1_vote_transports: ["in_process", "fabric"]
+
     # [DECIDE] Gateway settings — required when vote_transport is "fabric",
     # ignored otherwise.
     #
@@ -461,7 +593,13 @@ baselines:
       # topology up whose peers this endpoint does not name, because dialing the
       # other topology's port either fails as a peer fault or reaches a leftover
       # peer whose numbers would be recorded as this topology's.
-      peer_endpoint: "localhost:7051"
+      # 11051 is peer0.org1 under the FULL topology, which is the measurement
+      # topology (network.sh: "up full  measurement topology"). It read 7051,
+      # which is peer0.org1 under MINIMAL — one endorser, one orderer, the
+      # topology that exists to verify the mechanism and not to measure it.
+      # network.sh refuses to bring full up against 7051, so the measurement
+      # config could only ever have driven the verification-only network.
+      peer_endpoint: "localhost:11051"
       # Must match the peer certificate's CN, or the TLS handshake fails with an
       # error that reads as a network fault rather than a naming one.
       peer_server_name: "peer0.org1.example.com"
@@ -624,12 +762,39 @@ experiments:
 
     systems: ["zkredact", "ref13_vrbc", "ref10_emt", "ref22_shen"]
 
-    # [DERIVED] HEADLINE PLOT: history depth fixed, ledger grows.
-    # Spans one full order of magnitude (1k -> 10k blocks), the minimum needed
-    # to separate O(1) from O(n) convincingly. The range also overlaps both
-    # Ref[13] (5k, 10k) and Ref[22] (100-1100), so each baseline is exercised
-    # in the regime its own authors tested.
-    ledger_sizes: [1000, 2000, 5000, 10000]
+    # [PROPOSED] HEADLINE PLOT: history depth fixed, ledger grows.
+    #
+    # Spans exactly one order of magnitude (100 -> 1000 blocks). That is the
+    # minimum the validator and the runner both enforce
+    # (validate-config:594, exp3_audit/runner.go:153): below 10x, O(1) cannot
+    # be separated from O(n) convincingly. The span sits ON the floor, so
+    # trimming either end fails validation.
+    #
+    # WHY IT MOVED DOWN. It was 1k -> 10k. The largest ledger costs
+    # max(ledger_sizes) x block_max_transactions source transactions, so 10000
+    # blocks required dataset.base_transactions = 1,000,000 -- and that dataset
+    # costs ~9.4 h of single-threaded setup in Ref[13] and Ref[22] before any
+    # measurement. base_transactions went to 100,000; this sweep follows it.
+    # The alternative was cutting block_max_transactions to 10, rejected
+    # because that parameter is SHARED with Exp 1 and Exp 2 and would move the
+    # block cadence every system is measured on.
+    #
+    # WHAT THIS COSTS, AND HOW TO READ AROUND IT. Two things:
+    #
+    #   1. Ref[13]'s authors tested 5k and 10k blocks; that overlap is gone.
+    #      Ref[22]'s 100-1100 range still overlaps this sweep completely.
+    #
+    #   2. classifyScaling may misread the scaling class here. It compares
+    #      TotalTime = retrieval + verification, and Ref[10]'s verification
+    #      tracks history depth rather than ledger size -- a large constant
+    #      that swamps the ledger-dependent part at small ledgers. The pilot
+    #      documents this exact effect and expected it to vanish by 1k-10k;
+    #      at 100-1000 it may not.
+    #
+    # So treat the classifier's verdict as unreliable at this scale and read
+    # the decomposition instead: retrieval_latency and verification_time are
+    # recorded separately for precisely this reason.
+    ledger_sizes: [100, 200, 500, 1000]
 
     # [METHOD] SECOND PLOT: ledger fixed, history depth grows. Geometric, since
     # cost is expected to scale with depth rather than step linearly.

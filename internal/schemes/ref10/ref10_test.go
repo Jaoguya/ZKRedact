@@ -461,12 +461,12 @@ func TestVerifySigmaRejectsForgedSets(t *testing.T) {
 		t.Fatal("no round recorded for a granted request")
 	}
 
-	if !verifySigma(rec.ContractAddr, req.ID, rec.Approved, testThreshold) {
+	if !verifySigma(rec.ContractAddr, req.ID, rec.CertDigest, rec.Approved, testThreshold) {
 		t.Fatal("a genuine Sigma failed verification")
 	}
 
 	t.Run("below threshold", func(t *testing.T) {
-		if verifySigma(rec.ContractAddr, req.ID, rec.Approved[:testThreshold-1], testThreshold) {
+		if verifySigma(rec.ContractAddr, req.ID, rec.CertDigest, rec.Approved[:testThreshold-1], testThreshold) {
 			t.Errorf("accepted a Sigma below threshold")
 		}
 	})
@@ -478,19 +478,19 @@ func TestVerifySigmaRejectsForgedSets(t *testing.T) {
 		for i := 0; i < testThreshold; i++ {
 			padded = append(padded, rec.Approved[0])
 		}
-		if verifySigma(rec.ContractAddr, req.ID, padded, testThreshold) {
+		if verifySigma(rec.ContractAddr, req.ID, rec.CertDigest, padded, testThreshold) {
 			t.Errorf("accepted a Sigma made of one member's repeated vote")
 		}
 	})
 
 	t.Run("replayed onto another request", func(t *testing.T) {
-		if verifySigma(rec.ContractAddr, "req-other", rec.Approved, testThreshold) {
+		if verifySigma(rec.ContractAddr, "req-other", rec.CertDigest, rec.Approved, testThreshold) {
 			t.Errorf("accepted a Sigma replayed onto a different request")
 		}
 	})
 
 	t.Run("replayed onto another contract", func(t *testing.T) {
-		if verifySigma(contractAddress("other"), req.ID, rec.Approved, testThreshold) {
+		if verifySigma(contractAddress("other"), req.ID, rec.CertDigest, rec.Approved, testThreshold) {
 			t.Errorf("accepted a Sigma replayed onto a different contract")
 		}
 	})
@@ -749,7 +749,7 @@ func (forgingTransport) Name() string { return "forging_test" }
 
 func (f forgingTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, error) {
 	out := make([]ballot, 0, len(r.Members))
-	msg := voteMessage(r.ContractAddr, r.RequestID, true)
+	msg := voteMessage(r.ContractAddr, r.RequestID, certDigest(r.Cert), true)
 
 	for i, m := range r.Members {
 		if i < f.genuine {
@@ -1076,7 +1076,7 @@ func TestAuditRejectsDuplicatePaddedRecord(t *testing.T) {
 	found, _, _ := s.ledger.scanForRedactions("tx-00000004")
 	tx, _ := s.ledger.lookup(found[0].RdtTxID)
 
-	entries, err := parseSigma(tx.rdt.Evidence)
+	_, entries, err := parseSigma(tx.rdt.Evidence)
 	if err != nil {
 		t.Fatalf("parseSigma: %v", err)
 	}
@@ -1109,7 +1109,7 @@ func TestSigmaRoundTrip(t *testing.T) {
 		t.Fatalf("Authorize: %v", err)
 	}
 
-	entries, err := parseSigma(auth.Evidence)
+	_, entries, err := parseSigma(auth.Evidence)
 	if err != nil {
 		t.Fatalf("parseSigma: %v", err)
 	}
@@ -1126,8 +1126,13 @@ func TestSigmaRoundTrip(t *testing.T) {
 		}
 	}
 
-	for _, bad := range [][]byte{nil, {}, []byte("garbage"), []byte("a\x1fzz\x1f01\x1e")} {
-		if _, err := parseSigma(bad); err == nil {
+	for _, bad := range [][]byte{
+		nil, {},
+		[]byte("garbage"),                     // no digest separator at all
+		[]byte("digest\x1ea\x1fzz\x1f01\x1e"), // malformed scalar
+		[]byte("\x1ea\x1f01\x1f02\x1e"),       // empty certificate digest
+	} {
+		if _, _, err := parseSigma(bad); err == nil {
 			t.Errorf("parseSigma accepted malformed input %q", bad)
 		}
 	}

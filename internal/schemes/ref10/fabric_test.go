@@ -170,15 +170,19 @@ func testVoteRound(t *testing.T, memberCount int, granted bool) *voteRound {
 	}
 }
 
+// fakeRoundJSON is the canned reply the fake session returns for any read.
+//
+// Collect no longer reads a round — that Evaluate disappeared with Init — so
+// nothing in the transport consumes this. It is kept so the fake still answers
+// a read with well-formed JSON rather than an empty buffer, which would mask a
+// decode bug if a read ever came back.
 func fakeRoundJSON(r *voteRound) string {
-	cr := chainRound{
-		ContractAddr: r.ContractAddr,
-		RequestID:    r.RequestID,
-		TargetTxID:   r.Cert.TargetTxID,
-		RequesterID:  r.Cert.RequesterID,
-		Threshold:    r.Threshold,
-	}
-	b, _ := json.Marshal(cr)
+	b, _ := json.Marshal(chainRoundPolicy{
+		CommitteeSize: len(r.Members),
+		Threshold:     r.Threshold,
+		CAPubX:        "aa",
+		CAPubY:        "bb",
+	})
 	return string(b)
 }
 
@@ -210,14 +214,8 @@ func TestFabricTransportSubmitsOneVotePerMember(t *testing.T) {
 		switch c.Fn {
 		case "Init":
 			inits++
-			if c.Kind != "submit" {
-				t.Errorf("Init must be submitted, not evaluated: it writes the round")
-			}
 		case "Query":
 			queries++
-			if c.Kind != "evaluate" {
-				t.Errorf("Query must be evaluated, not submitted: it is read-only")
-			}
 		case "Vote":
 			votes++
 			votesBy[c.Member]++
@@ -228,11 +226,22 @@ func TestFabricTransportSubmitsOneVotePerMember(t *testing.T) {
 		}
 	}
 
-	if inits != 1 {
-		t.Errorf("expected the round to be opened once, got %d Init calls", inits)
+	// A ROUND IS TWO BLOCKS, AND THIS IS THE TEST THAT KEEPS IT THAT WAY.
+	//
+	// Init cost a whole block before any ballot could read what it wrote, and
+	// each member's Query was a round trip whose result was discarded — the CA
+	// signature was always checked against the local certificate. Both are
+	// gone. Restoring either puts a full BatchTimeout back on every
+	// authorization, and nothing else in the suite would notice: the protocol
+	// would still be correct, just a third slower per round.
+	if inits != 0 {
+		t.Errorf("Collect issued %d Init calls; the round-opening transaction was "+
+			"removed and a round must cost ballots + Close, not three blocks", inits)
 	}
-	if queries != 5 {
-		t.Errorf("expected each of 5 members to read the round, got %d Query calls", queries)
+	if queries != 0 {
+		t.Errorf("Collect issued %d Query calls; members verify the CA-signed "+
+			"certificate they were handed, so reading the round back is a round "+
+			"trip whose result is discarded", queries)
 	}
 	if votes != 5 {
 		t.Errorf("expected 5 votes, got %d", votes)
@@ -308,7 +317,7 @@ func TestFabricTransportSignaturesVerify(t *testing.T) {
 		}
 
 		m := byID[bal.NodeID]
-		msg := voteMessage(r.ContractAddr, r.RequestID, bal.Approve)
+		msg := voteMessage(r.ContractAddr, r.RequestID, certDigest(r.Cert), bal.Approve)
 		if !m.Key.SchnorrPublicKey.Verify(msg, &crypto.SchnorrSignature{E: e, S: s}) {
 			t.Errorf("signature submitted for %s does not verify under its key", bal.NodeID)
 		}
@@ -446,51 +455,78 @@ func TestFabricTransportCloseReleasesSessions(t *testing.T) {
 func TestWireFormatMatchesChaincode(t *testing.T) {
 	r := testVoteRound(t, 3, true)
 
-	roundJSON, err := encodeRound(r)
+	policyJSON, err := encodeRoundPolicy(len(r.Members), r.Threshold, r.CA)
 	if err != nil {
-		t.Fatalf("encodeRound: %v", err)
+		t.Fatalf("encodeRoundPolicy: %v", err)
 	}
-
 	for _, field := range []string{
-		`"contract_addr"`, `"request_id"`, `"target_tx_id"`, `"requester_id"`,
-		`"cert"`, `"threshold"`,
-		`"requester_known"`, `"redactable"`, `"satisfies"`,
-		`"policy_id"`, `"policy_ver"`, `"attributes"`,
+		`"committee_size"`, `"threshold"`, `"ca_pub_x"`, `"ca_pub_y"`,
 	} {
-		if !strings.Contains(roundJSON, field) {
-			t.Errorf("round JSON is missing %s; the contract would decode it as zero\n  %s",
-				field, roundJSON)
+		if !strings.Contains(policyJSON, field) {
+			t.Errorf("round policy JSON is missing %s; the contract would decode it "+
+				"as zero\n  %s", field, policyJSON)
 		}
 	}
 
 	sig := &crypto.SchnorrSignature{E: big.NewInt(7), S: big.NewInt(9)}
-	ballotJSON, err := encodeBallot("id-000", true, sig)
+	ballotJSON, err := encodeBallot("id-000", true, r, sig)
 	if err != nil {
 		t.Fatalf("encodeBallot: %v", err)
 	}
-	for _, field := range []string{`"node_id"`, `"approve"`, `"e"`, `"s"`} {
+	for _, field := range []string{
+		`"node_id"`, `"approve"`, `"e"`, `"s"`,
+		`"request_id"`, `"target_tx_id"`, `"cert"`,
+		`"requester_known"`, `"redactable"`, `"satisfies"`,
+		`"policy_id"`, `"policy_ver"`, `"attributes"`,
+		`"sig_e"`, `"sig_s"`,
+	} {
 		if !strings.Contains(ballotJSON, field) {
 			t.Errorf("ballot JSON is missing %s\n  %s", field, ballotJSON)
 		}
 	}
 }
 
-// TestEncodeRoundCarriesThreshold guards the field whose loss is silent: a
-// threshold decoding as 0 would let a single ballot close the round.
-func TestEncodeRoundCarriesThreshold(t *testing.T) {
-	r := testVoteRound(t, 7, true)
-	r.Threshold = 5
+// TestEncodeBallotCarriesTheCASignature is the guard that makes removing Init
+// safe on the wire.
+//
+// The CA signs P_C in validate(), and encodeRound used to drop the signature at
+// the boundary — so the contract received a certificate it could not check and
+// trusted it anyway. A ballot that reaches the contract without sig_e/sig_s now
+// authorises nothing, and this pins that the encoder actually carries them.
+func TestEncodeBallotCarriesTheCASignature(t *testing.T) {
+	r := testVoteRound(t, 3, true)
+	sig := &crypto.SchnorrSignature{E: big.NewInt(7), S: big.NewInt(9)}
 
-	roundJSON, err := encodeRound(r)
+	ballotJSON, err := encodeBallot("id-000", true, r, sig)
 	if err != nil {
-		t.Fatalf("encodeRound: %v", err)
+		t.Fatalf("encodeBallot: %v", err)
 	}
-	var decoded chainRound
-	if err := json.Unmarshal([]byte(roundJSON), &decoded); err != nil {
+	var decoded chainBallot
+	if err := json.Unmarshal([]byte(ballotJSON), &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.Threshold != 5 {
-		t.Errorf("threshold decoded as %d, want 5", decoded.Threshold)
+	if decoded.Cert.SigE == "" || decoded.Cert.SigS == "" {
+		t.Fatal("the ballot carries no CA signature; the contract would accept a " +
+			"certificate the caller wrote for itself, and cert.Attributes decides " +
+			"which committee is selected")
+	}
+	if decoded.RequestID != r.RequestID {
+		t.Errorf("request id did not survive: %q", decoded.RequestID)
+	}
+	if decoded.Cert.Attributes != r.Cert.Attributes {
+		t.Errorf("attribute policy did not survive: %q", decoded.Cert.Attributes)
+	}
+}
+
+// TestEncodeBallotRejectsMissingCertificate: without P_C there is nothing for
+// the contract to verify, and the committee could not be derived at all.
+func TestEncodeBallotRejectsMissingCertificate(t *testing.T) {
+	r := testVoteRound(t, 3, true)
+	r.Cert = nil
+	sig := &crypto.SchnorrSignature{E: big.NewInt(7), S: big.NewInt(9)}
+
+	if _, err := encodeBallot("id-000", true, r, sig); err == nil {
+		t.Error("a ballot with no certificate was encoded")
 	}
 }
 
@@ -498,10 +534,10 @@ func TestEncodeRoundCarriesThreshold(t *testing.T) {
 // the wire as an empty one, which the contract would reject as malformed and
 // report as a network error.
 func TestEncodeBallotRejectsMissingSignature(t *testing.T) {
-	if _, err := encodeBallot("id-000", true, nil); err == nil {
+	if _, err := encodeBallot("id-000", true, testVoteRound(t, 3, true), nil); err == nil {
 		t.Errorf("a nil signature was encoded")
 	}
-	if _, err := encodeBallot("id-000", true, &crypto.SchnorrSignature{}); err == nil {
+	if _, err := encodeBallot("id-000", true, testVoteRound(t, 3, true), &crypto.SchnorrSignature{}); err == nil {
 		t.Errorf("a signature with nil scalars was encoded")
 	}
 }

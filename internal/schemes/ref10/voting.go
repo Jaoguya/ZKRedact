@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -162,11 +163,24 @@ func (ca *certAuthority) verifyCert(cert *policyCert) bool {
 // It binds the decision to this specific request and contract instance, so a
 // signature captured from one round cannot be replayed into another. Without
 // the binding, one honest "yes" would authorise every subsequent redaction.
-func voteMessage(contractAddr, requestID string, approve bool) []byte {
+func voteMessage(contractAddr, requestID, certDigest string, approve bool) []byte {
 	h := sha256.New()
 	h.Write([]byte(contractAddr))
 	h.Write([]byte{0x1f})
 	h.Write([]byte(requestID))
+	h.Write([]byte{0x1f})
+	// WHICH P_C THIS VOTE IS ABOUT.
+	//
+	// Over the fabric transport the certificate travels with the ballot rather
+	// than sitting in a stored round — that is what removes Algorithm 3
+	// init()'s block from every authorization. A ballot must therefore say
+	// which certificate it approved, or a signature collected against one
+	// CA-signed P_C verifies unchanged beside another and the contract counts
+	// it in a group its signer never approved.
+	//
+	// Both transports sign the same message, so the in-process path is not
+	// weaker than the networked one.
+	h.Write([]byte(certDigest))
 	h.Write([]byte{0x1f})
 	if approve {
 		h.Write([]byte("yes"))
@@ -174,6 +188,20 @@ func voteMessage(contractAddr, requestID string, approve bool) []byte {
 		h.Write([]byte("no"))
 	}
 	return h.Sum(nil)
+}
+
+// certDigest identifies a certificate for binding into a vote.
+//
+// Matches the chaincode's PolicyCert.Digest(): sha256 over the same canonical
+// encoding the CA signed. A divergence rejects every honest ballot on the
+// fabric transport while the in-process path keeps working, which is the
+// hardest shape of failure to locate.
+func certDigest(c *policyCert) string {
+	if c == nil {
+		return ""
+	}
+	sum := sha256.Sum256(c.bytes())
+	return hex.EncodeToString(sum[:])
 }
 
 // ballot is one submitted vote: {yes/no, xi_j}.
@@ -249,7 +277,7 @@ func (localTransport) Collect(ctx context.Context, r *voteRound) ([]ballot, erro
 		approve := r.Cert.Granted()
 
 		// Line 6: produce xi_j.
-		msg := voteMessage(r.ContractAddr, r.RequestID, approve)
+		msg := voteMessage(r.ContractAddr, r.RequestID, certDigest(r.Cert), approve)
 		xi, err := m.Key.Sign(msg, nil)
 		if err != nil {
 			return out, fmt.Errorf("ref10: vote signature for %s: %w", m.Identity.ID, err)
@@ -337,7 +365,7 @@ func runVoteRound(ctx context.Context, t transport, r *voteRound) ([]ballot, err
 		}
 		// Every counted vote is verified. An unverified ballot reaching the
 		// tally is exactly Theorem 2's failure case.
-		msg := voteMessage(r.ContractAddr, r.RequestID, true)
+		msg := voteMessage(r.ContractAddr, r.RequestID, certDigest(r.Cert), true)
 		if !b.Key.Verify(msg, b.Xi) {
 			continue
 		}
@@ -356,8 +384,14 @@ func runVoteRound(ctx context.Context, t transport, r *voteRound) ([]ballot, err
 // included. Hex with explicit separators keeps the scalars unambiguous;
 // concatenating raw big-endian bytes would not, since E and S are
 // variable-length.
-func sigmaBytes(approved []ballot) []byte {
+// The certificate digest leads the encoding. An auditor has only what the
+// ledger stores, and the signed message now includes that digest, so without it
+// Sigma is unverifiable after the fact — the signatures would be checked
+// against a message nobody signed.
+func sigmaBytes(digest string, approved []ballot) []byte {
 	var b []byte
+	b = append(b, digest...)
+	b = append(b, 0x1e)
 	for _, x := range approved {
 		b = append(b, x.NodeID...)
 		b = append(b, 0x1f)
@@ -381,26 +415,35 @@ type sigmaEntry struct {
 // (docs/baselines/ref10-emt.md §2). A malformed Sigma is an error, not an empty
 // set: silently returning nothing would let a corrupted record verify as though
 // it carried no votes to check.
-func parseSigma(b []byte) ([]sigmaEntry, error) {
+func parseSigma(b []byte) (string, []sigmaEntry, error) {
 	if len(b) == 0 {
-		return nil, errors.New("ref10: empty Sigma")
+		return "", nil, errors.New("ref10: empty Sigma")
 	}
+	recs := bytes.Split(b, []byte{0x1e})
+	if len(recs) < 2 {
+		return "", nil, errors.New("ref10: Sigma carries no certificate digest")
+	}
+	digest := string(recs[0])
+	if digest == "" {
+		return "", nil, errors.New("ref10: Sigma carries an empty certificate digest")
+	}
+
 	var out []sigmaEntry
-	for _, rec := range bytes.Split(b, []byte{0x1e}) {
+	for _, rec := range recs[1:] {
 		if len(rec) == 0 {
 			continue
 		}
 		parts := bytes.Split(rec, []byte{0x1f})
 		if len(parts) != 3 {
-			return nil, fmt.Errorf("ref10: malformed Sigma entry (%d fields, want 3)", len(parts))
+			return "", nil, fmt.Errorf("ref10: malformed Sigma entry (%d fields, want 3)", len(parts))
 		}
 		e, ok := new(big.Int).SetString(string(parts[1]), 16)
 		if !ok {
-			return nil, errors.New("ref10: malformed Sigma challenge scalar")
+			return "", nil, errors.New("ref10: malformed Sigma challenge scalar")
 		}
 		sc, ok := new(big.Int).SetString(string(parts[2]), 16)
 		if !ok {
-			return nil, errors.New("ref10: malformed Sigma response scalar")
+			return "", nil, errors.New("ref10: malformed Sigma response scalar")
 		}
 		out = append(out, sigmaEntry{
 			NodeID: string(parts[0]),
@@ -408,9 +451,9 @@ func parseSigma(b []byte) ([]sigmaEntry, error) {
 		})
 	}
 	if len(out) == 0 {
-		return nil, errors.New("ref10: Sigma contains no votes")
+		return "", nil, errors.New("ref10: Sigma contains no votes")
 	}
-	return out, nil
+	return digest, out, nil
 }
 
 // requestIDFromRedactionTx recovers the request a tx_rdt authorised.
@@ -432,11 +475,11 @@ func requestIDFromRedactionTx(rdtID string) (string, bool) {
 // Unlike the voting round, this verifies EVERY signature with no early exit —
 // crypto.VerifyVotes is deliberately linear. A verifier that stopped at the
 // threshold would accept a Sigma padded with invalid signatures.
-func verifySigma(contractAddr, requestID string, approved []ballot, threshold int) bool {
+func verifySigma(contractAddr, requestID, digest string, approved []ballot, threshold int) bool {
 	if len(approved) < threshold {
 		return false
 	}
-	msg := voteMessage(contractAddr, requestID, true)
+	msg := voteMessage(contractAddr, requestID, digest, true)
 
 	votes := make([]crypto.Vote, 0, len(approved))
 	seen := make(map[string]bool, len(approved))

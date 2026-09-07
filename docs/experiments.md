@@ -65,6 +65,78 @@ Network topology (orgs, peers, consensus), hardware, and container resource limi
 are fixed across all runs and recorded in config. Any run whose environment differs
 is reported separately, never merged into a comparison table.
 
+### 1.3.1 On-chain / off-chain measurement boundary
+
+**The claim.** Every system's cryptographic cost is measured **off-chain and
+in-process**, and reported as `CryptoTime`. Consensus and ledger cost is
+reported **separately**, as `LedgerTime`. The two are never summed into one
+headline number.
+
+**Where each cost is real today.** This must be stated plainly, because a reader
+will otherwise assume symmetry that does not exist:
+
+| System | `CryptoTime` | `LedgerTime` |
+|---|---|---|
+| ZK-Redact | off-chain, in-process | **in-process ledger** — Merkle + map, no orderer |
+| Ref[10] | off-chain, in-process | **real Fabric** — the committee vote crosses gRPC, Raft and peer validation, two blocks per round |
+| Ref[13] | off-chain, in-process | **in-process ledger** |
+| Ref[22] | off-chain, in-process | **in-process ledger** |
+
+`grep -rl fabric-gateway internal/` returns exactly one file:
+`internal/schemes/ref10/fabric_gateway.go`. Nothing else in the tree opens a
+connection.
+
+**Why the off-chain half is sound, per baseline, from each paper's own
+methodology.** Each baseline draws this boundary itself:
+
+- **Ref[13]** reports Ethereum gas separately from *"the off-chain computation
+  costs of all compared schemes on CentOS 8.3.2011"*
+  ([Ref[13].md:574](../Reference/Ref%5B13%5D/Ref%5B13%5D.md#L574)); Figs. 5, 7
+  and 8 are captioned "off-chain computation costs", and query/audit metadata
+  travels *"via a secure off-chain channel"*
+  ([:339](../Reference/Ref%5B13%5D/Ref%5B13%5D.md#L339),
+  [:358](../Reference/Ref%5B13%5D/Ref%5B13%5D.md#L358)).
+- **Ref[22]**: *"the impact of communication is not considered in the test of
+  each functionality"*
+  ([Ref[22].md:775](../Reference/Ref%5B22%5D/Ref%5B22%5D.md#L775)).
+- **Ref[10]**: *"the consensus mechanism for redaction operations was not
+  included"* ([Ref[10].md:466](../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L466)) —
+  and its throughput figures come from Caliper driving **100 tps sustained**
+  ([:438](../Reference/Ref%5B10%5D/Ref%5B10%5D.md#L438)), a saturated regime in
+  which blocks are cut by message count rather than by `BatchTimeout`.
+
+Separating layers rather than reporting one aggregate is also the established
+benchmarking method for permissioned chains: BLOCKBENCH evaluates consensus,
+data, execution and application layers independently (Dinh et al., *IEEE TKDE*
+30(7):1366–1385, 2018, doi:10.1109/TKDE.2017.2781227), and Fabric's own
+performance characterisation attributes latency to block-formation
+configuration rather than to protocol work alone (Thakkar, Nathan and
+Viswanathan, *IEEE MASCOTS*, 2018, doi:10.1109/MASCOTS.2018.00034; Xu, Sun, Luo
+et al., *Information Processing & Management* 58, 2021).
+
+**The idle-network artefact, and what was done about it.** Ref[10] was charged
+on an **unsaturated** network where every block waits the full `BatchTimeout`,
+while its own figures come from Caliper at 100 tps where blocks are cut by
+message count. Two changes address that, both recorded in
+`docs/baselines/ref10-emt.md` §6 with the direction they favour:
+`block_timeout_ms` is 1000, derived from that paper's own 100 tps / 100
+tx-per-block cadence, and Algorithm 3's `init()` no longer occupies a
+transaction, taking a round from three blocks to two. Ref[10] authorizes in
+roughly **2.06 s** rather than 6.17 s.
+
+**The asymmetry that remains, and it is ours to disclose.** Ref[10] is still the
+only system charged consensus at all. Consequences that must appear beside any
+Exp 1 figure:
+
+1. Ref[10] is reported on **both** transports. `in_process` is the like-for-like
+   control against the other three; `fabric` is the deployed cost. Publishing
+   only one of the two is the actual misrepresentation.
+2. The ZK-Redact-vs-Ref[10] latency ratio is **not** an implementation speedup.
+   It is consensus-bound authorization against consensus-free authorization,
+   which is a design difference, and the capability matrix carries it.
+3. `LedgerTime` for ZK-Redact, Ref[13] and Ref[22] is an in-process ledger cost.
+   It must never be described as blockchain or consensus cost.
+
 ### 1.4 Request trace
 
 All systems replay the **same trace in the same order**. The trace controls:
@@ -273,6 +345,17 @@ matrix. Both Ref[10] (Table I) and Ref[13] (Table 1) use the same convention.
 | Per-transaction provenance history | ✓ | ✗ | ✗ | ✗ |
 | Audit independent of ledger size | ✓ | ✗ | sublinear | ✗ |
 | State-freshness revalidation | ✓ | ✗ | ✗ | ✗ |
+| **Authorization requires consensus** | ✗ | **✓** | ✗ | ✗ |
+
+> **The last row is the one Exp 1's latency column cannot be read without.**
+> Ref[10] is the only system whose authorization needs agreement among nodes —
+> Algorithm 3's vote is ordered on the ledger — while ZK-Redact's Phase 2/3,
+> Ref[13]'s trapdoor check and Ref[22]'s key check complete in-process by
+> design. A reader comparing seconds against milliseconds is otherwise
+> comparing a networked protocol with a function call, with nothing in the
+> table saying so. Every Exp 1 point additionally carries `auth_cost` —
+> consensus blocks, round trips, signature verifications — so the comparison
+> can be re-derived under a different block time instead of taken on trust.
 
 **PCH** (Derler et al., NDSS 2019 — cited as [22] in Ref[10], [17] in Ref[13], [13]
 in Ref[22]) is qualitatively compared in this matrix only. It is not implemented:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -11,8 +12,12 @@ import (
 // -----------------------------------------------------------------------------
 
 // These signatures were produced by pkg/crypto in the main module, over
-// voteMessage("con-golden-0001", "req-golden-0001", approve), and verified
-// there before being recorded here.
+// voteMessage("con-golden-0001", "req-golden-0001", goldenCertDigest, approve),
+// and verified there before being recorded here.
+//
+// REGENERATED when the certificate digest entered the signed message. The old
+// vectors signed (addr, requestID, approve) only; a ballot carrying its own
+// certificate has to bind it, or the same signature verifies against any P_C.
 //
 // WHY THEY EXIST. The chaincode is a separate Go module and cannot import
 // pkg/crypto, so its Schnorr verification is a second implementation of the
@@ -32,15 +37,61 @@ const (
 	goldenContractAddr = "con-golden-0001"
 	goldenRequestID    = "req-golden-0001"
 
-	goldenPubX = "84e1a05364cf2f8dcc42a03ad4d33b8bc4085691298e32af70b5aeed99008b9d"
-	goldenPubY = "6bf002766e0b3f68ed5ecaa8ed310efd013fdd0190a49597a58aa56b4a8a682c"
+	goldenTargetTx  = "tx-golden-0001"
+	goldenRequester = "id-golden"
+	goldenPolicyID  = "pol-golden"
+	// The attribute policy A_r, and it must be a string `satisfies` recognises.
+	// It was "validator" — syntactically fine, semantically empty: `satisfies`
+	// matches the literal "S OR R OR V", so every node failed eligibility and
+	// the committee was empty. Every unit test still passed, because none of
+	// them derived a committee from the golden certificate. smoke.sh caught it
+	// against the deployed contract; TestGoldenCertificateSelectsACommittee
+	// now catches it here.
+	goldenAttrs = "S OR R OR V"
 
-	goldenYesE = "560ee83d3df849623a36baac5c0b4ac04ce093d51f7af97573a3eb70170217d"
-	goldenYesS = "385d825ccf1e3774efd311f6270d46d8ebc09fe6439b6e969a8a66c5a078487b"
+	goldenPubX = "b07b38cbba315fa1ed0597049ba3514be6e86e190400bef368f6c02c84c8c716"
+	goldenPubY = "701ce97bf410478f263d55922292fc9f70d48c6281262817cc3aa103495c8cef"
 
-	goldenNoE = "652bdfe8e26ed1d27d6438fcb670a7190ff5045ec15caa5303521808d82d893e"
-	goldenNoS = "4c132efb3fb0475fc7d9c41f9ee396354bef0402da66644ec498d279fa082dd7"
+	// The CA key that signs P_C. Algorithm 4 line 1 verifies against this, and
+	// without it the certificate is whatever the caller typed.
+	goldenCAPubX = "5d78e3a8b6e42894b9abb7f178c6970ae6d6115f1ade994b6259ade8c9b7a3af"
+	goldenCAPubY = "4b387ebb70ab16aa93bab9671ea56b1499700138d9bce809afcba723cb7200b9"
+
+	goldenCertSigE   = "432e25f82cc6cd1a29aba737f96596bd60504bed53799383ce3f440f4dd50fab"
+	goldenCertSigS   = "8bcd77f70facf94c6b108f954410ca9b9bb546ecca5090c34bf3650547b073ef"
+	goldenCertDigest = "afb3c93412f33045c4a64de66ad65ed3c58290693cff5c26f72aab7b5b77b2a4"
+
+	goldenYesE = "33b3e03afbe5ec307810e3409e681a3ea15424a48db20950063fece372d28a0c"
+	goldenYesS = "056d993f8897f8127cfaa391e5b38cf5e1bb7009e1219e585930db7e2187cc97"
+
+	goldenNoE = "7ca5ea0ba570c63a2628d2d0878a5861549a8527965444dfa5ccb3b035060a67"
+	goldenNoS = "0bfadcd965a69e3b3521126bf4752018b827ab76b19ac152ba61d1b5f851b2aa"
 )
+
+// goldenCert is the CA-signed P_C every golden ballot votes on.
+func goldenCert() PolicyCert {
+	return PolicyCert{
+		TargetTxID:     goldenTargetTx,
+		RequesterID:    goldenRequester,
+		RequesterKnown: true,
+		Redactable:     true,
+		Satisfies:      true,
+		PolicyID:       goldenPolicyID,
+		PolicyVer:      1,
+		Attributes:     goldenAttrs,
+		SigE:           goldenCertSigE,
+		SigS:           goldenCertSigS,
+	}
+}
+
+func goldenPolicy() *RoundPolicy {
+	return &RoundPolicy{
+		CommitteeSize: 1,
+		Threshold:     1,
+		CAPubX:        goldenCAPubX,
+		CAPubY:        goldenCAPubY,
+	}
+}
 
 func goldenNode() Node {
 	return Node{
@@ -63,7 +114,7 @@ func TestChaincodeVerifiesPkgCryptoSignatures(t *testing.T) {
 		{"no vote", false, goldenNoE, goldenNoS},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bal := Ballot{NodeID: n.ID, Approve: tc.approve, E: tc.e, S: tc.s}
+			bal := Ballot{NodeID: n.ID, Approve: tc.approve, Cert: goldenCert(), E: tc.e, S: tc.s}
 
 			ok, err := verifyBallot(n, goldenContractAddr, goldenRequestID, bal)
 			if err != nil {
@@ -85,7 +136,7 @@ func TestChaincodeVerifiesPkgCryptoSignatures(t *testing.T) {
 func TestVerifyBallotRejectsWrongVoteDirection(t *testing.T) {
 	n := goldenNode()
 
-	flipped := Ballot{NodeID: n.ID, Approve: false, E: goldenYesE, S: goldenYesS}
+	flipped := Ballot{NodeID: n.ID, Approve: false, Cert: goldenCert(), E: goldenYesE, S: goldenYesS}
 	ok, err := verifyBallot(n, goldenContractAddr, goldenRequestID, flipped)
 	if err != nil {
 		t.Fatalf("verifyBallot: %v", err)
@@ -99,7 +150,7 @@ func TestVerifyBallotRejectsWrongVoteDirection(t *testing.T) {
 // is valid only for the contract and request it was cast in.
 func TestVerifyBallotRejectsReplayAcrossRounds(t *testing.T) {
 	n := goldenNode()
-	bal := Ballot{NodeID: n.ID, Approve: true, E: goldenYesE, S: goldenYesS}
+	bal := Ballot{NodeID: n.ID, Approve: true, Cert: goldenCert(), E: goldenYesE, S: goldenYesS}
 
 	for _, tc := range []struct{ name, addr, req string }{
 		{"different contract", "con-other", goldenRequestID},
@@ -122,7 +173,7 @@ func TestVerifyBallotRejectsWrongKey(t *testing.T) {
 	// Flip one nibble of the public key; still a syntactically valid hex string.
 	other.PubX = "74e1a05364cf2f8dcc42a03ad4d33b8bc4085691298e32af70b5aeed99008b9d"
 
-	bal := Ballot{NodeID: other.ID, Approve: true, E: goldenYesE, S: goldenYesS}
+	bal := Ballot{NodeID: other.ID, Approve: true, Cert: goldenCert(), E: goldenYesE, S: goldenYesS}
 	ok, _ := verifyBallot(other, goldenContractAddr, goldenRequestID, bal)
 	if ok {
 		t.Errorf("signature verified under a key that did not produce it")
@@ -137,9 +188,9 @@ func TestVerifyBallotRejectsMalformedInput(t *testing.T) {
 		bal  Ballot
 		node Node
 	}{
-		{"non-hex e", Ballot{NodeID: n.ID, Approve: true, E: "zz", S: goldenYesS}, n},
-		{"non-hex s", Ballot{NodeID: n.ID, Approve: true, E: goldenYesE, S: "zz"}, n},
-		{"empty e", Ballot{NodeID: n.ID, Approve: true, E: "", S: goldenYesS}, n},
+		{"non-hex e", Ballot{NodeID: n.ID, Approve: true, Cert: goldenCert(), E: "zz", S: goldenYesS}, n},
+		{"non-hex s", Ballot{NodeID: n.ID, Approve: true, Cert: goldenCert(), E: goldenYesE, S: "zz"}, n},
+		{"empty e", Ballot{NodeID: n.ID, Approve: true, Cert: goldenCert(), E: "", S: goldenYesS}, n},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := verifyBallot(tc.node, goldenContractAddr, goldenRequestID, tc.bal); err == nil {
@@ -149,7 +200,7 @@ func TestVerifyBallotRejectsMalformedInput(t *testing.T) {
 	}
 
 	t.Run("zero scalars", func(t *testing.T) {
-		bal := Ballot{NodeID: n.ID, Approve: true, E: "0", S: "0"}
+		bal := Ballot{NodeID: n.ID, Approve: true, Cert: goldenCert(), E: "0", S: "0"}
 		ok, err := verifyBallot(n, goldenContractAddr, goldenRequestID, bal)
 		if err != nil {
 			t.Fatalf("verifyBallot: %v", err)
@@ -306,103 +357,235 @@ func TestGrantedRequiresAllThreeConditions(t *testing.T) {
 // Wire format
 // -----------------------------------------------------------------------------
 
-// TestRoundRoundTripsThroughJSON covers the encoding the client and contract
+// TestBallotRoundTripsThroughJSON covers the encoding the client and contract
 // share. A field that fails to survive the round trip would arrive zeroed, and
-// a zeroed Threshold would close every round on its first vote.
-func TestRoundRoundTripsThroughJSON(t *testing.T) {
-	in := Round{
-		ContractAddr: "con-1",
-		RequestID:    "req-1",
-		TargetTxID:   "tx-1",
-		RequesterID:  "id-1",
+// a zeroed certificate would fail the CA check on every honest ballot.
+func TestBallotRoundTripsThroughJSON(t *testing.T) {
+	in := Ballot{
+		NodeID: "id-1", Approve: true,
+		RequestID: "req-1", TargetTxID: "tx-1",
 		Cert: PolicyCert{
 			TargetTxID: "tx-1", RequesterID: "id-1",
 			RequesterKnown: true, Redactable: true, Satisfies: true,
 			PolicyID: "pol-1", PolicyVer: 3, Attributes: "S OR R OR V",
+			SigE: goldenCertSigE, SigS: goldenCertSigS,
 		},
-		Committee: []string{"a", "b", "c"},
-		Threshold: 5,
+		E: goldenYesE, S: goldenYesS,
 	}
 
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var out Round
+	var out Ballot
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if out.Threshold != in.Threshold {
-		t.Errorf("Threshold did not survive: got %d, want %d", out.Threshold, in.Threshold)
-	}
 	if out.Cert.PolicyVer != in.Cert.PolicyVer {
 		t.Errorf("PolicyVer did not survive: got %d, want %d", out.Cert.PolicyVer, in.Cert.PolicyVer)
 	}
 	if !out.Cert.Granted() {
 		t.Errorf("certificate decision did not survive the round trip")
 	}
-	if len(out.Committee) != len(in.Committee) {
-		t.Errorf("committee did not survive: got %v", out.Committee)
+	if out.Cert.SigE != in.Cert.SigE || out.Cert.SigS != in.Cert.SigS {
+		t.Errorf("CA signature did not survive the round trip")
+	}
+	if out.Cert.Digest() != in.Cert.Digest() {
+		t.Errorf("certificate digest changed across the round trip; ballots would " +
+			"be grouped apart from the votes they were cast with")
+	}
+	if out.RequestID != in.RequestID || out.TargetTxID != in.TargetTxID {
+		t.Errorf("request identifiers did not survive: %+v", out)
 	}
 }
 
 func TestVoteMessageMatchesDocumentedEncoding(t *testing.T) {
+	d := goldenCertDigest
+
 	// Distinct inputs must not collide through the separator, or a vote could be
 	// replayed between rounds whose ids concatenate identically.
-	a := voteMessage("con-1", "req-12", true)
-	b := voteMessage("con-1req", "-12", true)
+	a := voteMessage("con-1", "req-12", d, true)
+	b := voteMessage("con-1req", "-12", d, true)
 
 	if fmt.Sprintf("%x", a) == fmt.Sprintf("%x", b) {
 		t.Errorf("field separator does not prevent a concatenation collision")
 	}
 
-	yes := voteMessage("con-1", "req-1", true)
-	no := voteMessage("con-1", "req-1", false)
+	yes := voteMessage("con-1", "req-1", d, true)
+	no := voteMessage("con-1", "req-1", d, false)
 	if fmt.Sprintf("%x", yes) == fmt.Sprintf("%x", no) {
 		t.Errorf("yes and no produce the same message")
 	}
 }
 
 // -----------------------------------------------------------------------------
-// Committee size (regression)
+// The CA certificate — what replaced init()'s ledger write
 // -----------------------------------------------------------------------------
 
-// TestInitRejectsMissingCommitteeSize covers the defect where Init selected
-// every eligible node instead of committee_size.
+// TestChaincodeVerifiesCACertificate is the cross-module agreement test for
+// P_C, the same role TestChaincodeVerifiesPkgCryptoSignatures plays for
+// ballots.
 //
-// With the field absent the round would open with the whole eligible pool as
-// its committee, so a registered node that was never selected could still have
-// its vote counted — the membership guard failing open. The pool is normally
-// far larger than the committee, so this is not a marginal difference.
-func TestInitRejectsMissingCommitteeSize(t *testing.T) {
-	var r Round
-	if err := json.Unmarshal([]byte(`{
-		"contract_addr":"con-1","request_id":"req-1","threshold":5
-	}`), &r); err != nil {
-		t.Fatalf("decode: %v", err)
+// PolicyCert.Bytes() here must match internal/schemes/ref10.policyCert.bytes()
+// exactly. If they drift, every honest certificate fails and no round ever
+// reaches threshold — which reads as a slow network, not a broken encoder.
+func TestChaincodeVerifiesCACertificate(t *testing.T) {
+	ok, err := verifyCert(goldenPolicy(), goldenCert())
+	if err != nil {
+		t.Fatalf("verifyCert: %v", err)
 	}
-	if r.CommitteeSize != 0 {
-		t.Fatalf("expected committee_size to decode as 0 when absent, got %d", r.CommitteeSize)
+	if !ok {
+		t.Fatal("chaincode rejected a certificate that pkg/crypto signed and accepted; " +
+			"PolicyCert.Bytes has drifted from ref10.policyCert.bytes")
 	}
-	// Init must refuse this rather than falling back to the eligible pool.
-	// The check lives in Init; this asserts the decoded shape it guards on.
+	if got := goldenCert().Digest(); got != goldenCertDigest {
+		t.Fatalf("certificate digest changed: got %s, want %s; every recorded ballot "+
+			"signature is over the old one", got, goldenCertDigest)
+	}
 }
 
-// TestThresholdCannotExceedCommitteeSize: a threshold above the committee makes
-// approval impossible, and the round would sit open until it timed out — which
-// reads as a slow network rather than a configuration error.
-func TestThresholdCannotExceedCommitteeSize(t *testing.T) {
-	var r Round
+// TestGoldenCertificateSelectsACommittee is the check the unit suite was
+// missing.
+//
+// The golden certificate carries A_r, and A_r decides who is eligible. A
+// certificate whose Attributes string `satisfies` does not recognise selects
+// NOBODY — every node fails eligibility, committeeFor returns "only 0 nodes
+// satisfy the policy", and no round can ever reach threshold. That is what
+// happened with Attributes "validator": the CA signature verified, the digest
+// matched, every existing test passed, and the deployed contract rejected every
+// ballot for a reason that named the attribute policy rather than the vote.
+//
+// Verifying a certificate is not the same as being able to act on it.
+func TestGoldenCertificateSelectsACommittee(t *testing.T) {
+	nodes := []Node{goldenNode()}
+
+	committee, err := selectCommittee(goldenContractAddr, nodes, goldenCert().Attributes, 1)
+	if err != nil {
+		t.Fatalf("selectCommittee with the golden certificate: %v", err)
+	}
+	if len(committee) != 1 || committee[0] != goldenNode().ID {
+		t.Fatalf("the golden certificate selects %v, want [%s]; A_r = %q is not a "+
+			"policy `satisfies` recognises, so no ballot could ever be counted",
+			committee, goldenNode().ID, goldenCert().Attributes)
+	}
+}
+
+// TestUnsignedCertificateIsRejected is the guard that makes removing init()
+// safe.
+//
+// The stored round used to be the reason a member was not taking the
+// requester's word for P_C. Now the CA signature is that reason, so a
+// certificate without a valid one must not authorise anything. If this passes
+// while the check is disabled, the caller can assert its own eligibility and
+// the committee derived from cert.Attributes becomes the caller's to choose.
+func TestUnsignedCertificateIsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(c *PolicyCert)
+	}{
+		{"no signature at all", func(c *PolicyCert) { c.SigE, c.SigS = "", "" }},
+		{"signature over a different target", func(c *PolicyCert) { c.TargetTxID = "tx-other" }},
+		{"signature over a different requester", func(c *PolicyCert) { c.RequesterID = "id-other" }},
+		{"attributes altered after signing", func(c *PolicyCert) { c.Attributes = "V" }},
+		{"decision flipped after signing", func(c *PolicyCert) { c.Satisfies = false }},
+		{"policy version bumped after signing", func(c *PolicyCert) { c.PolicyVer = 2 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert := goldenCert()
+			tc.mut(&cert)
+			ok, err := verifyCert(goldenPolicy(), cert)
+			if err != nil {
+				t.Fatalf("verifyCert: %v", err)
+			}
+			if ok {
+				t.Error("a certificate the CA did not sign was accepted; P_C is " +
+					"whatever the caller types and Algorithm 4 line 1 is not running")
+			}
+		})
+	}
+}
+
+// TestBallotSignatureBindsTheCertificate pins that a member's signature says
+// WHICH P_C it voted on.
+//
+// Without this, a ballot collected against one CA-signed certificate verifies
+// unchanged beside a different one, and Close would count it in a group the
+// member never approved.
+func TestBallotSignatureBindsTheCertificate(t *testing.T) {
+	n := goldenNode()
+
+	other := goldenCert()
+	other.PolicyVer = 99 // a different certificate, so a different digest
+
+	bal := Ballot{NodeID: n.ID, Approve: true, Cert: other, E: goldenYesE, S: goldenYesS}
+	ok, err := verifyBallot(n, goldenContractAddr, goldenRequestID, bal)
+	if err != nil {
+		t.Fatalf("verifyBallot: %v", err)
+	}
+	if ok {
+		t.Error("a ballot verified against a certificate it was not signed over; " +
+			"the certificate digest is not bound into the vote message")
+	}
+}
+
+// TestRoundPolicyRejectsCallerControlledThreshold covers what RegisterRoundPolicy
+// exists to prevent.
+//
+// The threshold and committee size must come from registered state, never from
+// a ballot. A voter naming its own threshold authorises alone; a voter naming
+// its own committee size shrinks N_auth until it holds a majority.
+func TestRoundPolicyRejectsCallerControlledThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{"threshold above committee", `{"committee_size":3,"threshold":5,"ca_pub_x":"aa","ca_pub_y":"bb"}`},
+		{"zero threshold", `{"committee_size":3,"threshold":0,"ca_pub_x":"aa","ca_pub_y":"bb"}`},
+		{"zero committee", `{"committee_size":0,"threshold":1,"ca_pub_x":"aa","ca_pub_y":"bb"}`},
+		{"no CA key", `{"committee_size":3,"threshold":2}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var p RoundPolicy
+			if err := json.Unmarshal([]byte(tc.json), &p); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			bad := p.Threshold <= 0 || p.CommitteeSize <= 0 ||
+				p.Threshold > p.CommitteeSize || p.CAPubX == "" || p.CAPubY == ""
+			if !bad {
+				t.Fatalf("fixture %+v is not the invalid shape this test claims", p)
+			}
+		})
+	}
+}
+
+// TestBallotOmittingCommitteeSizeCannotWiden replaces the old
+// TestInitRejectsMissingCommitteeSize.
+//
+// The defect it guarded against was selecting the whole eligible pool instead
+// of committee_size, which let a registered node that was never selected have
+// its vote counted. The size now comes from the round policy, so the failure
+// mode is unreachable from a ballot — this pins that a ballot carries no size
+// field at all to omit.
+func TestBallotOmittingCommitteeSizeCannotWiden(t *testing.T) {
+	var bal Ballot
 	if err := json.Unmarshal([]byte(`{
-		"contract_addr":"con-1","request_id":"req-1",
-		"committee_size":3,"threshold":5
-	}`), &r); err != nil {
+		"node_id":"id-1","approve":true,"request_id":"req-1",
+		"committee_size":999,"threshold":1
+	}`), &bal); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if r.Threshold <= r.CommitteeSize {
-		t.Fatalf("fixture is wrong: threshold %d should exceed committee %d",
-			r.Threshold, r.CommitteeSize)
+	// The extra keys are ignored: Ballot has no such fields, so a caller cannot
+	// smuggle either value past the registered policy.
+	raw, err := json.Marshal(bal)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range []string{"committee_size", "threshold"} {
+		if bytes.Contains(raw, []byte(forbidden)) {
+			t.Errorf("Ballot carries %q; a voter could then name its own %s",
+				forbidden, forbidden)
+		}
 	}
 }
 

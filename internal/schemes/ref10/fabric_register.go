@@ -132,3 +132,44 @@ func registerNodes(ctx context.Context, t transport, members []*member) error {
 	}
 	return nil
 }
+
+// registerRoundPolicy publishes |N_auth|, the threshold, and the CA's key.
+//
+// Called once during Setup, which is not timed, and it is what lets a round
+// cost two blocks instead of three. These three values were the only parts of
+// the stored round a voter must not choose, so registering them here removes
+// the need to store a round at all.
+//
+// The CA key is the load-bearing one: without it the contract cannot check the
+// signature on P_C, and a certificate arriving on a ballot would be whatever
+// the caller typed.
+func registerRoundPolicy(
+	ctx context.Context,
+	t transport,
+	members []*member,
+	committeeSize, threshold int,
+	ca *certAuthority,
+) error {
+
+	ft, ok := t.(*fabricTransport)
+	if !ok {
+		// The in-process transport holds these in the scheme itself.
+		return nil
+	}
+	if len(members) == 0 {
+		return fmt.Errorf("ref10: cannot register a round policy with no members")
+	}
+
+	policyJSON, err := encodeRoundPolicy(committeeSize, threshold, ca)
+	if err != nil {
+		return err
+	}
+	sess, err := ft.session(members[0].Identity.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := sess.Submit(ctx, "RegisterRoundPolicy", policyJSON); err != nil {
+		return fmt.Errorf("ref10: register round policy: %w", err)
+	}
+	return nil
+}

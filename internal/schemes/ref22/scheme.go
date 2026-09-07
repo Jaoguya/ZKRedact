@@ -69,6 +69,7 @@ func (s *Scheme) Capabilities() scheme.Capabilities {
 		PerTxProvenance:        false,
 		LedgerIndependentAudit: false, // ValChain traverses the whole chain
 		StateFreshnessCheck:    false,
+		ConsensusBoundAuth:     false, // regulator key possession is local
 	}
 }
 

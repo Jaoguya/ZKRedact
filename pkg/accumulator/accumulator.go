@@ -251,6 +251,38 @@ func (a *Accumulator) MembershipWitness(x []byte) (*big.Int, error) {
 	return w, nil
 }
 
+// TrapdoorMembershipWitness returns w with w^{e_x} = A mod N in ONE
+// exponentiation, using phi(N).
+//
+// A = g^{prod of every prime}, so the witness is g^{prod / e_x}. Without
+// phi(N) that quotient cannot be taken and MembershipWitness walks every
+// element instead — O(n) exponentiations, or O(n log n) for the whole set.
+// With phi(N) it is A^{e_x^{-1} mod phi}, which is the same trick
+// recomputeAfterDelete already uses for deletion.
+//
+// WHO MAY CALL THIS. Only a holder of phi(N). Ref[22] gives it to the
+// regulator (see Config.GroupOrder), which is exactly the party that redacts;
+// a verifier holds no trapdoor and still pays the O(n) route. Handing this to
+// the verifier would understate verification cost, so it is deliberately NOT
+// wired into VerifyMembership.
+func (a *Accumulator) TrapdoorMembershipWitness(x []byte) (*big.Int, error) {
+	e, ok := a.elements[string(x)]
+	if !ok {
+		return nil, fmt.Errorf("accumulator: element is not accumulated")
+	}
+	if a.phi == nil {
+		return nil, fmt.Errorf(
+			"accumulator: phi(N) is not held, so a witness cannot be taken in one " +
+				"exponentiation; use MembershipWitness and pay the O(n) cost")
+	}
+	inv := new(big.Int).ModInverse(e, a.phi)
+	if inv == nil {
+		return nil, fmt.Errorf(
+			"accumulator: prime representative is not invertible mod phi(N)")
+	}
+	return new(big.Int).Exp(a.state, inv, a.n), nil
+}
+
 // Nonce returns the counter that produced an element's prime representative.
 func (a *Accumulator) Nonce(x []byte) (uint64, bool) {
 	v, ok := a.nonces[string(x)]

@@ -359,13 +359,20 @@ func liveBlockTimeout(t *testing.T) time.Duration {
 // does over the fabric transport, and that the cost does not grow with the
 // committee.
 //
-// A round issues three ordered transactions, whatever the committee size:
+// A round issues two ordered transactions, whatever the committee size:
 //
-//	Init    open the round
 //	Vote    every member's ballot, submitted concurrently, sharing one block
 //	Close   tally the ballots and emit tx_rdt
 //
-// So the cost is 3 x block_timeout and the slope in committee_size is ZERO.
+// It used to be three. Init stored N_auth (Algorithm 3 line 4) and every ballot
+// had to wait for that write to commit before it could read the round — a whole
+// block of latency before any vote existed. N_auth is a pure function of
+// addr(con_k), the node set and A_r, so the contract recomputes it per ballot,
+// and {req, sigma} rides on the ballot under the CA's signature, which is the
+// trust anchor Algorithm 4 line 1 names. A THIRD BLOCK REAPPEARING HERE means
+// a round-opening transaction has crept back in.
+//
+// So the cost is 2 x block_timeout and the slope in committee_size is ZERO.
 // That flatness is the property under test. It held only after the tally was
 // split out of Vote: while Vote tallied, it read every member's ballot key,
 // two ballots could not share a block, and a round cost
@@ -386,7 +393,7 @@ func TestLiveAuthorizationCostIsBlockTime(t *testing.T) {
 	sizes := []int{3, 5, 7}
 
 	// Init + one shared ballot block + Close.
-	const blocksPerRound = 3
+	const blocksPerRound = 2
 
 	type sample struct {
 		size    int

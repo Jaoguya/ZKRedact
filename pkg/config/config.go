@@ -138,14 +138,23 @@ type Baselines struct {
 }
 
 type Ref10 struct {
-	Enabled         bool     `yaml:"enabled"`
-	CommitteeSize   *int     `yaml:"committee_size"`
-	VoteThreshold   *int     `yaml:"vote_threshold"`
-	FaultToleranceF *int     `yaml:"fault_tolerance_f"`
-	VoteWindowMS    *int     `yaml:"vote_window_ms"`
-	AttributePolicy *string  `yaml:"attribute_policy"`
-	VoteTransport   *string  `yaml:"vote_transport"`
-	Gateway         *Gateway `yaml:"gateway"`
+	Enabled         bool    `yaml:"enabled"`
+	CommitteeSize   *int    `yaml:"committee_size"`
+	VoteThreshold   *int    `yaml:"vote_threshold"`
+	FaultToleranceF *int    `yaml:"fault_tolerance_f"`
+	VoteWindowMS    *int    `yaml:"vote_window_ms"`
+	AttributePolicy *string `yaml:"attribute_policy"`
+	VoteTransport   *string `yaml:"vote_transport"`
+
+	// VoteTransports are the transports Exp 1 measures this baseline over.
+	//
+	// Separate from VoteTransport, which is the one every OTHER experiment
+	// uses. Exp 1 alone reports both arms, because in_process is the
+	// like-for-like control against the three schemes that authorize locally
+	// and fabric is the deployed cost — publishing one alone misrepresents the
+	// comparison. Empty means "measure only VoteTransport".
+	VoteTransports []string `yaml:"exp1_vote_transports"`
+	Gateway        *Gateway `yaml:"gateway"`
 }
 
 // Gateway locates the Fabric network for the fabric vote transport.

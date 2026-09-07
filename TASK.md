@@ -26,6 +26,14 @@ phases are implemented, all four schemes run all three experiments end to end,
 and `cmd/plot` turns results into figures. Until task 5 landed, the three
 baselines could run Exp 2 and Exp 3 and the paper's own scheme could not.
 
+⚠️ **Two things changed since that line was written, and neither is code.**
+`config/experiment.yaml` is scaled down to a runnable budget — `total_requests`
+10,000 -> 1,000 and `meta.repetitions` 30 -> 3, each with its derivation
+recorded in place (see "Decisions waiting on you" §1). And the on-chain /
+off-chain measurement boundary is now stated in `docs/experiments.md` §1.3.1
+after two baseline deviation tables were found asserting network cost that no
+code charges. **No scheme, runner or chaincode code was touched.**
+
 **Everything remaining needs the EC2 host.** Tasks 9 and 10 are a pilot run and
 the full runs; nothing further can be built on a developer machine, because what
 is left is measurement rather than code. See §3.5 for what to run first.
@@ -97,34 +105,65 @@ so any prior expectation about Ref[22]'s Exp 2 curve should be discarded.
 **0. Exp 2's sweep size, which just grew.** Task 5 fixed a defect that had Exp 2
 measuring nothing after its first configuration (see task 5). The fix
 re-authorizes before each configuration, which is correct but multiplies the
-UNTIMED authorization pass by the sweep size:
+UNTIMED authorization pass by the sweep size.
 
-    configurations = |batch_sizes| x |wait_bounds| x repetitions
-                   = 7 x 4 x reps
+**Read the runner before sizing this.** `waitsFor` and the `BatchRedaction`
+capability check give every BASELINE exactly one batch size and one wait bound,
+so the `7 x 4` grid applies to ZK-Redact alone:
 
-At `reps = 3` that is 84 authorization passes over the trace, per scheme. For
-ZK-Redact each pass is one Groth16 proof per request (~40 ms); for Ref[10] over
-`vote_transport: fabric` it is a committee round per request (~6.17 s), which
-dominates everything else in the project. The same trade the Exp 1 table below
-offers applies here: requests, repetitions and sweep width trade against each
-other one for one. **Decide the Exp 2 budget alongside the Exp 1 one.**
+| Scheme | Exp 2 configurations |
+|---|---|
+| ZK-Redact | `3 ratios x 7 sizes x 4 waits x reps` = 84 x reps |
+| Ref[10], Ref[22] | `3 ratios x reps` |
+| Ref[13] | `6 setup combos x 3 ratios x reps` — `arity_q [2,5,10] x challenged_blocks [300,460]`, each re-running `Setup` |
 
-**1. Exp 1's sweep size over fabric.** The configured sweep is 42.8 days. Cost is
-`total_requests x SUM(1/c) x 6.17 s x repetitions`, and `SUM(1/c) ~ 2` across the
-11 levels, so requests and repetitions trade one for one. Within a 12-hour
-budget:
+For ZK-Redact each pass is one Groth16 proof per request (~40 ms); for Ref[10]
+over `vote_transport: fabric` it is a committee round per request (~6.17 s),
+which dominates everything else in the project.
 
-| block | requests | reps | hours |
-|---|---|---|---|
-| 2000 ms | 1,000 | 3 | **10.3** |
-| 2000 ms | 500 | 3 | 5.1 |
-| 1000 ms | 1,000 | 3 | 5.1 |
+**The pass is UNTIMED and runs one request at a time** (`authorizeAll`, a plain
+`for` loop). Making it concurrent is worth more than any sweep cut and costs no
+measured number: at 10,000 requests it takes Exp 2 from ~80 h to ~2.5 h. **Do
+this before cutting an axis.**
 
-Measured variance says 3 repetitions is ample (CV 0.16%; 30 buys 0.06
-percentage points). **p99 is the casualty**: it needs >= 10,000 requests by the
-config's own stability criterion, and `p99_reliable` already reports false. p50
-and p95 survive. Best settled at task 9, once ZK-Redact's own variance can be
-measured — deciding now means deciding on Ref[10], the scheme with no tail.
+**1. Exp 1's sweep size over fabric — ✅ scaled down, and re-openable.** The
+configured sweep was 42.8 days: `total_requests x SUM(1/c) x 6.17 s x
+repetitions`, with `SUM(1/c) = 1.999` across the 11 levels.
+
+Now set to **1,000 requests x 3 repetitions = 10.3 h**, with the full derivation
+recorded beside both values in `config/experiment.yaml`. Three facts that
+sizing rests on:
+
+- **The concurrency sweep cannot absorb a cut.** Cost goes as `1/c`, so
+  concurrency 1 alone is 50% of the bill and levels 1-2 are 75%. Dropping the
+  high levels saves 12.5% and deletes the crossover; the runner refuses to drop
+  level 1.
+- **p99 is the casualty.** It needs >= 10,000 requests (`pkg/metrics/latency.go:180`),
+  and `p99_reliable` already reported false. p50 and p95 survive.
+- **3 repetitions is backed by measurement**, not taste: CV 0.16% gives SEM
+  0.09%, against 0.03% at 30. But it is set from Ref[10], the QUIETEST system —
+  task 9 must re-set it from ZK-Redact's Exp 2 `CryptoTime`, the noisiest.
+
+> **✅ MEASURED, 2026-09-07.** Ref[10] authorizes in **2.05 s** over fabric
+> (2 blocks x 1 s), down from 6.17 s — see §3.5. The model above predicted 2.06 s.
+> At the configured 10,000 requests x 1 repetition, Exp 1's Ref[10] arm is
+> **11.4 h**, and the whole campaign fits a day on one host.
+
+**Re-open this if Ref[10]'s round is fixed.** At 2 blocks x 1 s (see "Ref[10]
+pays for an idle network" below) the whole campaign at **10,000 x 3** costs
+~39 h — p99 reliable AND a variance band, for ~$53:
+
+| plan | Exp 1 | Exp 2 | total | p99 |
+|---|---|---|---|---|
+| today, 1k x 3, serial pre-auth | 10.5 h | 18.3 h | 28.8 h | ❌ |
+| 10k x 3, Ref[10] fixed, parallel pre-auth | 36.8 h | 2.5 h | **39.3 h** | ✅ |
+| 10k x 1, Ref[10] fixed, parallel pre-auth | 12.3 h | 0.8 h | 13.2 h | ✅ (no band) |
+
+> Two gaps in those estimates, both stated rather than buried. Ref[13]'s six
+> `Setup` rebuilds per Exp 2 ratio are NOT costed. And Ref[10]'s concurrency
+> scaling is measured only to 8 (0.489 auth/s against 0.592 ideal); if
+> everything above 32 saturates flat, `SUM(1/c)` goes 1.999 -> 2.125 and every
+> figure rises ~6%.
 
 **2. The full topology has never run an experiment.** `up full` now REFUSES
 until `gateway.peer_endpoint` moves from 7051 to 11051, and it needs the EC2
@@ -352,7 +391,7 @@ Two things worth knowing before building on this:
 | `fabricTransport` + Gateway adapter | ✅ wired into `ref10.Setup` |
 | `compose.minimal.yaml` (1 org) | ✅ verification topology |
 | `compose.yaml` (4 orgs × 2 peers, 3 orderers) | ✅ measurement topology; brought up and deployed, but **no experiment has run on it** |
-| `scripts/smoke.sh` | ✅ 10 checks, mutation-verified |
+| `scripts/smoke.sh` | ✅ 9 checks, mutation-verified |
 
 ```bash
 ./network/scripts/network.sh up minimal   # or: up full
@@ -457,8 +496,46 @@ level:
 > = 8192, not 2048. Found the same way — concurrency 1024 quietly lost 98 of
 > 1024 requests at the old limit. `network.sh` checks the new bound.
 
-**The configured Exp 1 sweep is still not runnable over fabric.** At 6.17 s per
-authorization (down from 16.3 s, a 2.6x improvement):
+### ⚠️ Everything measured above at 6.17 s is SUPERSEDED — re-measured 2026-09-07
+
+A round now costs **two blocks at a 1 s cadence**, not three at 2 s. Two changes,
+both recorded with their direction in `docs/baselines/ref10-emt.md` §6:
+Algorithm 3's `init()` no longer occupies a transaction, and `block_timeout_ms`
+is derived from Ref[10]'s own Caliper regime (`Ref[10].md:438`) instead of
+Fabric's default.
+
+Measured on the minimal topology, macOS, `TestLiveAuthorizationCostIsBlockTime`:
+
+| committee_size | before (3 blk x 2 s) | now (2 blk x 1 s) |
+|---|---|---|
+| 3 | 6.14 s | **2.049 s** |
+| 5 | 6.18 s | **2.050 s** |
+| 7 | 6.17 s | **2.062 s** |
+
+Predicted `2 x 1 s`, ratio 1.02-1.03, so ~2-3% overhead — the same overhead the
+3-block measurement showed. **Per-member slope 3 ms**, still flat: ballots share
+one block. A slope near one full block means a read of another member's ballot
+has crept back into `Vote`.
+
+`TestLiveConcurrentAuthorize` at 1, 2, 4, 8: **2.056 / 2.065 / 2.054 / 2.088 s**,
+every request granted, none failed. Eight authorizations take the wall time of
+one, so rounds do not interfere.
+
+`smoke.sh`: **9/9 against the deployed contract**, including two new guards —
+a certificate the CA did not sign, and one altered after signing.
+
+> **Two defects the smoke test caught that the unit suite could not.** The
+> golden certificate carried `attributes: "validator"`, but `satisfies`
+> recognises only the literal `"S OR R OR V"` — so it selected NOBODY and the
+> deployed contract rejected every ballot, while every unit test passed because
+> none derived a committee from that certificate. And the unsigned-certificate
+> check was vacuous: `${5:-$DEFAULT}` substitutes for an empty string as well as
+> an unset one, so passing `""` to mean "no signature" produced a correctly
+> signed one and the CA guard never ran. Both fixed;
+> `TestGoldenCertificateSelectsACommittee` now covers the first in the module.
+
+**The configured Exp 1 sweep, at the superseded 6.17 s.** Kept because the
+`SUM(1/c)` reasoning still holds — divide by three for current numbers:
 
 | | |
 |---|---|
@@ -814,18 +891,28 @@ without mutating the trace every scheme shares.
 - **`Reshard` avoids recompilation.** The circuit does not depend on N, so a
   sweep point costs new goroutines, not a trusted setup.
 
-### 5.5 Two loose ends from the Phase 3 work — #2 ✅ done, #1 open
+### 5.5 Two loose ends from the Phase 3 work — both ✅ done
 
-Neither breaks anything; both are the kind of thing that reads as a promise if
+Neither broke anything; both were the kind of thing that reads as a promise if
 left alone.
 
-**1. `experiments.verification_throughput.ablations` is still dead config.**
-The 4-cell grid it lists is now genuinely measured — the shard sweep covers
-sharding on/off and the batch sweep covers batching on/off — but `cfg.Ablations`
-itself is read by nothing except `validate-config`, which only checks that four
-cells are present. The numbers exist; the list that describes them does not
-produce them. **Either wire it as the literal driver of the sweep, or delete it**
-so it stops looking like the thing generating the grid.
+**1. `experiments.verification_throughput.ablations` was dead config — ✅ deleted.**
+It listed a 4-cell grid that the shard sweep and the batch sweep already
+produced, and `cfg.Ablations` was read by nothing except `validate-config`,
+which only checked that four cells were present. **Deleted rather than wired**,
+because wiring it would have replaced a richer sweep with a coarser one: the
+shard and batch sweeps include 1 (each disabled arm), so all four cells fall out
+of the cross product *at every magnitude*, not just on/off.
+
+Verify with `grep -i ablation config/experiment.yaml` — nothing but prose
+remains, and `grep -rn Ablation --include='*.go' cmd/validate-config pkg/config`
+is empty. The derived struct and its rationale live in
+`experiments/exp1_verification/runner.go:57-70`; `experiments.md:633` states
+that the grid is not configured.
+
+> This entry said "still open" for longer than it was true. If you are auditing
+> from this file, **check the code before believing a status line here** — that
+> is how the stale claim survived.
 
 **2. `pkg/zk/batch.go` carried test-only state — ✅ fixed.** `lastG1`/`lastG2`
 are gone. `batchVerifyAggregated` is split into `batchPairingPoints`, which
@@ -1499,6 +1586,67 @@ Kim–Barbulescu exTNFS (2016) reduced it to ~100–110 bits. Much ZK tooling st
 defaults to it. `crypto.RequirePairingCurve` rejects it against the 128-bit
 target. **BLS12-381** is mandated.
 
+### Ref[10] pays for an idle network; nothing else pays for a network at all
+
+`grep -rn fabric-gateway --include='*.go' internal/` returns exactly one file:
+`internal/schemes/ref10/fabric_gateway.go`. Broaden it to `"net"`, `net/http`,
+`net.Dial` and `grpc.` across `cmd/ internal/ pkg/ experiments/` and the result
+is the same. **ZK-Redact, Ref[13] and Ref[22] open no connection.**
+
+So `LedgerTime` means two different things depending on the row: real Fabric
+cost for Ref[10]'s vote, and an in-memory Merkle-plus-map update for everyone
+else — measured at **92.5 us** (`phase456_test.go:268`), about 66,000x cheaper
+than one Ref[10] round.
+
+**Two documentation claims asserted the opposite and were false.**
+`ref13-vrbc.md` said "Real network I/O included"; `ref22-shen.md` said
+"Communication IS included ... for all four systems identically". Both corrected,
+with each paper's own measurement boundary cited: Ref[13] reports gas separately
+from *"off-chain computation costs"* (Ref[13].md:574) and moves audit metadata
+over *"a secure off-chain channel"* (:339, :358); Ref[22] states *"the impact of
+communication is not considered"* (Ref[22].md:775). **The off-chain half is
+therefore faithful to all three papers.** The asymmetry is entirely in the
+on-chain half.
+
+Worse, Ref[10] is charged in a regime its own paper never measured: its figures
+come from Caliper at **100 tps sustained** (Ref[10].md:438), where the orderer
+cuts blocks by message count. Our concurrency-1 point sends one transaction into
+an idle network, so all three of the round's blocks wait the full `BatchTimeout`
+— 6.17 s of waiting, not of work.
+
+**What this obliges, recorded in `docs/experiments.md` §1.3.1:**
+
+1. Report Ref[10] on BOTH transports. `in_process` (1.7 ms) is the like-for-like
+   control against the other three; `fabric` (6.17 s) is the deployed cost.
+   Publishing one alone is the misrepresentation.
+2. Never present the ZK-Redact-vs-Ref[10] ratio as an implementation speedup. It
+   is consensus-bound authorization against consensus-free authorization.
+3. Never call the other three schemes' `LedgerTime` blockchain or consensus cost.
+
+**Exp 2's headline is the open half of this.** `blockchain_time_per_batch` —
+the amortisation the experiment exists to measure — currently times a Go map for
+all four schemes. Committing ZK-Redact's batches through the existing chaincode
+would cost one block per BATCH (2 s per 64 requests at B_R=64), which is exactly
+what Phase 4 claims, and would make the metric mean what its name says.
+
+### Exp 3's headline verdict is decided by wall clock, and one stall flips it
+
+`classifyScaling` (`experiments/exp3_audit/runner.go:289-325`) computes
+`cost_ratio` from `p.TotalTime` at the largest ledger over the smallest, then
+sets `claim_holds` from it. That is a timing ratio with no structural component.
+
+Seen live: under full-suite load one audit sampled **64.3 ms** against 2.9 ms at
+a tenth the ledger, giving `cost x21.56` and
+`zkredact declares LedgerIndependentAudit but scaled linearly`. The same package
+passed 3/3 on repeat. **The stall was the measurement, not the scheme.**
+
+This is not a test-only problem: the same function writes `ledger_scaling` into
+every real Exp 3 result file, so one scheduling stall on the EC2 host publishes
+`claim_holds: false` against our own headline claim. The structural evidence for
+the same claim is already exact and already asserted beside it — blocks
+traversed, 2 at ledger 4 and 2 at ledger 40. **Classify on that, and keep the
+timing ratio as a reported number rather than a verdict.**
+
 ### Ref[10] includes consensus its paper excluded
 The paper states redaction consensus was omitted
 ([Ref[10].md:466](Reference/Ref%5B10%5D/Ref%5B10%5D.md#L466)). We include it, because
@@ -1630,7 +1778,7 @@ make test-live                              # live Fabric integration
 ./network/scripts/network.sh up minimal     # 1 org — verification only
 ./network/scripts/network.sh up full        # 4 orgs — measurement topology
 ./network/scripts/network.sh deploy
-./network/scripts/smoke.sh                  # 10 checks against the deployed contract
+./network/scripts/smoke.sh                  # 9 checks against the deployed contract
 ```
 
 `make test` stays free of Docker. `make test-live` is build-tagged so it cannot

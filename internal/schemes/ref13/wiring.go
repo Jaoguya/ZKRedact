@@ -116,8 +116,17 @@ func (s *Scheme) appendBlock(seq int, core, redactable []byte) (*block, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ref13: hash block %d: %w", seq, err)
 	}
-	pub := s.key.Public()
-	rnd := ch.EphemeralRandomness{R: r, Yx: pub[2], Yy: pub[3]}
+
+	// Y_s is the component derived for THIS block's message, and it is stored
+	// with the block: B_s = (ch_s, m_s, Y_s, r_s), §3.2.3. Reading it off the
+	// key instead recorded whichever component the key happened to hold, so
+	// every block carried the same Y and the first redaction invalidated the
+	// rest.
+	_, yx, yy, err := s.key.EphemeralPointFor(m)
+	if err != nil {
+		return nil, fmt.Errorf("ref13: ephemeral point for block %d: %w", seq, err)
+	}
+	rnd := ch.EphemeralRandomness{R: r, Yx: yx, Yy: yy}
 
 	b := &block{
 		seq: seq, core: core, redactable: redactable,

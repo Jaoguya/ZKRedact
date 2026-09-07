@@ -209,26 +209,30 @@ func TestRegisterNodesRefusesEmptySet(t *testing.T) {
 // Committee size on the wire
 // -----------------------------------------------------------------------------
 
-// TestEncodeRoundCarriesCommitteeSize covers defect 2.
+// TestRoundPolicyCarriesCommitteeSize covers defect 2.
 //
 // The contract selected every eligible node when this field was absent, so a
 // registered node that was NOT selected could still have its vote counted —
 // the membership guard failing open. The eligible pool is usually far larger
 // than the committee, so the gap is not marginal.
-func TestEncodeRoundCarriesCommitteeSize(t *testing.T) {
+//
+// The field moved from the per-round payload to the registered round policy
+// when Init was removed, but the failure mode is the same one: a committee size
+// the contract cannot see is a committee size it cannot enforce.
+func TestRoundPolicyCarriesCommitteeSize(t *testing.T) {
 	r := testVoteRound(t, 7, true)
 
-	roundJSON, err := encodeRound(r)
+	policyJSON, err := encodeRoundPolicy(len(r.Members), r.Threshold, r.CA)
 	if err != nil {
-		t.Fatalf("encodeRound: %v", err)
+		t.Fatalf("encodeRoundPolicy: %v", err)
 	}
-	if !strings.Contains(roundJSON, `"committee_size"`) {
-		t.Fatalf("round JSON omits committee_size; the contract would select the "+
-			"entire eligible pool\n  %s", roundJSON)
+	if !strings.Contains(policyJSON, `"committee_size"`) {
+		t.Fatalf("round policy omits committee_size; the contract would select the "+
+			"entire eligible pool\n  %s", policyJSON)
 	}
 
-	var decoded chainRound
-	if err := json.Unmarshal([]byte(roundJSON), &decoded); err != nil {
+	var decoded chainRoundPolicy
+	if err := json.Unmarshal([]byte(policyJSON), &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if decoded.CommitteeSize != len(r.Members) {
@@ -238,20 +242,28 @@ func TestEncodeRoundCarriesCommitteeSize(t *testing.T) {
 		t.Errorf("threshold %d exceeds committee size %d; no redaction could be approved",
 			decoded.Threshold, decoded.CommitteeSize)
 	}
+	if decoded.CAPubX == "" || decoded.CAPubY == "" {
+		t.Error("round policy carries no CA key; the contract could not verify P_C " +
+			"on any ballot, and a certificate would be whatever the caller typed")
+	}
 }
 
-func TestFabricTransportRoundJSONIsWellFormed(t *testing.T) {
+func TestRoundPolicyJSONIsWellFormed(t *testing.T) {
 	r := testVoteRound(t, 3, true)
-	roundJSON, err := encodeRound(r)
+	policyJSON, err := encodeRoundPolicy(len(r.Members), r.Threshold, r.CA)
 	if err != nil {
-		t.Fatalf("encodeRound: %v", err)
+		t.Fatalf("encodeRoundPolicy: %v", err)
 	}
-	var decoded chainRound
-	if err := json.Unmarshal([]byte(roundJSON), &decoded); err != nil {
-		t.Fatalf("round JSON does not decode: %v\n  %s", err, roundJSON)
+	var decoded chainRoundPolicy
+	if err := json.Unmarshal([]byte(policyJSON), &decoded); err != nil {
+		t.Fatalf("round policy JSON does not decode: %v\n  %s", err, policyJSON)
 	}
-	if decoded.ContractAddr != r.ContractAddr {
-		t.Errorf("contract address did not survive: %q", decoded.ContractAddr)
+	if decoded.Threshold != r.Threshold {
+		t.Errorf("threshold did not survive: got %d, want %d", decoded.Threshold, r.Threshold)
+	}
+	if _, err := encodeRoundPolicy(3, 2, nil); err == nil {
+		t.Error("a round policy was encoded with no CA; the contract would have no " +
+			"key to verify P_C against")
 	}
 }
 
