@@ -93,6 +93,15 @@ WORKERS=(
   "W18||--name W18-exp3-ref13-a --exp audit --schemes ref13_vrbc --arms 0/2"
   "W19||--name W19-exp3-ref13-b --exp audit --schemes ref13_vrbc --arms 1/2"
   "W20||--name W20-exp3-ref22-zk-ref10 --exp audit --schemes ref22_shen,zkredact,ref10_emt"
+
+  # Ref[10]'s OTHER transport. Exp 1 sweeps exp1_vote_transports, and W02-W04
+  # each pin --transports fabric so the concurrency split does not re-run the
+  # slow arm three times over — which leaves in_process belonging to nobody
+  # unless it is named here. It is the arm where Ref[10] is FAST (669 auth/s
+  # against 0.53 over fabric), so dropping it would remove the low-load half of
+  # the crossover Exp 1 exists to show. Seconds of work; it shares a host with
+  # nothing because every other slot is spoken for.
+  "W21||--name W21-exp1-ref10-inprocess --exp verification --schemes ref10_emt --transports in_process"
 )
 
 echo "run id:  $RUN_ID"
