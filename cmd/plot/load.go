@@ -185,8 +185,19 @@ func chartsExp1(doc document) ([]chart, error) {
 	abl := NewCollector()
 	for _, p := range r.Points {
 		if headlineArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify, p.Ablation != nil) {
-			tp.Add(p.Scheme, map[string]string{}, float64(p.Concurrency), p.Throughput)
-			lat.Add(p.Scheme, map[string]string{}, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
+			// The transport MUST be a dimension. Ref[10] is measured on both
+			// in_process and fabric, and with empty dims both landed under the
+			// same series key: one curve whose every point was the median of a
+			// key check and a two-block consensus round — a number describing
+			// neither, on the one baseline whose two arms differ by orders of
+			// magnitude. Every other system records no transport and is
+			// unaffected.
+			dims := map[string]string{}
+			if p.VoteTransport != "" {
+				dims["transport"] = p.VoteTransport
+			}
+			tp.Add(p.Scheme, dims, float64(p.Concurrency), p.Throughput)
+			lat.Add(p.Scheme, dims, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
 		}
 		if p.Scheme == "zkredact" {
 			if arm, ok := ablationArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify); ok {
@@ -267,7 +278,6 @@ func chartsExp2(doc document) ([]chart, error) {
 	// on the headline arm alone and a curve per B_R would otherwise crowd four
 	// systems off the figure.
 	overhead := NewCollector()
-	plottedBR := map[int]bool{1: true, 8: true, 64: true}
 
 	// The headline holds the two knobs FIXED, for the same reason Exp 1 does:
 	// a comparison figure compares systems. wait_bound takes the shortest
@@ -280,12 +290,18 @@ func chartsExp2(doc document) ([]chart, error) {
 	// then matched no ZK-Redact point at all — three curves where there should
 	// have been four, and an empty conflict figure.
 	headWait, headRatio := math.MaxInt32, math.MaxFloat64
+	// The top of the batch sweep is read from the points rather than assumed:
+	// it is where ZK-Redact is drawn as the complete scheme on the headline.
+	fullBatch := 0
 	for _, p := range r.Points {
 		if p.WaitBoundMS > 0 && p.WaitBoundMS < headWait {
 			headWait = p.WaitBoundMS
 		}
 		if p.ConflictRatio < headRatio {
 			headRatio = p.ConflictRatio
+		}
+		if p.BatchSize > fullBatch {
+			fullBatch = p.BatchSize
 		}
 	}
 	if headWait == math.MaxInt32 {
@@ -303,15 +319,17 @@ func chartsExp2(doc document) ([]chart, error) {
 			share.Add(p.Scheme, dims, x, p.CryptoShare)
 			stale.Add(p.Scheme, dims, x, p.StaleExclusionRate)
 		}
+		// ONE CURVE PER SYSTEM, the same contract exp1-throughput keeps.
+		// ZK-Redact is drawn as the COMPLETE scheme, at the top of its batch
+		// sweep; the baselines do not batch and sit at B_R=1 by construction.
+		// Drawing ZK-Redact at three batch sizes put six curves on a four-system
+		// comparison and answered a question about our batch size rather than
+		// about prior work — exp2-cost-per-request is where B_R varies.
 		if p.WorkloadSize > 0 &&
 			(!batches(p) || p.WaitBoundMS == headWait) &&
 			p.ConflictRatio == headRatio &&
-			(plottedBR[p.BatchSize] || !batches(p)) {
-			dims := map[string]string{}
-			if batches(p) {
-				dims["B_R"] = strconv.Itoa(p.BatchSize)
-			}
-			overhead.Add(p.Scheme, dims, float64(p.WorkloadSize),
+			(!batches(p) || p.BatchSize == fullBatch) {
+			overhead.Add(p.Scheme, map[string]string{}, float64(p.WorkloadSize),
 				float64(p.CostPerRequest)/1e6)
 		}
 		if p.Scheme == "zkredact" {
@@ -335,8 +353,10 @@ func chartsExp2(doc document) ([]chart, error) {
 			XLog:   true, YLog: true,
 			Series: overhead.Series(),
 			Caveats: []string{
-				"ZK-Redact at B_R in {1, 8, 64}; the baselines do not batch and " +
-					"sit at B_R=1 by construction.",
+				"One curve per system. ZK-Redact is the complete scheme, at the " +
+					"top of its batch sweep; the baselines do not batch and sit " +
+					"at B_R=1 by construction. B_R is varied in " +
+					"exp2-cost-per-request.",
 				"Wait bound and conflict ratio are held at the headline arm, " +
 					"which is the only arm the workload axis is swept on.",
 			},

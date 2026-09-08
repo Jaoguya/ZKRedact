@@ -43,7 +43,10 @@ import (
 type batcher struct {
 	scheme    scheme.Scheme
 	batchSize int
-	wait      time.Duration
+
+	// total is how many requests the run offers; see newBatcher.
+	total int
+	wait  time.Duration
 
 	queue chan *submission
 	stop  chan struct{}
@@ -73,6 +76,9 @@ type batchStats struct {
 	LedgerTime    time.Duration
 }
 
+// received counts submissions taken off the queue, so the final partial batch
+// can be recognised as final.
+
 // submission is one authorized request waiting for the batch that carries it.
 type submission struct {
 	auth *scheme.Authorization
@@ -84,7 +90,19 @@ type submission struct {
 // queueDepth bounds how many requests may wait. It comes from the caller for
 // the reason pvl.NewService gives: a queue shorter than the offered load would
 // serialise submitters on the channel and report that wait as redaction cost.
-func newBatcher(s scheme.Scheme, batchSize int, wait time.Duration, queueDepth int) (*batcher, error) {
+// total is how many requests this run will offer. It exists to close the FINAL
+// partial batch.
+//
+// Without it, a run whose request count is not a multiple of batchSize
+// DEADLOCKS whenever no wait bound is configured: the leftover requests sit in
+// an open batch that the size rule cannot close and no timer will ever close,
+// their submitters block forever on the result, and runOne's wg.Wait() never
+// returns — so finish(), which would have drained the batch, is never reached.
+// The batcher's own tests hit this, and only a test timeout revealed it.
+//
+// The wait bound hid it in the configured sweeps, where Delta_R is always > 0.
+// Depending on a knob's value for termination is not a property to rely on.
+func newBatcher(s scheme.Scheme, batchSize int, wait time.Duration, queueDepth, total int) (*batcher, error) {
 	if s == nil {
 		return nil, fmt.Errorf("exp2: batcher needs a scheme")
 	}
@@ -97,6 +115,7 @@ func newBatcher(s scheme.Scheme, batchSize int, wait time.Duration, queueDepth i
 	return &batcher{
 		scheme:    s,
 		batchSize: batchSize,
+		total:     total,
 		wait:      wait,
 		queue:     make(chan *submission, queueDepth),
 		stop:      make(chan struct{}),
@@ -151,6 +170,7 @@ func (b *batcher) failure() error {
 // run accumulates a batch and executes it, per the Close(B) rule above.
 func (b *batcher) run(ctx context.Context) {
 	batch := make([]*submission, 0, b.batchSize)
+	received := 0
 
 	// timer fires Delta_R after the OLDEST request in the open batch, which is
 	// what tau measures. Started when a batch opens, stopped when it closes.
@@ -193,6 +213,15 @@ func (b *batcher) run(ctx context.Context) {
 
 		case s := <-b.queue:
 			batch = append(batch, s)
+			received++
+			if received >= b.total && b.total > 0 {
+				// Everything this run will ever offer is now in hand, so the
+				// batch cannot grow. Closing it short is correct and, more to
+				// the point, terminates: waiting for a size rule that can no
+				// longer fire is the deadlock above.
+				closeBatch(true)
+				continue
+			}
 			if len(batch) == 1 && b.wait > 0 {
 				// A scheme that does not batch runs at B_R=1 with no wait
 				// bound, so the size rule fires on this same request and the

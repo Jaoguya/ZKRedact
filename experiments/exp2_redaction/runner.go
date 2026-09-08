@@ -541,7 +541,8 @@ func runOne(
 	// The queue holds every request that may be in flight at once. Sized to the
 	// offered load for the reason pvl.NewService gives: a shorter queue would
 	// block submitters on the channel and charge that wait to redaction.
-	b, err := newBatcher(s, batchSize, time.Duration(waitMS)*time.Millisecond, concurrency)
+	b, err := newBatcher(s, batchSize, time.Duration(waitMS)*time.Millisecond,
+		concurrency, len(authorized))
 	if err != nil {
 		return Point{}, err
 	}
