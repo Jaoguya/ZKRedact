@@ -77,7 +77,22 @@ WORKERS=(
   "W01||--name W01-exp1-zkredact --exp verification --schemes zkredact"
   "W02|full|--name W02-exp1-ref10-fabric-c1 --exp verification --schemes ref10_emt --transports fabric --levels 1"
   "W03|full|--name W03-exp1-ref10-fabric-c2-4 --exp verification --schemes ref10_emt --transports fabric --levels 2,4"
-  "W04|full|--name W04-exp1-ref10-fabric-tail --exp verification --schemes ref10_emt --transports fabric --levels 8,16,32,64,128,256,512,1024"
+  # CAPPED AT 256, and the cap is a measured peer limit rather than a choice.
+  #
+  # At 512 the endorsement fails and the shard produces nothing at all:
+  #
+  #   error in simulation: failed to execute transaction ...
+  #     error sending: chaincode stream terminated
+  #   rpc error: code = Canceled desc = grpc: the client connection is closing
+  #
+  # That is peer0.org1's chaincode container dropping its stream under 512
+  # concurrent endorsements, not a fault in the scheme. Leaving 512 and 1024 in
+  # the sweep cost the WHOLE arm: exp1 errors out rather than recording the
+  # levels it already completed, so c=8..256 were measured and then discarded.
+  #
+  # The ceiling belongs in the Exp 1 write-up: Ref[10]'s deployed arm cannot
+  # sustain 512 concurrent authorizations on this topology.
+  "W04|full|--name W04-exp1-ref10-fabric-tail --exp verification --schemes ref10_emt --transports fabric --levels 8,16,32,64,128,256"
   "W05||--name W05-exp1-ref13 --exp verification --schemes ref13_vrbc"
   "W06||--name W06-exp1-ref22 --exp verification --schemes ref22_shen"
 
