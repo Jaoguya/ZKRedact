@@ -136,12 +136,22 @@ func TestRunProducesFiguresAndData(t *testing.T) {
 	r1 := exp1.Result{
 		SaturationPoint: map[string]int{"zkredact": 64},
 		Points: []exp1.Point{
-			{Scheme: "zkredact", Concurrency: 1, ShardCount: 1, BatchSize: 1, Throughput: 100,
+			// The headline figure draws the COMPLETE system, so the fixture has
+			// to supply it: shards and batch at 64 with native verification on.
+			// Points at 1/1 are the ablation's disabled cell and appear on
+			// exp1-ablation instead, which is what this fixture used to hold
+			// exclusively — leaving the comparison figure with no ZK-Redact at all.
+			{Scheme: "zkredact", Concurrency: 1, ShardCount: 64, BatchSize: 64,
+				NativeBatchVerify: true, Throughput: 100,
 				Latency: metrics.Summary{P50: 1_000_000}, Repetition: 0},
-			{Scheme: "zkredact", Concurrency: 1, ShardCount: 1, BatchSize: 1, Throughput: 120,
+			{Scheme: "zkredact", Concurrency: 1, ShardCount: 64, BatchSize: 64,
+				NativeBatchVerify: true, Throughput: 120,
 				Latency: metrics.Summary{P50: 1_100_000}, Repetition: 1},
-			{Scheme: "zkredact", Concurrency: 8, ShardCount: 1, BatchSize: 1, Throughput: 800,
+			{Scheme: "zkredact", Concurrency: 8, ShardCount: 64, BatchSize: 64,
+				NativeBatchVerify: true, Throughput: 800,
 				Latency: metrics.Summary{P50: 2_000_000}, Repetition: 0},
+			{Scheme: "zkredact", Concurrency: 1, ShardCount: 1, BatchSize: 1, Throughput: 60,
+				Latency: metrics.Summary{P50: 1_500_000}, Repetition: 0},
 			{Scheme: "ref22_shen", Concurrency: 1, Throughput: 9000,
 				Latency: metrics.Summary{P50: 100}, Repetition: 0},
 			{Scheme: "ref22_shen", Concurrency: 8, Throughput: 9500,
@@ -187,7 +197,7 @@ func TestRunProducesFiguresAndData(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"repetitions", "min", "max", "spread_over_mean", "zkredact", "ref22_shen"} {
+	for _, want := range []string{"repetitions", "median", "min", "max", "spread_over_mean", "zkredact", "ref22_shen"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("CSV does not carry %q", want)
 		}
