@@ -65,6 +65,11 @@ type metadata struct {
 	// figure needs the reason checked before it is believed.
 	CommitDrift       []string `json:"commit_drift,omitempty"`
 	CommitDriftReason string   `json:"commit_drift_reason,omitempty"`
+
+	// ConfigDriftReason records a pool built from shards whose resolved
+	// configs differ. Written into the merged document so the exception
+	// travels with the numbers it applies to.
+	ConfigDriftReason string `json:"config_drift_reason,omitempty"`
 }
 
 type envFinger struct {
@@ -87,6 +92,11 @@ func main() {
 				"verify with: git diff <a> <b> -- cmd internal pkg experiments config "+
 				"network, and expect it empty. The reason is written into the merged "+
 				"document beside the commit list")
+		allowConfig = flag.String("allow-config-drift", "",
+			"pool shards recorded under DIFFERENT resolved configs, giving the "+
+				"reason. Only sound when the differing parameters cannot reach the "+
+				"systems being pooled — a peer resource limit, say, when only one "+
+				"scheme uses a peer. The reason is written into the merged document")
 	)
 	flag.Parse()
 
@@ -94,13 +104,13 @@ func main() {
 		*outDir = filepath.Join(*inDir, "merged")
 	}
 
-	if err := run(*inDir, *outDir, *allowDirty, *allowCommits); err != nil {
+	if err := run(*inDir, *outDir, *allowDirty, *allowCommits, *allowConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(inDir, outDir string, allowDirty bool, allowCommits string) error {
+func run(inDir, outDir string, allowDirty bool, allowCommits, allowConfig string) error {
 	paths, err := filepath.Glob(filepath.Join(inDir, "*.json"))
 	if err != nil {
 		return err
@@ -152,7 +162,7 @@ func run(inDir, outDir string, allowDirty bool, allowCommits string) error {
 
 	for _, name := range names {
 		shards := byExperiment[name]
-		merged, err := mergeOne(name, shards, allowDirty, allowCommits)
+		merged, err := mergeOne(name, shards, allowDirty, allowCommits, allowConfig)
 		if err != nil {
 			return err
 		}
@@ -180,7 +190,7 @@ type shard struct {
 }
 
 // mergeOne pools one experiment's shards after checking they describe one run.
-func mergeOne(name string, shards []shard, allowDirty bool, allowCommits string) (*document, error) {
+func mergeOne(name string, shards []shard, allowDirty bool, allowCommits, allowConfig string) (*document, error) {
 	base := shards[0]
 
 	out := base.doc
@@ -220,10 +230,15 @@ func mergeOne(name string, shards []shard, allowDirty bool, allowCommits string)
 			commits[m.GitCommit] = true
 		}
 		if !bytes.Equal(base.doc.Metadata.ResolvedConfig, m.ResolvedConfig) {
-			return nil, fmt.Errorf(
-				"%s and %s carry different resolved configs, so their numbers describe "+
-					"different parameters; they cannot be pooled",
-				base.path, s.path)
+			if allowConfig == "" {
+				return nil, fmt.Errorf(
+					"%s and %s carry different resolved configs, so their numbers describe "+
+						"different parameters; they cannot be pooled. Pass "+
+						"-allow-config-drift with a reason if the differing parameters "+
+						"cannot reach the systems being pooled",
+					base.path, s.path)
+			}
+			out.Metadata.ConfigDriftReason = allowConfig
 		}
 
 		// The machine may differ — that is the point of sharding — but only in
