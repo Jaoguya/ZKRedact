@@ -19,6 +19,7 @@ package exp2_redaction
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"zkredact/pkg/scheme"
@@ -33,6 +34,29 @@ type Config struct {
 	// WaitBoundsMS is Delta_R, the staleness knob. Longer waits amortise better
 	// but strand more requests on freshness revalidation.
 	WaitBoundsMS []int
+
+	// Concurrency is how many requests are offered at once, under the
+	// closed-loop arrival process config/experiment.yaml declares.
+	//
+	// REQUIRED FOR DELTA_R TO MEAN ANYTHING, which is why it is here and was
+	// not before. A batch closes on size OR on the wait bound, and with a
+	// serial replay the size rule always won: the whole trace was resident
+	// before the loop began, so every batch was full at birth and tau was
+	// always zero. Only an arrival process can make a batch close SHORT, and
+	// only a short close exercises Delta_R.
+	//
+	// It also bounds what B_R can reach. Under a closed loop at most
+	// Concurrency requests are ever in flight, so a batch cannot exceed it: at
+	// Concurrency 1 a B_R of 64 degenerates to a batch of one that additionally
+	// waits out Delta_R, which is strictly worse than not batching and is a
+	// property of the harness rather than of the scheme.
+	//
+	// Zero means max(BatchSizes) — the smallest value at which every swept B_R
+	// is still reachable, so the knob and not the offered load decides the
+	// batch size. Setting it below that is legitimate but must be deliberate:
+	// it measures batching under starvation, and MeanBatchSize on every point
+	// will show it.
+	Concurrency int
 
 	// ArmShard splits the sweep across hosts: this process measures only the
 	// arms whose index is congruent to Index modulo Total.
@@ -100,7 +124,24 @@ type Point struct {
 	BatchSize     int     `json:"batch_size"`
 	WaitBoundMS   int     `json:"wait_bound_ms"`
 	ConflictRatio float64 `json:"conflict_ratio"`
+	Concurrency   int     `json:"concurrency"`
 	Repetition    int     `json:"repetition"`
+
+	// What the batcher actually did, which is what makes a Delta_R sweep
+	// checkable rather than merely labelled.
+	//
+	// BatchesShortClosed counts batches that closed on tau >= Delta_R instead
+	// of on |B| = B_R. It is the direct evidence the wait bound fired at all:
+	// when it is zero across a whole sweep, Delta_R changed nothing and the
+	// four curves are four copies — which is exactly the state this experiment
+	// was in before the batcher existed, and which nothing in the output said.
+	//
+	// MeanBatchSize is the companion check. A mean far below B_R means the
+	// offered load, not the knob, decided the batch size, and the point is
+	// measuring starvation rather than batching.
+	BatchesClosed      int     `json:"batches_closed"`
+	BatchesShortClosed int     `json:"batches_short_closed"`
+	MeanBatchSize      float64 `json:"mean_batch_size"`
 
 	// SetupParams records the swept setup-time parameters this point was
 	// measured under — Ref[13]'s arity_q. Empty for a scheme without one.
@@ -169,6 +210,21 @@ func Run(
 		return nil, fmt.Errorf(
 			"exp2: batch_sizes must include 1 — it is the batching-disabled " +
 				"ablation and the point where every baseline sits")
+	}
+	// Default the offered load to the largest batch: the smallest concurrency
+	// at which every swept B_R is still reachable. Below it the harness, not
+	// the knob, caps the batch — see Config.Concurrency.
+	concurrency := cfg.Concurrency
+	if concurrency <= 0 {
+		concurrency = maxInt(cfg.BatchSizes)
+	}
+	if concurrency < maxInt(cfg.BatchSizes) {
+		// Legitimate, but it must not be silent: it measures batching under
+		// starvation, and the batch-size curve will flatten for a reason that
+		// has nothing to do with the scheme.
+		fmt.Printf("exp2: WARNING concurrency %d is below max batch size %d — "+
+			"batches larger than %d cannot form; check mean_batch_size on every point\n",
+			concurrency, maxInt(cfg.BatchSizes), concurrency)
 	}
 	if cfg.ArmShardTotal > 1 &&
 		(cfg.ArmShardIndex < 0 || cfg.ArmShardIndex >= cfg.ArmShardTotal) {
@@ -294,7 +350,7 @@ func Run(
 									s.Name(), len(rt.trace), size, rt.ratio)
 							}
 
-							p, err := runOne(ctx, s, authorized, size, wait)
+							p, err := runOne(ctx, s, authorized, size, wait, concurrency)
 							if err != nil {
 								return nil, fmt.Errorf("exp2: %s at batch %d, conflict %v: %w",
 									s.Name(), size, rt.ratio, err)
@@ -402,44 +458,104 @@ func waitsFor(waits []int, s scheme.Scheme) []int {
 	return waits
 }
 
-// runOne executes the full authorized set through one scheme at one batch size.
+// runOne offers the full authorized set to one scheme at one batch size and one
+// wait bound, under a closed-loop arrival process.
+//
+// WHY THIS IS NOT A SLICING LOOP ANY MORE. It used to walk `authorized` in
+// steps of B_R and hand each slice to Redact. That implements only half of
+// Phase 4's closing rule — the size half — and it makes the other half
+// unmeasurable, because a slice taken from a fully resident list is full the
+// instant it is cut and tau is always zero. Delta_R was consequently a label on
+// the output rather than an input to anything, and its four configured values
+// produced four identical sets of numbers at four times the cost. See
+// batcher.go, and internal/pvl/service.go for the same fix on the Exp 1 side.
+//
+// Now `concurrency` submitters draw from a shared queue and each blocks until
+// the batch carrying its request has executed. Batches therefore fill from
+// genuine arrivals, close short when those run out, and Delta_R bounds how long
+// the oldest request in an open batch waits — which is what it was always
+// specified to do.
 func runOne(
 	ctx context.Context,
 	s scheme.Scheme,
 	authorized []*scheme.Authorization,
-	batchSize, waitMS int,
+	batchSize, waitMS, concurrency int,
 ) (Point, error) {
 	p := Point{
 		Scheme:      s.Name(),
 		BatchSize:   batchSize,
 		WaitBoundMS: waitMS,
+		Concurrency: concurrency,
 		Requested:   len(authorized),
 	}
 
-	start := time.Now()
-	for i := 0; i < len(authorized); i += batchSize {
-		end := i + batchSize
-		if end > len(authorized) {
-			end = len(authorized)
-		}
-
-		select {
-		case <-ctx.Done():
-			return Point{}, ctx.Err()
-		default:
-		}
-
-		r, err := s.Redact(ctx, authorized[i:end])
-		if err != nil {
-			return Point{}, err
-		}
-		p.Succeeded += r.Succeeded
-		p.StaleExcluded += r.StaleExcluded
-		p.Failed += r.Failed
-		p.CryptoTime += r.CryptoTime
-		p.LedgerTime += r.LedgerTime
+	// The queue holds every request that may be in flight at once. Sized to the
+	// offered load for the reason pvl.NewService gives: a shorter queue would
+	// block submitters on the channel and charge that wait to redaction.
+	b, err := newBatcher(s, batchSize, time.Duration(waitMS)*time.Millisecond, concurrency)
+	if err != nil {
+		return Point{}, err
 	}
+
+	start := time.Now()
+	b.start(ctx)
+
+	next := make(chan *scheme.Authorization)
+	go func() {
+		defer close(next)
+		for _, a := range authorized {
+			select {
+			case next <- a:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	var subMu sync.Mutex
+	var subErr error
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for a := range next {
+				if err := b.submit(ctx, a); err != nil {
+					subMu.Lock()
+					if subErr == nil {
+						subErr = err
+					}
+					subMu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	stats := b.finish()
 	p.TotalTime = time.Since(start)
+
+	// A batch that failed to execute is a failed measurement, not a slow one:
+	// its requests were never redacted, so every derived figure below would be
+	// computed over work that did not happen.
+	if err := b.failure(); err != nil {
+		return Point{}, err
+	}
+	if subErr != nil {
+		return Point{}, subErr
+	}
+
+	p.Succeeded = stats.Succeeded
+	p.StaleExcluded = stats.StaleExcluded
+	p.Failed = stats.Failed
+	p.CryptoTime = stats.CryptoTime
+	p.LedgerTime = stats.LedgerTime
+	p.BatchesClosed = stats.Closed
+	p.BatchesShortClosed = stats.ShortClosed
+	if stats.Closed > 0 {
+		p.MeanBatchSize = float64(stats.SizeSum) / float64(stats.Closed)
+	}
 
 	// A scheme reporting zero crypto time is not doing per-request cryptography,
 	// which means the decomposition is not wired up. Catching that here is far
@@ -546,4 +662,14 @@ func containsInt(xs []int, v int) bool {
 		}
 	}
 	return false
+}
+
+func maxInt(xs []int) int {
+	m := 0
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
 }
