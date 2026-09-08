@@ -277,6 +277,23 @@ def _draw(fig_spec: Figure, out_dir: Path, formats: Sequence[str],
                             f"{', '.join(zero)} contains a non-positive value; "
                             f"drew linear so nothing is hidden")
 
+    # TICK AT THE SWEPT VALUES, not at decades. The x-axis of every figure here
+    # is a swept parameter -- concurrency, workload size, history depth -- and
+    # the reader wants to find "512", not to count powers of ten between 10^2
+    # and 10^3. Log spacing is kept, so the points stay evenly spaced; only the
+    # labels change.
+    if ax.get_xscale() == "log":
+        ticks = sorted({v for s in fig_spec.series for v in s.x})
+        if 0 < len(ticks) <= 14:
+            labels = [("%g" % t) for t in ticks]
+            ax.set_xticks(ticks)
+            # Rotate once the labels are long enough to touch. "256 512 1024"
+            # overlaps at the right edge of an 11-tick axis otherwise.
+            crowded = len(ticks) > 8 and max(len(l) for l in labels) >= 4
+            ax.set_xticklabels(labels, rotation=45 if crowded else 0,
+                               ha="right" if crowded else "center")
+            ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+
     # X-axis breathing room, so the first and last swept points do not sit on
     # the frame and read as clipped.
     if ax.get_xscale() == "log":
