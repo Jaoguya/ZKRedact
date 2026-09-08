@@ -29,7 +29,7 @@ const (
 // Fixtures
 // -----------------------------------------------------------------------------
 
-func testPolicy(t *testing.T, predicate string) *Policy {
+func testPolicy(t testing.TB, predicate string) *Policy {
 	t.Helper()
 	p, err := CompilePolicy(
 		scheme.Policy{ID: "pol-0000", Version: 1, Predicate: predicate},
@@ -40,7 +40,7 @@ func testPolicy(t *testing.T, predicate string) *Policy {
 	return p
 }
 
-func testRegistry(t *testing.T, leaf []byte) *Registry {
+func testRegistry(t testing.TB, leaf []byte) *Registry {
 	t.Helper()
 	leaves := [][]byte{
 		Hash(Uint64Bytes(11)), Hash(Uint64Bytes(12)),

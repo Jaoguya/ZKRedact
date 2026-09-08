@@ -1454,8 +1454,14 @@ complete scheme, at the top of both sweeps with native batch verification
 enabled, and the disabled arm at $N=1$, $B=1$. The shard sweep deliberately
 exceeds the cores available to the system under test, so saturation is
 demonstrated rather than assumed. \cite{ref10} is measured on both of its
-transports---in-process, and deployed over Fabric---since only the latter is
-charged consensus, and reporting one alone would misstate its cost.
+transports, and both are reported. Its Algorithm~3 orders the committee vote on
+the ledger, so the deployed cost of that scheme includes consensus; but its
+authors state that ``the consensus mechanism for redaction operations was not
+included'' in their own measurements, so the in-process arm is the one
+corresponding to their published figures. Reporting only the deployed arm would
+charge the baseline for a cost its authors excluded, and reporting only the
+in-process arm would omit a step its protocol requires. The two are therefore
+drawn together, and the comparison against each is stated separately.
 
 \textit{Metrics.}
 Verification throughput in requests per second is the plotted metric, shown in

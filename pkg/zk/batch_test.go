@@ -25,7 +25,7 @@ func batchFixture(t *testing.T) *Params {
 // provenBatch builds n valid proofs over DISTINCT statements, which is the case
 // that matters: a batch of authorizations never shares public inputs, and that
 // is exactly the case the old comment claimed Groth16 could not batch.
-func provenBatch(t *testing.T, p *Params, n int) []*Proof {
+func provenBatch(t testing.TB, p *Params, n int) []*Proof {
 	t.Helper()
 
 	pol := testPolicy(t, "((sender OR receiver) AND validator)")
