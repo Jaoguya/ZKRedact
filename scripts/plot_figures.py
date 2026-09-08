@@ -135,6 +135,15 @@ ARM_SLOT: Dict[str, int] = {
 
 
 def style_for(key: str) -> Dict[str, object]:
+    # "scheme@ledger" is one system measured at two ledger sizes, which is the
+    # whole point of the Exp 3 figure: the system keeps its colour and marker so
+    # it is recognisable across figures, and the ledger size picks solid or
+    # dashed so the pair reads as a pair. Without this the eight curves all miss
+    # STYLE_ORDER and draw identically.
+    ledger = None
+    if "@" in key:
+        key, ledger = key.split("@", 1)
+
     if key in ARM_SLOT:
         idx = ARM_SLOT[key]
     elif key in STYLE_ORDER:
@@ -143,7 +152,8 @@ def style_for(key: str) -> Dict[str, object]:
         idx = len(STYLE_ORDER)
     return {
         "marker": MARKERS[idx % len(MARKERS)],
-        "linestyle": LINESTYLES[idx % len(LINESTYLES)],
+        "linestyle": ("-" if ledger is None or ledger == "100" else "--")
+                     if ledger is not None else LINESTYLES[idx % len(LINESTYLES)],
         "color": COLORS[idx % len(COLORS)],
     }
 
@@ -369,6 +379,25 @@ def _make_room_for_legend(ax, *, floor_at_zero: bool, max_passes: int = 6) -> No
     """
     fig = ax.get_figure()
     step = 0.18  # of the current span, per pass
+
+    # A LEGEND TOO TALL TO CLEAR GOES OUTSIDE, rather than being cleared by
+    # growing the axis under it. Exp 3 draws eight curves — four systems at two
+    # ledger sizes — and no amount of empty axis fits that inside the frame: six
+    # passes at 18% of a six-decade span took the y-axis to 1e14 for data ending
+    # at 1e6, squeezing every curve into the bottom third. savefig already
+    # trims to a tight bounding box, so an outside legend costs nothing.
+    fig.canvas.draw()
+    leg = ax.get_legend()
+    if leg is not None:
+        box = leg.get_window_extent().transformed(ax.transAxes.inverted())
+        if box.height > 0.35:
+            handles, labels = ax.get_legend_handles_labels()
+            leg.remove()
+            ax.legend(handles, labels, frameon=True, framealpha=1.0,
+                      loc="upper center", bbox_to_anchor=(0.5, -0.24),
+                      ncol=2, borderaxespad=0.0)
+            ax.get_legend().get_frame().set_linewidth(0.4)
+            return
 
     for _ in range(max_passes):
         fig.canvas.draw()  # nothing has an extent until the figure is laid out
