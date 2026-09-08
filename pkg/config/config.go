@@ -208,8 +208,11 @@ type ExpVerification struct {
 }
 
 type ExpRedaction struct {
-	Enabled              bool     `yaml:"enabled"`
-	Systems              []string `yaml:"systems"`
+	Enabled bool     `yaml:"enabled"`
+	Systems []string `yaml:"systems"`
+	// WorkloadSizes is the primary axis of the Exp 2 figure: how many redaction
+	// requests the workload contains.
+	WorkloadSizes        []int    `yaml:"workload_sizes"`
 	DecomposeCost        *bool    `yaml:"decompose_cost"`
 	Metrics              []string `yaml:"metrics"`
 	FindOptimalBatchSize *bool    `yaml:"find_optimal_batch_size"`

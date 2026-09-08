@@ -388,6 +388,7 @@ func runExp2(
 	res, err := exp2.Run(ctx, exp2.Config{
 		BatchSizes:     cfg.ZKRedact.RedactionBatch.Sizes,
 		WaitBoundsMS:   cfg.ZKRedact.RedactionBatch.WaitBoundsMS,
+		WorkloadSizes:  e.WorkloadSizes,
 		ConflictRatios: cfg.Workload.ConflictRatios,
 		ArmShardIndex:  armIndex,
 		ArmShardTotal:  armTotal,

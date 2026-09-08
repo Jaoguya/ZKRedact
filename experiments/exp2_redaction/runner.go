@@ -35,6 +35,27 @@ type Config struct {
 	// but strand more requests on freshness revalidation.
 	WaitBoundsMS []int
 
+	// WorkloadSizes is the PRIMARY AXIS: how many redaction requests the
+	// workload contains. The figure plots average overhead per request against
+	// it, so the amortisation is observed converging rather than read off one
+	// workload size.
+	//
+	// Each size takes a PREFIX of the trace. Every system therefore sees the
+	// same first n requests in the same order, which is the one-trace rule
+	// applied to a shorter run rather than a differently generated one.
+	//
+	// COST. A size multiplies the arms, and every arm re-authorizes its own
+	// prefix — for ZK-Redact one Groth16 proof per request. Crossing this
+	// dimension with the full Delta_R and conflict sweeps would multiply the
+	// run by len(WorkloadSizes); it is therefore swept only at the HEADLINE
+	// arm, the first wait bound and the first conflict ratio, which is exactly
+	// the arm cmd/plot draws the overhead figure from. Every other arm runs at
+	// the full workload alone, so the Delta_R and conflict curves keep the
+	// sweep they already had.
+	//
+	// Empty means one size: the whole trace.
+	WorkloadSizes []int
+
 	// Concurrency is how many requests are offered at once, under the
 	// closed-loop arrival process config/experiment.yaml declares.
 	//
@@ -120,7 +141,12 @@ type Config struct {
 
 // Point is one measured configuration.
 type Point struct {
-	Scheme        string  `json:"scheme"`
+	Scheme string `json:"scheme"`
+
+	// WorkloadSize is how many requests this point's workload contained — the
+	// x-axis of the Exp 2 figure.
+	WorkloadSize int `json:"workload_size"`
+
 	BatchSize     int     `json:"batch_size"`
 	WaitBoundMS   int     `json:"wait_bound_ms"`
 	ConflictRatio float64 `json:"conflict_ratio"`
@@ -234,6 +260,21 @@ func Run(
 	if cfg.Repetitions < 1 {
 		return nil, fmt.Errorf("exp2: repetitions must be >= 1, got %d", cfg.Repetitions)
 	}
+	for _, n := range cfg.WorkloadSizes {
+		if n < 1 {
+			return nil, fmt.Errorf("exp2: workload size %d is not a positive request count", n)
+		}
+		if n < concurrency {
+			// The prefix cannot fill the offered load, so the batch size is
+			// decided by the workload rather than by B_R, and the point
+			// measures starvation. Refused rather than warned: it would sit at
+			// the left end of the headline figure, where the curve is read.
+			return nil, fmt.Errorf(
+				"exp2: workload size %d is below the offered concurrency %d — "+
+					"the prefix cannot fill a batch, so B_R would not be the "+
+					"binding constraint at that point", n, concurrency)
+		}
+	}
 	if cfg.TraceFor == nil {
 		return nil, fmt.Errorf(
 			"exp2: TraceFor is required — the conflict ratio is a property of trace " +
@@ -299,66 +340,74 @@ func Run(
 				sizes = []int{1}
 			}
 
-			for _, rt := range traces {
+			waits := waitsFor(cfg.WaitBoundsMS, s)
+			for ti, rt := range traces {
 				for _, size := range sizes {
-					for _, wait := range waitsFor(cfg.WaitBoundsMS, s) {
-						// Arm index is counted over the FULL sweep, not over the
-						// arms this host runs, so every shard agrees on which
-						// arm is which and no arm is measured twice.
-						thisArm := armIndex
-						armIndex++
-						if !cfg.runsArm(thisArm) {
-							continue
-						}
-						for rep := 0; rep < cfg.Repetitions; rep++ {
-							// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
-							// scheme.
-							//
-							// A redaction advances its transaction's version, and
-							// an authorization carries the version it was granted
-							// against. So the previous configuration's redactions
-							// invalidate this configuration's authorizations:
-							// every request fails Fresh_i and is counted as stale
-							// rather than executed.
-							//
-							// Authorizing once produced a sweep in which only the
-							// FIRST point measured a redaction. Every later point
-							// reported 100% staleness, zero CryptoTime and a cost
-							// per request derived from no work at all — for
-							// ZK-Redact, Ref[13] and Ref[22] alike, since all three
-							// revalidate state. The batch-size curve, which is what
-							// Exp 2 exists to produce, was built from configurations
-							// that redacted nothing. Ref[10] was unaffected only
-							// because it performs no freshness check, which meant
-							// the one scheme that could not detect the problem was
-							// the one that looked healthy.
-							//
-							// NOT TIMED, so this costs the comparison nothing but
-							// wall clock. It is not free wall clock: for ZK-Redact
-							// it is one Groth16 proof per request per configuration,
-							// because the statement binds the transaction version
-							// and a new version needs a new proof. That is the real
-							// cost of the workload, not an artefact of the harness.
-							authorized, err := authorizeAll(ctx, s, rt.trace)
-							if err != nil {
-								return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
+					for wi, wait := range waits {
+						// The workload axis is swept only on the headline arm;
+						// see Config.WorkloadSizes for why.
+						headline := ti == 0 && wi == 0
+						for _, workload := range workloadsFor(cfg, len(rt.trace), headline) {
+							// Arm index is counted over the FULL sweep, not over the
+							// arms this host runs, so every shard agrees on which
+							// arm is which and no arm is measured twice.
+							thisArm := armIndex
+							armIndex++
+							if !cfg.runsArm(thisArm) {
+								continue
 							}
-							if len(authorized) == 0 {
-								return nil, fmt.Errorf(
-									"exp2: %s authorized none of %d requests at batch size %d, "+
-										"conflict ratio %v; there is nothing to redact",
-									s.Name(), len(rt.trace), size, rt.ratio)
-							}
+							trace := rt.trace[:workload]
+							for rep := 0; rep < cfg.Repetitions; rep++ {
+								// RE-AUTHORIZED FOR EVERY CONFIGURATION, not once per
+								// scheme.
+								//
+								// A redaction advances its transaction's version, and
+								// an authorization carries the version it was granted
+								// against. So the previous configuration's redactions
+								// invalidate this configuration's authorizations:
+								// every request fails Fresh_i and is counted as stale
+								// rather than executed.
+								//
+								// Authorizing once produced a sweep in which only the
+								// FIRST point measured a redaction. Every later point
+								// reported 100% staleness, zero CryptoTime and a cost
+								// per request derived from no work at all — for
+								// ZK-Redact, Ref[13] and Ref[22] alike, since all three
+								// revalidate state. The batch-size curve, which is what
+								// Exp 2 exists to produce, was built from configurations
+								// that redacted nothing. Ref[10] was unaffected only
+								// because it performs no freshness check, which meant
+								// the one scheme that could not detect the problem was
+								// the one that looked healthy.
+								//
+								// NOT TIMED, so this costs the comparison nothing but
+								// wall clock. It is not free wall clock: for ZK-Redact
+								// it is one Groth16 proof per request per configuration,
+								// because the statement binds the transaction version
+								// and a new version needs a new proof. That is the real
+								// cost of the workload, not an artefact of the harness.
+								authorized, err := authorizeAll(ctx, s, trace)
+								if err != nil {
+									return nil, fmt.Errorf("exp2: pre-authorization for %s: %w", s.Name(), err)
+								}
+								if len(authorized) == 0 {
+									return nil, fmt.Errorf(
+										"exp2: %s authorized none of %d requests at batch size %d, "+
+											"conflict ratio %v; there is nothing to redact",
+										s.Name(), len(trace), size, rt.ratio)
+								}
 
-							p, err := runOne(ctx, s, authorized, size, wait, concurrency)
-							if err != nil {
-								return nil, fmt.Errorf("exp2: %s at batch %d, conflict %v: %w",
-									s.Name(), size, rt.ratio, err)
+								p, err := runOne(ctx, s, authorized, size, wait, concurrency)
+								if err != nil {
+									return nil, fmt.Errorf("exp2: %s at batch %d, conflict %v: %w",
+										s.Name(), size, rt.ratio, err)
+								}
+								p.Repetition = rep
+								p.SetupParams = overrides
+								p.ConflictRatio = rt.ratio
+								p.WorkloadSize = workload
+								res.Points = append(res.Points, p)
 							}
-							p.Repetition = rep
-							p.SetupParams = overrides
-							p.ConflictRatio = rt.ratio
-							res.Points = append(res.Points, p)
 						}
 					}
 				}
@@ -672,4 +721,33 @@ func maxInt(xs []int) int {
 		}
 	}
 	return m
+}
+
+// workloadsFor is the workload sizes to measure on one arm.
+//
+// The headline arm — first conflict ratio, first wait bound — carries the whole
+// sweep, because that is the arm the overhead figure is drawn from. Every other
+// arm runs at the full trace only, so the Delta_R and conflict-ratio sweeps are
+// unchanged and the run does not multiply by len(WorkloadSizes).
+//
+// A configured size longer than the trace is clamped to the trace rather than
+// refused: it is the same measurement, and refusing would make the config
+// depend on workload.total_requests in two places.
+func workloadsFor(cfg Config, traceLen int, headline bool) []int {
+	if len(cfg.WorkloadSizes) == 0 || !headline {
+		return []int{traceLen}
+	}
+	out := make([]int, 0, len(cfg.WorkloadSizes))
+	seen := make(map[int]struct{}, len(cfg.WorkloadSizes))
+	for _, n := range cfg.WorkloadSizes {
+		if n > traceLen {
+			n = traceLen
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }

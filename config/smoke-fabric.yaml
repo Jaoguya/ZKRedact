@@ -801,6 +801,10 @@ experiments:
     # claim it does (ZK-Redact.md:645-647).
     decompose_cost: true
 
+    # [METHOD] Exp 2's x-axis. Two sizes is the minimum the validator accepts: enough to
+    # prove the sweep executes, not enough to mean anything.
+    workload_sizes: [10, 20]
+
     metrics:
       - "ch_adapt_time"             # linear in B_R — the irreducible floor
       - "blockchain_time_per_batch" # ~flat in B_R — the amortised part

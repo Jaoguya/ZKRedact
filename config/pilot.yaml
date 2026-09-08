@@ -808,6 +808,11 @@ experiments:
     # claim it does (ZK-Redact.md:645-647).
     decompose_cost: true
 
+    # [METHOD] Exp 2's x-axis, scaled to this config's 500-request trace. Smallest size
+    # stays at or above the largest batch size (64) so B_R, not the workload,
+    # caps the batch.
+    workload_sizes: [100, 250, 500]
+
     metrics:
       - "ch_adapt_time"             # linear in B_R — the irreducible floor
       - "blockchain_time_per_batch" # ~flat in B_R — the amortised part

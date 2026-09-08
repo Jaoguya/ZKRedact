@@ -583,6 +583,29 @@ func checkExperiments(c *config.Config, r *report) {
 					"required to separate the amortisable cost from the floor, and to price the staleness trade-off")
 			}
 		}
+
+		// The workload sweep IS the x-axis of the Exp 2 figure. An empty list
+		// collapses it to a single workload size, which draws one point per
+		// curve and no convergence.
+		switch {
+		case len(e.WorkloadSizes) < 2:
+			r.errf("experiments.redaction_throughput.workload_sizes",
+				"needs at least two sizes",
+				"it is the figure's x-axis; per-request overhead cannot be shown converging from one point")
+		default:
+			if total := c.Workload.TotalRequests; total != nil {
+				if n := maxInt(e.WorkloadSizes); n > *total {
+					r.errf("experiments.redaction_throughput.workload_sizes",
+						fmt.Sprintf("largest size %d exceeds workload.total_requests %d", n, *total),
+						"a workload longer than the trace would have to replay requests, which breaks the one-trace rule")
+				}
+			}
+			if n := minInt(e.WorkloadSizes); n < maxInt(c.ZKRedact.RedactionBatch.Sizes) {
+				r.warnf("experiments.redaction_throughput.workload_sizes",
+					fmt.Sprintf("smallest size %d is below the largest batch size %d", n, maxInt(c.ZKRedact.RedactionBatch.Sizes)),
+					"at that point the workload, not B_R, caps the batch; exp2.Run refuses it against the offered concurrency")
+			}
+		}
 	}
 
 	// Exp 3

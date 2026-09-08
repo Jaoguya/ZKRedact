@@ -261,6 +261,14 @@ func chartsExp2(doc document) ([]chart, error) {
 	wait := NewCollector()
 	conf := NewCollector()
 
+	// The headline figure of Exp 2. x is the workload size, not the batch size:
+	// per-request overhead is shown converging as the workload grows. Only the
+	// plotted batch sizes appear, because the runner sweeps the workload axis
+	// on the headline arm alone and a curve per B_R would otherwise crowd four
+	// systems off the figure.
+	overhead := NewCollector()
+	plottedBR := map[int]bool{1: true, 8: true, 64: true}
+
 	// The headline holds the two knobs FIXED, for the same reason Exp 1 does:
 	// a comparison figure compares systems. wait_bound takes the shortest
 	// configured value and conflict_ratio takes 0.0, which config/experiment.yaml
@@ -295,6 +303,17 @@ func chartsExp2(doc document) ([]chart, error) {
 			share.Add(p.Scheme, dims, x, p.CryptoShare)
 			stale.Add(p.Scheme, dims, x, p.StaleExclusionRate)
 		}
+		if p.WorkloadSize > 0 &&
+			(!batches(p) || p.WaitBoundMS == headWait) &&
+			p.ConflictRatio == headRatio &&
+			(plottedBR[p.BatchSize] || !batches(p)) {
+			dims := map[string]string{}
+			if batches(p) {
+				dims["B_R"] = strconv.Itoa(p.BatchSize)
+			}
+			overhead.Add(p.Scheme, dims, float64(p.WorkloadSize),
+				float64(p.CostPerRequest)/1e6)
+		}
 		if p.Scheme == "zkredact" {
 			if p.ConflictRatio == headRatio {
 				wait.Add(p.Scheme, map[string]string{"wait_ms": strconv.Itoa(p.WaitBoundMS)},
@@ -308,6 +327,20 @@ func chartsExp2(doc document) ([]chart, error) {
 	}
 
 	return []chart{
+		{
+			Name:   "exp2-overhead",
+			Title:  "Exp 2 — Average processing overhead vs workload size",
+			XLabel: "number of redaction requests",
+			YLabel: "average processing overhead (ms/request)",
+			XLog:   true, YLog: true,
+			Series: overhead.Series(),
+			Caveats: []string{
+				"ZK-Redact at B_R in {1, 8, 64}; the baselines do not batch and " +
+					"sit at B_R=1 by construction.",
+				"Wait bound and conflict ratio are held at the headline arm, " +
+					"which is the only arm the workload axis is swept on.",
+			},
+		},
 		{
 			Name:   "exp2-cost-per-request",
 			Title:  "Exp 2 — Cost per redaction vs batch size",
@@ -397,6 +430,18 @@ func chartsExp3(doc document) ([]chart, error) {
 	bytes := NewCollector()
 	depth := NewCollector()
 
+	// The headline figure of Exp 3. x is the history depth and each scheme is
+	// drawn once per ledger size, so the SLOPE of a curve is the scheme's
+	// dependence on depth and the GAP between its pair is its dependence on
+	// ledger size. A ledger-independent audit therefore appears as coincident
+	// curves, which is the claim being tested rather than an inference from a
+	// fitted scaling class.
+	//
+	// Verification time, not total: retrieval is a transport cost and is
+	// reported separately, so folding it in would move the curves for a reason
+	// unrelated to the audit algorithm.
+	audit := NewCollector()
+
 	// The headline holds history depth FIXED and grows the ledger, which is
 	// what config/experiment.yaml calls the headline plot and what the scaling
 	// class is read from. Depth is a second experiment, not a second dimension
@@ -431,6 +476,10 @@ func chartsExp3(doc document) ([]chart, error) {
 	}
 
 	for _, p := range r.Points {
+		if sameSetup(p) {
+			audit.Add(p.Scheme, map[string]string{"L": strconv.Itoa(p.LedgerSize)},
+				float64(p.HistoryDepth), float64(p.VerificationTime)/1e6)
+		}
 		x := float64(p.LedgerSize)
 		if p.HistoryDepth == headDepth && sameSetup(p) {
 			cost.Add(p.Scheme, map[string]string{}, x, float64(p.TotalTime)/1e6)
@@ -465,6 +514,24 @@ func chartsExp3(doc document) ([]chart, error) {
 	}
 
 	return []chart{
+		{
+			Name:   "exp3-audit",
+			Title:  "Exp 3 — Audit verification time vs redaction history depth",
+			XLabel: "number of redactions in transaction history",
+			YLabel: "audit verification time (ms)",
+			XLog:   true, YLog: true,
+			Series: audit.Series(),
+			Caveats: append([]string{
+				"Each scheme is drawn once per ledger size L. The SLOPE is its " +
+					"dependence on history depth; the GAP between a scheme's " +
+					"curves is its dependence on ledger size.",
+				"Coincident curves mean a ledger-independent audit. ZK-Redact's " +
+					"pair separating would mean the PAI is not delivering its " +
+					"O(nu + log|I|) bound.",
+				"Verification only. Retrieval latency and the auditor " +
+					"authorization adder are reported separately.",
+			}, caveats[1:]...),
+		},
 		{
 			Name:   "exp3-audit-cost",
 			Title:  "Exp 3 — Audit cost vs ledger size, at fixed history depth",

@@ -57,8 +57,12 @@ meta:
   #
   # ⚠️ TWO THINGS THIS COSTS, both real.
   #
-  # 1. cmd/plot has no min/max band per point. Between-run spread is not
-  #    measured at all, only within-run latency spread.
+  # 1. PARTLY OUT OF DATE, AND THE COST IS ACCEPTED KNOWINGLY. cmd/plot does
+  #    now draw a min-to-max error bar per point (svg.go: "Error bars first, so
+  #    markers sit on top of them"), but it skips any point with N < 2. At one
+  #    repetition every bar is skipped, so the figures carry NO between-run
+  #    spread. That is a deliberate trade against budget, not an oversight, and
+  #    the write-up must not describe the points as medians with spread.
   # 2. A run CANNOT be split across EC2 instances. One repetition per instance
   #    confounds run-to-run variance with machine-to-machine variance, and a
   #    degraded host becomes an undetectable outlier. Single host only.
@@ -69,6 +73,20 @@ meta:
   # The repetition count must be set by the NOISIEST system. Task 9's first job
   # is to take the same variance datum for ZK-Redact's Exp 2 CryptoTime on the
   # full topology and raise this if that CV is worse.
+  #
+  # HELD AT 1, DELIBERATELY, ON BUDGET.
+  #
+  # It was raised to 5 to give the figures error bars, then returned here: at
+  # ~100 host-hours against ~20, five repetitions cost roughly $110 and four
+  # times the wall clock for a spread the comparison does not need. The measured
+  # variance above (CV 0.12-0.16%) is the evidence that one sample is defensible
+  # for Ref[10]; it is NOT evidence for ZK-Redact, whose CPU-bound path has
+  # never had its variance measured. See the warning below.
+  #
+  # WHAT THIS COSTS, and it must be stated wherever the results are: no point
+  # carries an error bar, so run-to-run variance is unmeasured rather than small.
+  # If a comparison in the results turns on a difference of a few percent, that
+  # difference is not supported at this repetition count and this must go up.
   repetitions: 1
 
 
@@ -790,6 +808,19 @@ experiments:
       - "redactions_per_second"
       - "stale_exclusion_rate"      # Fresh_i == 0; the honest cost of batching
 
+    # [METHOD] PRIMARY AXIS: number of redaction requests in the workload.
+    #
+    # The figure plots average processing overhead per request against this,
+    # so the amortisation has to be observed CONVERGING rather than read off a
+    # single workload size. Geometric-ish from 100 to total_requests: 100 is
+    # small enough that per-batch fixed cost still dominates at large B_R,
+    # 5000 is the whole trace, and the intermediate points are dense enough to
+    # show where the curve flattens.
+    #
+    # Bounded above by workload.total_requests: a workload larger than the
+    # trace would have to replay requests, which breaks the one-trace rule.
+    workload_sizes: [100, 250, 500, 1000, 2500, 5000]
+
     # [METHOD] Target result: the B_R where marginal amortisation gain equals
     # marginal staleness loss. Requires both curves over the same sweep.
     find_optimal_batch_size: true
@@ -834,7 +865,12 @@ experiments:
     # So treat the classifier's verdict as unreliable at this scale and read
     # the decomposition instead: retrieval_latency and verification_time are
     # recorded separately for precisely this reason.
-    ledger_sizes: [100, 200, 500, 1000]
+    # CUT to the two sizes the figure draws. The headline axis is now history
+    # depth, with each scheme drawn twice — solid at L=100, dashed at L=1000 —
+    # so the vertical gap between a scheme's pair IS its ledger dependence.
+    # Intermediate sizes produced curves nothing plotted and cost setup time
+    # per point; the 10x span the validator requires is preserved exactly.
+    ledger_sizes: [100, 1000]
 
     # [METHOD] SECOND PLOT: ledger fixed, history depth grows. Geometric, since
     # cost is expected to scale with depth rather than step linearly.
