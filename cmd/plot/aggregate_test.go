@@ -197,9 +197,19 @@ func TestRunProducesFiguresAndData(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"repetitions", "median", "min", "max", "spread_over_mean", "zkredact", "ref22_shen"} {
+	for _, want := range []string{"repetitions", "median", "min", "max", "spread_over_mean", "zkredact"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("CSV does not carry %q", want)
+		}
+	}
+	// Ref[22] — and Ref[13] — are measured in Exp 1 but are NOT on this figure:
+	// neither defines a per-request authorization protocol, so their curve
+	// prices checking nothing. Their presence here would mean exp1Series had
+	// stopped excluding them, which is the whole point of that function.
+	for _, absent := range []string{"ref22_shen", "ref13_vrbc"} {
+		if strings.Contains(text, absent) {
+			t.Errorf("exp1-throughput carries %q; Exp 1 compares ZK-Redact "+
+				"against Ref[10] and against itself only", absent)
 		}
 	}
 	// The two-repetition point must show N=2, or repetitions are still not

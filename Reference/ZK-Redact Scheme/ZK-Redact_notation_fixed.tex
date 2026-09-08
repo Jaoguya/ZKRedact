@@ -1417,41 +1417,72 @@ inside a shared comparison instead of defining the comparison itself.
 \subsubsection*{\textbf{Experiment 1: Verification Throughput}}
 
 \textit{Objective.}
-Measure how many redaction requests per second each system can \emph{authorize}
-before execution, and how that rate scales with concurrent load. Measurement
-starts when a request is admitted to the authorization component and stops when
-the authorization decision is final; redaction execution and ledger commitment
+Measure how many redaction requests per second the authorization stage can
+sustain, and how that rate scales with concurrent load. Measurement starts when
+a request is admitted to the authorization component and stops when the
+authorization decision is final; redaction execution and ledger commitment
 belong to Experiment~2 and are excluded, as is proof generation, which the
 requester performs before submission.
 
-\textit{Configuration.}
-The number of concurrent requests is swept geometrically from 1 to 1024. For
-ZK-Redact the shard count $N$, the proof-verification batch size $B$, and its
-waiting bound $\Delta$ are swept over $\{1,\dots,64\}$, $\{1,\dots,64\}$, and
-$\{1,6,13,63\}$\,ms respectively, with native batch verification enabled and
-disabled; $N=1$ and $B=1$ are the disabled arms, so sharding and batching remain
-separable at every magnitude. Fig.~\ref{fig:exp1-throughput} draws ZK-Redact at
-$N\in\{1,8,64\}$ against the three baselines, with~\cite{ref10} measured on both
-its in-process and its deployed Fabric transport.
+\textit{What is compared, and why.}
+This experiment compares ZK-Redact against~\cite{ref10} and against itself with
+both proof-processing mechanisms disabled. \cite{ref10} is the only prior scheme
+that specifies a per-request authorization protocol---a committee vote whose
+result is ordered on the ledger---and is therefore the only meaningful external
+comparison for this stage. \cite{ref13} and~\cite{ref22} are measured under the
+same harness but are not plotted here: in both, redaction authority is a
+system-level capability held by the trapdoor owner rather than a per-request
+decision, which is why Table~\ref{tab:cost-comparison} records no authorization
+verification cost for either. Their measured rate would price the absence of a
+check rather than the cost of one, and it would say nothing about a scheme that
+performs the check. Both participate fully in Experiments~2 and~3, where the
+operation being measured is one all four systems perform.
 
-\textit{Reading the figure.}
-Only~\cite{ref10} specifies a per-request authorization protocol, so it is the
-like-for-like comparison. The authorization of \cite{ref13} and~\cite{ref22}
-reduces to confirming possession of a trapdoor or a regulator key, which their
-papers define no protocol around; their curves are therefore a
-\emph{no-authorization floor}, and the distance to them is the price of
-privacy-preserving authorization rather than a deficit.
+The internal comparison carries the scaling claim. Drawing ZK-Redact both as the
+complete scheme and with neither sharding nor batching attributes the difference
+between them to those two mechanisms, rather than to the consensus cost that
+bounds~\cite{ref10}. A speedup measured only against a consensus-bound baseline
+would confound a design difference with a scaling result.
+
+\textit{Configuration.}
+The number of concurrent requests is swept geometrically from 1 to 1024 under
+the closed-loop arrival process of Section~\ref{sec:setup}. ZK-Redact is
+measured over shard counts $N\in\{1,\dots,64\}$, proof-verification batch sizes
+$B\in\{1,\dots,64\}$ with waiting bound $\Delta\in\{1,6,13,63\}$\,ms, and native
+batch verification enabled and disabled. Two of those arms are drawn: the
+complete scheme, at the top of both sweeps with native batch verification
+enabled, and the disabled arm at $N=1$, $B=1$. The shard sweep deliberately
+exceeds the cores available to the system under test, so saturation is
+demonstrated rather than assumed. \cite{ref10} is measured on both of its
+transports---in-process, and deployed over Fabric---since only the latter is
+charged consensus, and reporting one alone would misstate its cost.
+
+\textit{Metrics.}
+Verification throughput in requests per second is the plotted metric, shown in
+Fig.~\ref{fig:exp1-throughput} against the number of concurrent requests.
+Per-request latency is recorded at the 50th, 95th, and 99th percentiles;
+scaling efficiency is the measured speedup divided by $N$; and the saturation
+point is the offered load beyond which throughput stops rising. Each point also
+records the consensus blocks, round trips, and signature verifications its
+authorization consumed, so the comparison against~\cite{ref10} can be re-derived
+under a different block interval rather than taken on trust.
 
 \begin{figure}[t]
 \centering
 \plotfig{exp1-throughput.pdf}
 \caption{Experiment 1: verification throughput (requests/s) versus number of
-concurrent requests.}
+concurrent requests. ZK-Redact is drawn as the complete scheme and with neither
+sharding nor batching; \cite{ref10} is drawn on both of its transports.}
 \label{fig:exp1-throughput}
 \end{figure}
 
 \color{red}
-\textit{Results.} [To be completed from the measurement run.]
+\textit{Results.} [To be completed from the measurement run. Report the
+throughput and latency of ZK-Redact against both arms of~\cite{ref10}, the
+saturation point of each, and the separation between ZK-Redact's complete and
+disabled arms as the contribution of sharding and batching. State the consensus
+cost bounding~\cite{ref10}'s Fabric arm, so its gap is read as a design
+difference rather than an implementation speedup.]
 \color{black}
 
 \subsubsection*{\textbf{Experiment 2: Redaction Processing Overhead}}

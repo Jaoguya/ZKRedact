@@ -112,6 +112,7 @@ LEGEND_ORDER: Tuple[str, ...] = (
 
 LABELS: Dict[str, str] = {
     "zkredact": "ZK-Redact (proposed)",
+    "zkredact/plain": "ZK-Redact (no sharding, no batching)",
     "ref10_emt": "Ref[10] EMT (in-process)",
     "ref10_emt/fabric": "Ref[10] EMT (Fabric)",
     "ref13_vrbc": "Ref[13] VRBC",
@@ -418,19 +419,35 @@ EXP1_FULL_SHARDS, EXP1_FULL_BATCH = 64, 64
 
 
 def _exp1_key(p: dict) -> Optional[str]:
-    """Series key for the headline figures, or None if the point is off-arm."""
+    """Series key for the headline figures, or None if the point is off-arm.
+
+    Exp 1 compares ZK-Redact against Ref[10] ONLY, and against itself with both
+    mechanisms disabled. Ref[13] and Ref[22] are measured but not drawn here:
+    neither defines a per-request authorization protocol, so Table I gives them
+    "--" for authorization verification cost and their curve would be the cost
+    of checking nothing. They remain in Exp 2 and Exp 3, where they perform
+    comparable work.
+
+    ZK-Redact appears twice on purpose. The complete scheme is what the
+    comparison is against; the (1, 1) arm is the same verification without
+    sharding or batching, so the distance between the two is what the mechanisms
+    contribute rather than a claim resting on Ref[10]'s consensus cost.
+    """
     scheme = p["scheme"]
     if scheme == "zkredact":
-        if (p.get("shard_count") == EXP1_FULL_SHARDS
-                and p.get("proof_batch_size") == EXP1_FULL_BATCH
-                and p.get("native_batch_verify")):
-            return "zkredact"
+        if p.get("native_batch_verify"):
+            if (p.get("shard_count") == EXP1_FULL_SHARDS
+                    and p.get("proof_batch_size") == EXP1_FULL_BATCH):
+                return "zkredact"
+            return None
+        if p.get("shard_count") == 1 and p.get("proof_batch_size") == 1:
+            return "zkredact/plain"
         return None
     if scheme == "ref10_emt":
         # THE FIX. Without the transport in the key these two pool into one
         # median of 1.9 and 691 authorizations/s.
         return "ref10_emt/fabric" if p.get("vote_transport") == "fabric" else "ref10_emt"
-    return scheme
+    return None  # Ref[13] and Ref[22]: see the docstring
 
 
 def _ablation_arm(p: dict) -> Optional[str]:
@@ -457,10 +474,17 @@ def figures_exp1(result: dict) -> List[Figure]:
             abl.add(arm, arm, p["concurrency"], p["authorized_requests_per_second"])
 
     return [
-        Figure("exp1-throughput", "concurrency (closed loop)",
-               "authorizations / s", tp.series(), log_x=True, log_y=True,
+        Figure("exp1-throughput", "number of concurrent requests",
+               "verification throughput (requests/s)", tp.series(),
+               log_x=True, log_y=True,
                notes=["Ref[10] is two curves: only its Fabric arm is charged "
-                      "consensus, and it was measured at c<=4 only."]),
+                      "consensus.",
+                      "ZK-Redact appears complete and with both mechanisms "
+                      "disabled; the gap between them is what sharding and "
+                      "batching contribute.",
+                      "Ref[13] and Ref[22] define no per-request authorization "
+                      "protocol (Table I) and are not drawn; they appear in "
+                      "Exp 2 and Exp 3."]),
         Figure("exp1-latency-p50", "concurrency (closed loop)",
                "p50 authorization latency (ms)", lat.series(), log_x=True, log_y=True),
         Figure("exp1-ablation", "concurrency (closed loop)",

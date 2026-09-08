@@ -143,12 +143,33 @@ const (
 	exp1FullBatch  = 64
 )
 
-// headlineArm reports whether a point belongs on a four-curve comparison.
-func headlineArm(shards, batch int, native, hasAblation bool) bool {
+// exp1Series names the curve a point belongs to on the Exp 1 headline, or ""
+// if it is not drawn.
+//
+// Exp 1 compares ZK-Redact against Ref[10] only, and against itself with both
+// mechanisms disabled. Ref[13] and Ref[22] are measured but not drawn: neither
+// defines a per-request authorization protocol, so Table I gives them "--" for
+// authorization verification cost and their curve would be the cost of checking
+// nothing. They appear in Exp 2 and Exp 3, where they do comparable work.
+//
+// ZK-Redact is drawn twice deliberately. The complete scheme is what Ref[10] is
+// compared against; the (1,1) arm is the same verification with neither
+// mechanism, so the distance between them attributes the gain to sharding and
+// batching rather than to Ref[10]'s consensus cost.
+func exp1Series(scheme string, shards, batch int, native, hasAblation bool) (string, map[string]string, bool) {
 	if !hasAblation && shards == 0 && batch == 0 {
-		return true // a baseline: no knobs, one curve
+		if scheme == "ref10_emt" {
+			return scheme, nil, true // transport is added by the caller
+		}
+		return "", nil, false // Ref[13], Ref[22]: not on this figure
 	}
-	return shards == exp1FullShards && batch == exp1FullBatch && native
+	switch {
+	case native && shards == exp1FullShards && batch == exp1FullBatch:
+		return scheme, map[string]string{"arm": "complete"}, true
+	case !native && shards == 1 && batch == 1:
+		return scheme, map[string]string{"arm": "no sharding, no batching"}, true
+	}
+	return "", nil, false
 }
 
 // ablationArm names the four cells the grid exists to separate, for the figure
@@ -184,20 +205,22 @@ func chartsExp1(doc document) ([]chart, error) {
 	lat := NewCollector()
 	abl := NewCollector()
 	for _, p := range r.Points {
-		if headlineArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify, p.Ablation != nil) {
+		if name, dims, ok := exp1Series(p.Scheme, p.ShardCount, p.BatchSize,
+			p.NativeBatchVerify, p.Ablation != nil); ok {
 			// The transport MUST be a dimension. Ref[10] is measured on both
 			// in_process and fabric, and with empty dims both landed under the
 			// same series key: one curve whose every point was the median of a
 			// key check and a two-block consensus round — a number describing
 			// neither, on the one baseline whose two arms differ by orders of
-			// magnitude. Every other system records no transport and is
-			// unaffected.
-			dims := map[string]string{}
+			// magnitude.
+			if dims == nil {
+				dims = map[string]string{}
+			}
 			if p.VoteTransport != "" {
 				dims["transport"] = p.VoteTransport
 			}
-			tp.Add(p.Scheme, dims, float64(p.Concurrency), p.Throughput)
-			lat.Add(p.Scheme, dims, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
+			tp.Add(name, dims, float64(p.Concurrency), p.Throughput)
+			lat.Add(name, dims, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
 		}
 		if p.Scheme == "zkredact" {
 			if arm, ok := ablationArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify); ok {
@@ -209,17 +232,19 @@ func chartsExp1(doc document) ([]chart, error) {
 	return []chart{
 		{
 			Name:   "exp1-throughput",
-			Title:  "Exp 1 — Verification throughput vs concurrency",
-			XLabel: "concurrency (closed loop)",
-			YLabel: "authorizations / second",
+			Title:  "Exp 1 — Verification throughput vs concurrent requests",
+			XLabel: "number of concurrent requests",
+			YLabel: "verification throughput (requests/s)",
 			XLog:   true, YLog: true,
 			Series: tp.Series(),
 			Caveats: []string{
-				"Log-log. The crossover is the finding: the trapdoor baselines lead " +
-					"at low load because their authorization is a key check, not a protocol.",
-				"One curve per system. ZK-Redact is the complete scheme — sharding " +
-					"and batching at 64, native batch verification on; see " +
-					"exp1-ablation for what each contributes.",
+				"ZK-Redact against Ref[10], the only baseline defining a " +
+					"per-request authorization protocol, and against itself with " +
+					"neither sharding nor batching.",
+				"Ref[13] and Ref[22] are measured but not drawn: neither defines " +
+					"a per-request authorization protocol (Table I), so their " +
+					"curve would price checking nothing. Both appear in Exp 2 " +
+					"and Exp 3.",
 			},
 		},
 		{
