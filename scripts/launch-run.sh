@@ -92,7 +92,7 @@ WORKERS=(
   #
   # The ceiling belongs in the Exp 1 write-up: Ref[10]'s deployed arm cannot
   # sustain 512 concurrent authorizations on this topology.
-  "W04|full|--name W04-exp1-ref10-fabric-tail --exp verification --schemes ref10_emt --transports fabric --levels 8,16,32,64,128,256"
+  "W04|full|--name W04-exp1-ref10-fabric-tail --exp verification --schemes ref10_emt --transports fabric --levels 8,16,32,64,128,256,512,1024"
   "W05||--name W05-exp1-ref13 --exp verification --schemes ref13_vrbc"
   "W06||--name W06-exp1-ref22 --exp verification --schemes ref22_shen"
 

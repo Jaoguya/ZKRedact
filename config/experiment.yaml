@@ -185,8 +185,26 @@ environment:
   # Reproducibility requires bounded, declared resources, not "whatever was
   # free at the time". 8 peers x 1 vCPU leaves headroom for orderers and the
   # load generator on a 16-vCPU host.
-  peer_cpu_limit: "1.0"
-  peer_memory_limit: "2g"
+  # RAISED 1.0 -> 3.0 vCPU and 2g -> 6g, for Ref[10]'s Fabric arm alone.
+  #
+  # At c=512 each authorization holds (1 + committee_size) = 8 concurrent
+  # gateway calls, so ~4096 chaincode invocations land on a peer capped at one
+  # core. The container dropped its stream --
+  #   "error sending: chaincode stream terminated"
+  # -- and exp1 aborted the whole shard, discarding the c=8..256 points it had
+  # already measured.
+  #
+  # THIS AFFECTS NO OTHER MEASUREMENT. grep -rl fabric-gateway internal/ returns
+  # only ref10/fabric_gateway.go; ZK-Redact, Ref[13] and Ref[22] run against an
+  # in-process ledger and never touch a peer. Raising the cap therefore makes
+  # the ONE baseline that uses Fabric stronger, which moves our own headline
+  # ratio down rather than up -- the conservative direction, and the reason this
+  # is not a fairness problem.
+  #
+  # Budget on 32 vCPU: 8 peers x 3.0 = 24, leaving 8 for three orderers, the
+  # load generator and the OS.
+  peer_cpu_limit: "3.0"
+  peer_memory_limit: "6g"
 
   network:
     # [PROPOSED] 4 organisations x 2 peers = 8 peers, plus a 3-node Raft

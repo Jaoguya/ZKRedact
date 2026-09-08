@@ -189,8 +189,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer1org1:
     container_name: peer1.org1.example.com
@@ -241,8 +241,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer0org2:
     container_name: peer0.org2.example.com
@@ -293,8 +293,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer1org2:
     container_name: peer1.org2.example.com
@@ -345,8 +345,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer0org3:
     container_name: peer0.org3.example.com
@@ -397,8 +397,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer1org3:
     container_name: peer1.org3.example.com
@@ -449,8 +449,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer0org4:
     container_name: peer0.org4.example.com
@@ -501,8 +501,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
 
   peer1org4:
     container_name: peer1.org4.example.com
@@ -553,5 +553,5 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2g
+          cpus: "3.0"
+          memory: 6g
