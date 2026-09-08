@@ -479,6 +479,19 @@ def _ablation_arm(p: dict) -> Optional[str]:
     }.get((s, b))
 
 
+def _upto(series: List[Series], xmax: float) -> List[Series]:
+    """The same curves, truncated to x <= xmax."""
+    out = []
+    for s in series:
+        keep = [i for i, x in enumerate(s.x) if x <= xmax]
+        if keep:
+            out.append(Series(s.key, s.label,
+                              [s.x[i] for i in keep], [s.y[i] for i in keep],
+                              [s.lo[i] for i in keep], [s.hi[i] for i in keep],
+                              [s.n[i] for i in keep]))
+    return out
+
+
 def figures_exp1(result: dict) -> List[Figure]:
     tp, lat, abl = Collector(), Collector(), Collector()
     for p in result["points"]:
@@ -502,6 +515,17 @@ def figures_exp1(result: dict) -> List[Figure]:
                       "Ref[13] and Ref[22] define no per-request authorization "
                       "protocol (Table I) and are not drawn; they appear in "
                       "Exp 2 and Exp 3."]),
+        # Same figure over the range EVERY system reached. Ref[10]'s Fabric arm
+        # stops at 512 because its chaincode dies above that, so on the full
+        # sweep it alone ends early and reads as missing data. Cut to the common
+        # range, all four curves span the same axis and the comparison is
+        # like-for-like at every point.
+        Figure("exp1-throughput-512", "number of concurrent requests",
+               "verification throughput (requests/s)", _upto(tp.series(), 512),
+               log_x=True, log_y=True,
+               notes=["Ref[10]'s Fabric arm ends at 256: its chaincode "
+                      "terminates above that, so the level was not measured.",
+                      "The full sweep to 1024 is in exp1-throughput."]),
         Figure("exp1-latency-p50", "concurrency (closed loop)",
                "p50 authorization latency (ms)", lat.series(), log_x=True, log_y=True),
         Figure("exp1-ablation", "concurrency (closed loop)",
