@@ -129,7 +129,11 @@ func renderSVG(c chart) string {
 		colour := palette[i%len(palette)]
 		dash := dashes[i%len(dashes)]
 
-		// Spread band first, so markers sit on top of it.
+		// Error bars first, so markers sit on top of them. Min-to-max rather
+		// than a standard deviation: at the repetition counts a sweep like this
+		// runs, a standard deviation carries more precision than meaning. A
+		// point measured once has no bar, and the figure's caveat line says how
+		// many such points it holds.
 		for _, p := range s.Points {
 			if p.N < 2 || p.Max == p.Min {
 				continue
@@ -144,7 +148,11 @@ func renderSVG(c chart) string {
 			if j == 0 {
 				cmd = "M"
 			}
-			fmt.Fprintf(&d, "%s%.1f,%.1f ", cmd, px(p.X), py(p.Mean))
+			// THE CURVE IS THE MEDIAN. A mean is pulled by one slow
+			// repetition, and a slow repetition is what a shared machine
+			// produces. The mean stays in the CSV beside the figure so the two
+			// can be compared: where they disagree, something moved.
+			fmt.Fprintf(&d, "%s%.1f,%.1f ", cmd, px(p.X), py(p.Median))
 		}
 		fmt.Fprintf(&b, `<path d="%s" fill="none" stroke="%s" stroke-width="2" stroke-dasharray="%s"/>`,
 			strings.TrimSpace(d.String()), colour, dash)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -122,6 +123,54 @@ func loadAll(dir string) ([]chart, error) {
 // three are series dimensions: pooling them would average the sharded and
 // unsharded arms into a curve neither one produced, which is exactly what the
 // ablation grid exists to keep apart.
+// ONE LINE PER SYSTEM. A comparison figure compares systems, not settings.
+//
+// ZK-Redact's sweep crosses 7 shard counts x 7 batch sizes x 2 verification
+// modes, and drawing them all put 98 curves for one system against 1 each for
+// the baselines — 101 series, unreadable, and a category error besides: a
+// reader asking "how does this compare to prior work" is not asking about our
+// batch size. The headline figures carry four curves, one per system.
+//
+// ZK-Redact's curve is the COMPLETE system: sharding and batching at the top of
+// their sweeps with native batch verification on. That is the scheme as
+// proposed, and it is what a baseline comparison is a comparison against.
+// Selecting a mid-sweep point would report a system nobody designed.
+//
+// The ablation is a different question — which component contributes what — and
+// it gets its own figure rather than crowding this one.
+const (
+	exp1FullShards = 64
+	exp1FullBatch  = 64
+)
+
+// headlineArm reports whether a point belongs on a four-curve comparison.
+func headlineArm(shards, batch int, native, hasAblation bool) bool {
+	if !hasAblation && shards == 0 && batch == 0 {
+		return true // a baseline: no knobs, one curve
+	}
+	return shards == exp1FullShards && batch == exp1FullBatch && native
+}
+
+// ablationArm names the four cells the grid exists to separate, for the figure
+// that reports them. config/experiment.yaml: "Sharding and batching must be
+// separable, or the Phase 3 independence claim cannot be evaluated at all."
+func ablationArm(shards, batch int, native bool) (string, bool) {
+	if native {
+		return "", false // the ablation is about the two knobs, not the third
+	}
+	switch {
+	case shards == 1 && batch == 1:
+		return "neither", true
+	case shards == exp1FullShards && batch == 1:
+		return "sharding only", true
+	case shards == 1 && batch == exp1FullBatch:
+		return "batching only", true
+	case shards == exp1FullShards && batch == exp1FullBatch:
+		return "both", true
+	}
+	return "", false
+}
+
 func chartsExp1(doc document) ([]chart, error) {
 	var r exp1.Result
 	if err := json.Unmarshal(doc.Result, &r); err != nil {
@@ -133,19 +182,17 @@ func chartsExp1(doc document) ([]chart, error) {
 
 	tp := NewCollector()
 	lat := NewCollector()
+	abl := NewCollector()
 	for _, p := range r.Points {
-		dims := map[string]string{}
-		if p.ShardCount > 0 {
-			dims["shards"] = strconv.Itoa(p.ShardCount)
+		if headlineArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify, p.Ablation != nil) {
+			tp.Add(p.Scheme, map[string]string{}, float64(p.Concurrency), p.Throughput)
+			lat.Add(p.Scheme, map[string]string{}, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
 		}
-		if p.BatchSize > 0 {
-			dims["batch"] = strconv.Itoa(p.BatchSize)
+		if p.Scheme == "zkredact" {
+			if arm, ok := ablationArm(p.ShardCount, p.BatchSize, p.NativeBatchVerify); ok {
+				abl.Add(p.Scheme, map[string]string{"arm": arm}, float64(p.Concurrency), p.Throughput)
+			}
 		}
-		if p.Ablation != nil {
-			dims["native_verify"] = strconv.FormatBool(p.NativeBatchVerify)
-		}
-		tp.Add(p.Scheme, dims, float64(p.Concurrency), p.Throughput)
-		lat.Add(p.Scheme, dims, float64(p.Concurrency), float64(p.Latency.P50)/1e6)
 	}
 
 	return []chart{
@@ -159,6 +206,9 @@ func chartsExp1(doc document) ([]chart, error) {
 			Caveats: []string{
 				"Log-log. The crossover is the finding: the trapdoor baselines lead " +
 					"at low load because their authorization is a key check, not a protocol.",
+				"One curve per system. ZK-Redact is the complete scheme — sharding " +
+					"and batching at 64, native batch verification on; see " +
+					"exp1-ablation for what each contributes.",
 			},
 		},
 		{
@@ -168,6 +218,23 @@ func chartsExp1(doc document) ([]chart, error) {
 			YLabel: "p50 latency (ms)",
 			XLog:   true, YLog: true,
 			Series: lat.Series(),
+			Caveats: []string{
+				"ZK-Redact at its full configuration; the ablation is reported separately.",
+			},
+		},
+		{
+			Name:   "exp1-ablation",
+			Title:  "Exp 1 — ZK-Redact ablation: sharding and batching separated",
+			XLabel: "concurrency (closed loop)",
+			YLabel: "authorizations / second",
+			XLog:   true, YLog: true,
+			Series: abl.Series(),
+			Caveats: []string{
+				"ZK-Redact only. The baselines have neither knob, so they appear " +
+					"on the comparison figure rather than here.",
+				"On means the top of each sweep, 64. The claim under test is that " +
+					"the mechanisms scale, which a mid-sweep point would not address.",
+			},
 		},
 	}, nil
 }
@@ -191,18 +258,53 @@ func chartsExp2(doc document) ([]chart, error) {
 	cost := NewCollector()
 	share := NewCollector()
 	stale := NewCollector()
+	wait := NewCollector()
+	conf := NewCollector()
+
+	// The headline holds the two knobs FIXED, for the same reason Exp 1 does:
+	// a comparison figure compares systems. wait_bound takes the shortest
+	// configured value and conflict_ratio takes 0.0, which config/experiment.yaml
+	// describes as isolating the fully independent path — and which is the
+	// baseline the optimal batch size is computed at. The sweeps over each knob
+	// are reported beside it.
+	// The wait bound is read from the schemes that HAVE one. A baseline does not
+	// batch and records 0, so taking the minimum over every point selected 0 and
+	// then matched no ZK-Redact point at all — three curves where there should
+	// have been four, and an empty conflict figure.
+	headWait, headRatio := math.MaxInt32, math.MaxFloat64
 	for _, p := range r.Points {
-		dims := merge(
-			dimsFromSetupParams(p.SetupParams),
-			map[string]string{
-				"wait_ms":  strconv.Itoa(p.WaitBoundMS),
-				"conflict": strconv.FormatFloat(p.ConflictRatio, 'g', -1, 64),
-			},
-		)
+		if p.WaitBoundMS > 0 && p.WaitBoundMS < headWait {
+			headWait = p.WaitBoundMS
+		}
+		if p.ConflictRatio < headRatio {
+			headRatio = p.ConflictRatio
+		}
+	}
+	if headWait == math.MaxInt32 {
+		headWait = 0
+	}
+
+	// batches reports whether this point comes from a scheme with a wait bound.
+	batches := func(p exp2.Point) bool { return p.WaitBoundMS > 0 }
+
+	for _, p := range r.Points {
 		x := float64(p.BatchSize)
-		cost.Add(p.Scheme, dims, x, float64(p.CostPerRequest)/1e6)
-		share.Add(p.Scheme, dims, x, p.CryptoShare)
-		stale.Add(p.Scheme, dims, x, p.StaleExclusionRate)
+		if (!batches(p) || p.WaitBoundMS == headWait) && p.ConflictRatio == headRatio {
+			dims := map[string]string{}
+			cost.Add(p.Scheme, dims, x, float64(p.CostPerRequest)/1e6)
+			share.Add(p.Scheme, dims, x, p.CryptoShare)
+			stale.Add(p.Scheme, dims, x, p.StaleExclusionRate)
+		}
+		if p.Scheme == "zkredact" {
+			if p.ConflictRatio == headRatio {
+				wait.Add(p.Scheme, map[string]string{"wait_ms": strconv.Itoa(p.WaitBoundMS)},
+					x, p.StaleExclusionRate)
+			}
+			if !batches(p) || p.WaitBoundMS == headWait {
+				conf.Add(p.Scheme, map[string]string{"conflict": fmtRatio(p.ConflictRatio)},
+					x, float64(p.CostPerRequest)/1e6)
+			}
+		}
 	}
 
 	return []chart{
@@ -215,6 +317,9 @@ func chartsExp2(doc document) ([]chart, error) {
 			Series: cost.Series(),
 			Caveats: []string{
 				"B_R=1 is the batching-disabled arm and the point every baseline sits at.",
+				"One curve per system. The wait bound and conflict ratio are held " +
+					"at their lowest configured values; both are swept in their own " +
+					"figures.",
 			},
 		},
 		{
@@ -241,7 +346,37 @@ func chartsExp2(doc document) ([]chart, error) {
 					"an optimal batch size is only meaningful with both.",
 			},
 		},
+		{
+			Name:   "exp2-wait-bound",
+			Title:  "Exp 2 — Staleness vs batch size, by wait bound",
+			XLabel: "B_R (redactions per batch)",
+			YLabel: "fraction excluded on freshness",
+			XLog:   true,
+			Series: wait.Series(),
+			Caveats: []string{
+				"ZK-Redact only; no baseline batches, so none has a wait bound.",
+				"Delta_R is the staleness knob: a longer wait fills a batch more " +
+					"often and leaves each request in it longer.",
+			},
+		},
+		{
+			Name:   "exp2-conflict",
+			Title:  "Exp 2 — Cost per redaction vs batch size, by conflict ratio",
+			XLabel: "B_R (redactions per batch)",
+			YLabel: "cost per request (ms)",
+			XLog:   true, YLog: true,
+			Series: conf.Series(),
+			Caveats: []string{
+				"ZK-Redact only. Same-target requests serialize, so the conflict " +
+					"ratio is what decides how much of a batch can proceed at once.",
+			},
+		},
 	}, nil
+}
+
+// fmtRatio renders a conflict ratio for a legend without trailing noise.
+func fmtRatio(r float64) string {
+	return strconv.FormatFloat(r, 'g', -1, 64)
 }
 
 // chartsExp3 plots audit cost against ledger size at fixed history depth.
@@ -260,17 +395,56 @@ func chartsExp3(doc document) ([]chart, error) {
 
 	cost := NewCollector()
 	bytes := NewCollector()
+	depth := NewCollector()
+
+	// The headline holds history depth FIXED and grows the ledger, which is
+	// what config/experiment.yaml calls the headline plot and what the scaling
+	// class is read from. Depth is a second experiment, not a second dimension
+	// of this one, so it gets its own figure rather than multiplying the curves
+	// by five. Setup sweeps are held at their first configured value for the
+	// same reason: an arity-2 tree and an arity-10 tree are two systems.
+	headDepth := math.MaxInt32
+	firstSetup := map[string]map[string]string{}
 	for _, p := range r.Points {
-		dims := merge(
-			dimsFromSetupParams(p.SetupParams),
-			map[string]string{"depth": strconv.Itoa(p.HistoryDepth)},
-		)
+		if p.HistoryDepth < headDepth {
+			headDepth = p.HistoryDepth
+		}
+	}
+	for _, p := range r.Points {
+		d := dimsFromSetupParams(p.SetupParams)
+		if _, seen := firstSetup[p.Scheme]; !seen && len(d) > 0 {
+			firstSetup[p.Scheme] = d
+		}
+	}
+	sameSetup := func(p exp3.Point) bool {
+		want, ok := firstSetup[p.Scheme]
+		if !ok {
+			return true // this scheme has no setup sweep
+		}
+		got := dimsFromSetupParams(p.SetupParams)
+		for k, v := range want {
+			if got[k] != v {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, p := range r.Points {
 		x := float64(p.LedgerSize)
-		cost.Add(p.Scheme, dims, x, float64(p.TotalTime)/1e6)
-		bytes.Add(p.Scheme, dims, x, float64(p.EvidenceBytes))
+		if p.HistoryDepth == headDepth && sameSetup(p) {
+			cost.Add(p.Scheme, map[string]string{}, x, float64(p.TotalTime)/1e6)
+			bytes.Add(p.Scheme, map[string]string{}, x, float64(p.EvidenceBytes))
+		}
+		if sameSetup(p) {
+			depth.Add(p.Scheme, map[string]string{"depth": strconv.Itoa(p.HistoryDepth)},
+				x, float64(p.TotalTime)/1e6)
+		}
 	}
 
 	caveats := []string{
+		fmt.Sprintf("One curve per system, at history depth %d and the first "+
+			"configured setup sweep. Depth is swept in exp3-history-depth.", headDepth),
 		"Auditor authorization is excluded from these totals and reported " +
 			"separately: no baseline has that step, so folding it in would " +
 			"penalise ZK-Redact for a capability the others lack.",
@@ -310,6 +484,19 @@ func chartsExp3(doc document) ([]chart, error) {
 			Caveats: []string{
 				"For full-scan schemes this is the traversed portion of the ledger, " +
 					"which is the point of the comparison.",
+			},
+		},
+		{
+			Name:   "exp3-history-depth",
+			Title:  "Exp 3 — Audit cost vs ledger size, by history depth",
+			XLabel: "ledger size (blocks)",
+			YLabel: "retrieval + verification (ms)",
+			XLog:   true, YLog: true,
+			Series: depth.Series(),
+			Caveats: []string{
+				"Depth is how many times the target transaction has already been " +
+					"redacted. Held fixed on the headline figure so the ledger axis " +
+					"means what it says; swept here.",
 			},
 		},
 	}, nil

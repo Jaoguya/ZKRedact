@@ -111,7 +111,10 @@ func writeSeriesCSV(path string, c chart) error {
 	defer w.Flush()
 
 	header := append([]string{"scheme"}, dims...)
-	header = append(header, "x", "mean", "min", "max", "repetitions", "spread_over_mean")
+	// median first: it is what the figure draws. mean stays beside it so a
+	// reader can see when the two disagree, which is the signal that one
+	// repetition ran on a machine that was busy.
+	header = append(header, "x", "median", "mean", "min", "max", "repetitions", "spread_over_mean")
 	if err := w.Write(header); err != nil {
 		return err
 	}
@@ -124,6 +127,7 @@ func writeSeriesCSV(path string, c chart) error {
 			}
 			row = append(row,
 				strconv.FormatFloat(p.X, 'g', -1, 64),
+				strconv.FormatFloat(p.Median, 'g', -1, 64),
 				strconv.FormatFloat(p.Mean, 'g', -1, 64),
 				strconv.FormatFloat(p.Min, 'g', -1, 64),
 				strconv.FormatFloat(p.Max, 'g', -1, 64),

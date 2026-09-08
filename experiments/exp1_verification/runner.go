@@ -327,6 +327,20 @@ func Run(ctx context.Context, cfg Config, schemesUnderTest []scheme.Scheme, trac
 			}
 		}
 
+		// A LEVEL SHARD MUST NOT CLAIM A SATURATION POINT. findSaturation looks
+		// for the level beyond which throughput stops rising, which is a
+		// property of the WHOLE curve; a host holding c=2 and c=4 is reading a
+		// verdict off two points of a sweep it cannot see. Measured: the c=8+
+		// shard reported saturation at 32 while the c=1 shard reported 0, and
+		// cmd/merge-results refused to pool them — correctly, because both were
+		// answers to a question neither host had the data for.
+		//
+		// Same rule as Exp 2's optimal_batch_size and Exp 1's concurrency-1
+		// check: what belongs to the pooled sweep is decided on the pooled
+		// sweep. cmd/merge-results recomputes it there.
+		if cfg.PartialLevels {
+			continue
+		}
 		res.SaturationPoint[s.Name()] = findSaturation(res.Points, s.Name())
 	}
 	return res, nil

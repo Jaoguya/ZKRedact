@@ -43,6 +43,14 @@ type Point struct {
 	// Mean of the repetitions at this x.
 	Mean float64
 
+	// Median of the repetitions at this x, and what the curve is DRAWN from.
+	//
+	// A mean is pulled by one slow repetition, and a slow repetition is what a
+	// shared machine produces — a background compaction, a noisy neighbour, a
+	// thermal step. The median ignores it; reporting both lets a reader see
+	// when they disagree, which is itself the signal that something moved.
+	Median float64
+
 	// Min and Max bound the observed spread. Reported rather than a standard
 	// deviation because a sweep is commonly run at 3 repetitions, where a
 	// standard deviation is a number with more precision than meaning.
@@ -165,6 +173,15 @@ func (c *Collector) Series() []Series {
 
 func aggregate(x float64, ys []float64) Point {
 	p := Point{X: x, N: len(ys)}
+	if n := len(ys); n > 0 {
+		sorted := append([]float64(nil), ys...)
+		sort.Float64s(sorted)
+		if n%2 == 1 {
+			p.Median = sorted[n/2]
+		} else {
+			p.Median = (sorted[n/2-1] + sorted[n/2]) / 2
+		}
+	}
 	if len(ys) == 0 {
 		return p
 	}

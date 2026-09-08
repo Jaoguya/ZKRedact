@@ -58,6 +58,13 @@ type metadata struct {
 	// hostname. A single-host run has one, and its absence would hide that a
 	// figure pools numbers taken on different machines.
 	Hosts []string `json:"hosts,omitempty"`
+
+	// CommitDrift and CommitDriftReason record a pool built from shards that
+	// ran at different commits, and why that was judged sound. Absent on a
+	// single-commit merge. Present, they are the reader's warning that this
+	// figure needs the reason checked before it is believed.
+	CommitDrift       []string `json:"commit_drift,omitempty"`
+	CommitDriftReason string   `json:"commit_drift_reason,omitempty"`
 }
 
 type envFinger struct {
@@ -74,6 +81,12 @@ func main() {
 		outDir     = flag.String("out", "", "directory for merged documents (default <in>/merged)")
 		allowDirty = flag.Bool("allow-dirty", false,
 			"pool shards recorded from a dirty git tree; the commit no longer identifies the code")
+		allowCommits = flag.String("allow-commit-drift", "",
+			"pool shards recorded at DIFFERENT commits, giving the reason. Only "+
+				"sound when the commits differ in code that took no measurement — "+
+				"verify with: git diff <a> <b> -- cmd internal pkg experiments config "+
+				"network, and expect it empty. The reason is written into the merged "+
+				"document beside the commit list")
 	)
 	flag.Parse()
 
@@ -81,13 +94,13 @@ func main() {
 		*outDir = filepath.Join(*inDir, "merged")
 	}
 
-	if err := run(*inDir, *outDir, *allowDirty); err != nil {
+	if err := run(*inDir, *outDir, *allowDirty, *allowCommits); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(inDir, outDir string, allowDirty bool) error {
+func run(inDir, outDir string, allowDirty bool, allowCommits string) error {
 	paths, err := filepath.Glob(filepath.Join(inDir, "*.json"))
 	if err != nil {
 		return err
@@ -139,7 +152,7 @@ func run(inDir, outDir string, allowDirty bool) error {
 
 	for _, name := range names {
 		shards := byExperiment[name]
-		merged, err := mergeOne(name, shards, allowDirty)
+		merged, err := mergeOne(name, shards, allowDirty, allowCommits)
 		if err != nil {
 			return err
 		}
@@ -167,13 +180,14 @@ type shard struct {
 }
 
 // mergeOne pools one experiment's shards after checking they describe one run.
-func mergeOne(name string, shards []shard, allowDirty bool) (*document, error) {
+func mergeOne(name string, shards []shard, allowDirty bool, allowCommits string) (*document, error) {
 	base := shards[0]
 
 	out := base.doc
 	out.Metadata.MergedFrom = nil
 	hosts := map[string]bool{}
 	systems := map[string]bool{}
+	commits := map[string]bool{}
 	var points []json.RawMessage
 	var extras map[string]json.RawMessage
 
@@ -197,9 +211,13 @@ func mergeOne(name string, shards []shard, allowDirty bool) (*document, error) {
 			base.doc.Metadata.DatasetID, m.DatasetID); err != nil {
 			return nil, err
 		}
-		if err := sameString("git_commit", s.path, base.path,
-			base.doc.Metadata.GitCommit, m.GitCommit); err != nil {
-			return nil, err
+		if allowCommits == "" {
+			if err := sameString("git_commit", s.path, base.path,
+				base.doc.Metadata.GitCommit, m.GitCommit); err != nil {
+				return nil, err
+			}
+		} else {
+			commits[m.GitCommit] = true
 		}
 		if !bytes.Equal(base.doc.Metadata.ResolvedConfig, m.ResolvedConfig) {
 			return nil, fmt.Errorf(
@@ -232,10 +250,15 @@ func mergeOne(name string, shards []shard, allowDirty bool) (*document, error) {
 	if err := checkSweepIsComplete(name, points); err != nil {
 		return nil, err
 	}
+	recomputeSaturation(name, points, extras)
 
 	out.Metadata.Hosts = sortedKeys(hosts)
 	out.Metadata.PartialComparison = sortedKeys(systems)
 	out.Metadata.MergedFrom = shardPaths(shards)
+	if allowCommits != "" && len(commits) > 1 {
+		out.Metadata.CommitDrift = sortedKeys(commits)
+		out.Metadata.CommitDriftReason = allowCommits
+	}
 	// The pooled document is as new as its newest shard: a reader sorting by
 	// timestamp must not see a merge as older than a file it contains.
 	out.Metadata.Timestamp = newest(shards)
@@ -284,6 +307,73 @@ func checkSweepIsComplete(experiment string, points []json.RawMessage) error {
 	return nil
 }
 
+// recomputeSaturation derives Exp 1's saturation point from the POOLED curve.
+//
+// Each level shard sees a slice of the sweep, so a per-shard verdict is read
+// off points it does not have — the c=8+ shard said 32 while the c=1 shard said
+// 0. Runners on a partial sweep now report none, and the answer is computed
+// here where the whole curve exists. Mirrors findSaturation in
+// experiments/exp1_verification: the lowest level after which no higher level
+// improves throughput by more than 5%.
+func recomputeSaturation(experiment string, points []json.RawMessage, extras map[string]json.RawMessage) {
+	if !strings.HasPrefix(experiment, "exp1") {
+		return
+	}
+	best := map[string]map[int]float64{}
+	for _, raw := range points {
+		var p struct {
+			Scheme      string   `json:"scheme"`
+			Concurrency *int     `json:"concurrency"`
+			Throughput  *float64 `json:"authorized_requests_per_second"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil ||
+			p.Concurrency == nil || p.Throughput == nil || p.Scheme == "" {
+			continue
+		}
+		if best[p.Scheme] == nil {
+			best[p.Scheme] = map[int]float64{}
+		}
+		if *p.Throughput > best[p.Scheme][*p.Concurrency] {
+			best[p.Scheme][*p.Concurrency] = *p.Throughput
+		}
+	}
+	if len(best) == 0 {
+		return
+	}
+
+	const relGain = 0.05
+	out := map[string]int{}
+	for scheme, curve := range best {
+		levels := make([]int, 0, len(curve))
+		for c := range curve {
+			levels = append(levels, c)
+		}
+		sort.Ints(levels)
+		if len(levels) < 2 {
+			out[scheme] = 0
+			continue
+		}
+		sat := 0
+		for i := 0; i < len(levels)-1; i++ {
+			improved := false
+			for j := i + 1; j < len(levels); j++ {
+				if curve[levels[j]] > curve[levels[i]]*(1+relGain) {
+					improved = true
+					break
+				}
+			}
+			if !improved {
+				sat = levels[i]
+				break
+			}
+		}
+		out[scheme] = sat
+	}
+	if enc, err := json.Marshal(out); err == nil {
+		extras["saturation_point"] = enc
+	}
+}
+
 // splitResult separates the points array from whatever else the result carries
 // (saturation_point, scaling classes) so the extras survive the merge.
 func splitResult(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, error) {
@@ -324,6 +414,11 @@ func mergeExtras(into, next map[string]json.RawMessage, path string) (map[string
 		into = map[string]json.RawMessage{}
 	}
 	for key, val := range next {
+		// Recomputed from the pooled points below, so a per-shard verdict here
+		// is noise that would only ever collide with another shard's.
+		if key == "saturation_point" {
+			continue
+		}
 		prev, seen := into[key]
 		if !seen {
 			into[key] = val
@@ -341,12 +436,24 @@ func mergeExtras(into, next map[string]json.RawMessage, path string) (map[string
 					"a keyed object that can be pooled", path, key)
 		}
 		for k, v := range valObj {
-			if old, dup := prevObj[k]; dup && !bytes.Equal(old, v) {
-				return nil, fmt.Errorf(
-					"%s and an earlier shard both report result.%s[%q] and disagree "+
-						"(%s vs %s)", path, key, k, old, v)
+			old, dup := prevObj[k]
+			if !dup || bytes.Equal(old, v) {
+				prevObj[k] = v
+				continue
 			}
-			prevObj[k] = v
+			// Exp 3 classifies scaling PER SETUP CONFIGURATION but keys the map
+			// by scheme alone, so two sweeps of one scheme collide the moment
+			// they are measured on different hosts. Both verdicts are real and
+			// neither is the pooled answer, so keep the LEAST favourable: a
+			// contradicted claim must survive being averaged with a satisfied
+			// one, and this can only ever make a claim look worse.
+			if key == "ledger_scaling" {
+				prevObj[k] = worseScaling(old, v)
+				continue
+			}
+			return nil, fmt.Errorf(
+				"%s and an earlier shard both report result.%s[%q] and disagree "+
+					"(%s vs %s)", path, key, k, old, v)
 		}
 		merged, err := json.Marshal(prevObj)
 		if err != nil {
@@ -355,6 +462,29 @@ func mergeExtras(into, next map[string]json.RawMessage, path string) (map[string
 		into[key] = merged
 	}
 	return into, nil
+}
+
+// worseScaling picks the scaling verdict that reflects worse on the claim: a
+// broken claim beats an intact one, and beyond that the larger cost ratio wins.
+func worseScaling(a, b json.RawMessage) json.RawMessage {
+	type verdict struct {
+		CostRatio  float64 `json:"cost_ratio"`
+		ClaimHolds *bool   `json:"claim_holds"`
+	}
+	var va, vb verdict
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return a
+	}
+	switch {
+	case va.ClaimHolds != nil && !*va.ClaimHolds:
+		return a
+	case vb.ClaimHolds != nil && !*vb.ClaimHolds:
+		return b
+	case vb.CostRatio > va.CostRatio:
+		return b
+	default:
+		return a
+	}
 }
 
 func asObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
