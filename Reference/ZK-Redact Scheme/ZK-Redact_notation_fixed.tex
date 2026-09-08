@@ -1497,6 +1497,23 @@ curve and the separation between ZK-Redact's complete and disabled arms as the
 contribution of sharding and batching.]
 \color{black}
 
+\medskip
+\noindent
+The Fabric curve of~\cite{ref10} ends at 512 concurrent requests because the
+system does. Ordering a committee vote on the ledger makes every authorization
+$1+c=8$ concurrent endorsement calls, so offered load reaches the peers
+multiplied eightfold: 4096 simultaneous chaincode invocations at 512 concurrent
+requests, and 8192 at 1024. Under that load the chaincode process serving the
+peers terminates, and endorsement stops being slow and starts being impossible
+--- peers return \texttt{chaincode stream terminated}, then refuse connections
+outright. Raising the per-peer allocation from one core and 2\,GB to three cores
+and 6\,GB moved the failure from 512 to 1024 without removing it, because the
+chaincode is a single process shared by every peer and additional peer capacity
+does not reach it. The ceiling is therefore a property of authorizing through
+consensus rather than of any resource setting: beyond it the deployed baseline
+does not degrade, it fails. ZK-Redact, whose authorization completes off-chain,
+sustains the full sweep to 1024.
+
 \subsubsection*{\textbf{Experiment 2: Redaction Processing Overhead}}
 
 \textit{Objective.}
