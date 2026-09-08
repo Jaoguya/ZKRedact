@@ -188,6 +188,14 @@ mkdir -p /home/ubuntu/zkredact
 tar xzf code.tgz -C /home/ubuntu/zkredact
 test -f /home/ubuntu/zkredact/go.mod || { echo "FATAL: tarball did not unpack a repo"; exit 1; }
 find /home/ubuntu/zkredact -name '._*' -delete
+# Strip CR from every shell script. A repo checked out on Windows carries CRLF,
+# and a script whose shebang reads "#!/usr/bin/env bash\r" fails on Linux with
+#   /usr/bin/env: 'bash\r': No such file or directory
+# which names the interpreter, not the file, so it reads as a broken image
+# rather than a line ending. It cost the three Fabric workers of one run: only
+# they invoke network/scripts/network.sh, so the other sixteen were unaffected
+# and the failure looked scheme-specific.
+find /home/ubuntu/zkredact -name '*.sh' -exec sed -i 's/\r$//' {} +
 chown -R ubuntu:ubuntu /home/ubuntu/zkredact
 cd /home/ubuntu/zkredact
 
