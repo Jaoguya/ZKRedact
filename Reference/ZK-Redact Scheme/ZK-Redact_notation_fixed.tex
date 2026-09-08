@@ -1483,12 +1483,18 @@ sharding nor batching; \cite{ref10} is drawn on both of its transports.}
 \end{figure}
 
 \color{red}
-\textit{Results.} [To be completed from the measurement run. Report the
-throughput and latency of ZK-Redact against both arms of~\cite{ref10}, the
-saturation point of each, and the separation between ZK-Redact's complete and
-disabled arms as the contribution of sharding and batching. State the consensus
-cost bounding~\cite{ref10}'s Fabric arm, so its gap is read as a design
-difference rather than an implementation speedup.]
+\textit{Results.} [To be completed from the measurement run. Report the two
+comparisons separately, since they answer different questions. Against
+\cite{ref10} as its protocol specifies it, with the committee vote ordered on the
+ledger, state the throughput ratio and the consensus cost that bounds it, so the
+gap is read as a design difference rather than an implementation speedup.
+Against \cite{ref10} measured as its authors measured it, with consensus
+excluded, state the ratio plainly whichever way it falls: a committee of
+signature verifications is expected to cost about what one proof verification
+costs, and ZK-Redact additionally performs a policy-bound, privacy-preserving
+check the baseline does not attempt. Report also the saturation point of each
+curve and the separation between ZK-Redact's complete and disabled arms as the
+contribution of sharding and batching.]
 \color{black}
 
 \subsubsection*{\textbf{Experiment 2: Redaction Processing Overhead}}
