@@ -127,12 +127,21 @@ TARBALL="${TMPDIR:-/tmp}/zkredact-$RUN_ID.tgz"
 if (( DRY == 0 )); then
   [[ -z "$(git status --porcelain)" ]] || echo "WARNING: working tree is dirty; the commit will not identify the code"
   echo "packaging $(git rev-parse --short HEAD)..."
+  # PACKED WITHOUT A TOP-LEVEL DIRECTORY, and unpacked into one the worker names.
+  #
+  # It used to pack "$(basename "$REPO_ROOT")", so the tarball's top directory
+  # was whatever the repo happened to be cloned as, while the user-data script
+  # hardcoded /home/ubuntu/zkredact. A checkout named ZKRedact therefore
+  # extracted to ZKRedact/, every step after it ran in a directory that did not
+  # exist, and the instance sat idle at 0.1% CPU until the bill was noticed.
+  # Nothing in the launch output said so: run-instances had succeeded.
+  #
   # --exclude patterns match at any depth, so anchor the ones that would
   # otherwise eat a source directory: 'results' alone also removes pkg/results,
   # which cost a deploy once already.
-  tar --exclude='./zkredact/results' --exclude='./zkredact/Reference' \
-      --exclude='./zkredact/Overleaf' --exclude='*/chaincode/redaction/vendor' \
-      -czf "$TARBALL" -C "$(dirname "$REPO_ROOT")" "$(basename "$REPO_ROOT")" 2>/dev/null
+  tar --exclude='./results' --exclude='./Reference' \
+      --exclude='./Overleaf' --exclude='*/chaincode/redaction/vendor' \
+      -czf "$TARBALL" -C "$REPO_ROOT" . 2>/dev/null
   aws s3 cp "$TARBALL" "s3://$BUCKET/$RUN_ID/code.tgz" --only-show-errors \
     || die "could not upload the code tarball"
   echo "uploaded $(du -h "$TARBALL" | cut -f1) to s3://$BUCKET/$RUN_ID/code.tgz"
@@ -175,7 +184,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get install -y -qq awscli
 cd /home/ubuntu
 aws s3 cp s3://$BUCKET/$RUN_ID/code.tgz . --only-show-errors
-tar xzf code.tgz
+mkdir -p /home/ubuntu/zkredact
+tar xzf code.tgz -C /home/ubuntu/zkredact
+test -f /home/ubuntu/zkredact/go.mod || { echo "FATAL: tarball did not unpack a repo"; exit 1; }
 find /home/ubuntu/zkredact -name '._*' -delete
 chown -R ubuntu:ubuntu /home/ubuntu/zkredact
 cd /home/ubuntu/zkredact
