@@ -34,3 +34,6 @@ network/.topology
 network/chaincode/*/vendor/
 # compiled chaincode binary, produced by `go build` inside the module
 network/chaincode/redaction/redaction
+
+# Local venv for scripts/plot_figures.py (matplotlib)
+/.venv-plot/

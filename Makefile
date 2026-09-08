@@ -47,7 +47,7 @@ help:
 	@echo "  make experiment-e2e       full pipeline under concurrent load"
 	@echo ""
 	@echo "Results:"
-	@echo "  make plots                regenerate plots from $(RESULTS_DIR)"
+	@echo "  make plots                regenerate plots from $(RESULTS_DIR) (needs matplotlib)"
 	@echo "  make clean                remove build artifacts"
 	@echo "  make clean-results        remove results (asks first)"
 
@@ -229,16 +229,28 @@ experiment-e2e: validate-config
 # -----------------------------------------------------------------------------
 # Results
 # -----------------------------------------------------------------------------
-# Renders SVG figures and, beside each one, the CSV of aggregated numbers it was
-# drawn from. The CSV is what makes a figure checkable without rerunning the
-# experiment, and it is what the paper should be plotted from.
+# Two steps, and they are not redundant.
+#
+# `cmd/plot` writes the CSV of aggregated numbers beside each figure. The CSV is
+# what makes a figure checkable without rerunning the experiment, and it is what
+# the paper's numeric claims are traced to.
+#
+# `scripts/plot_figures.py` draws the FIGURES, in the manuscript's style: vector
+# PDF at IEEE single-column width, 8 pt minimum type, marker and line style per
+# system so they survive grayscale. It also fixes three aggregation defects the
+# Go plotter has — Ref[10]'s two transports pooled into one curve, Ref[13]'s six
+# Exp. 2 setups pooled into one point, and a log axis clamped rather than
+# refused on a zero. Its docstring names each one.
 #
 # Fails when RESULTS_DIR holds nothing, rather than reporting success over an
 # empty directory.
+PYTHON ?= python3
+
 .PHONY: plots
 plots:
 	@echo "==> plots from $(RESULTS_DIR)"
 	@$(GO) run ./cmd/plot -results $(RESULTS_DIR) -out $(RESULTS_DIR)/plots
+	@$(PYTHON) scripts/plot_figures.py --input $(RESULTS_DIR) --output $(RESULTS_DIR)/plots
 
 .PHONY: clean
 clean:
