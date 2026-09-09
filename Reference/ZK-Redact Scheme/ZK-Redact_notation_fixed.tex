@@ -946,17 +946,19 @@ on-chain ledger costs are measured separately; baseline~\cite{ref10}
 is evaluated both in-process and on Fabric to isolate consensus
 overhead.
 
-\begin{figure}[!t]
+% Spans both columns. At 0.32\columnwidth each panel printed about 1.1 in
+% against a 3.5 in design size, so the axis labels were unreadable; across
+% \textwidth the same three panels are roughly 2.3 in each.
+\begin{figure*}[!t]
     \centering
-    \includegraphics[width=0.32\columnwidth]{Images/1.pdf}
+    \includegraphics[width=0.32\textwidth]{Images/1.pdf}
     \hfill
-    \includegraphics[width=0.32\columnwidth]{Images/2.pdf}
+    \includegraphics[width=0.32\textwidth]{Images/2.pdf}
     \hfill
-    \includegraphics[width=0.32\columnwidth]{Images/3.pdf}
-    \captionsetup{justification=centering}
+    \includegraphics[width=0.32\textwidth]{Images/3.pdf}
     \caption{Experimental results: (a) Verification Throughput (b) Redaction Processing Overhead (c) Provenance Retrieval and Audit Verification Cost}
     \label{fig:combined_3_panel}
-\end{figure}
+\end{figure*}
 
 \subsubsection*{\textbf{Experiment 1: Verification Throughput}}
 \label{exp:verification-throughput}
