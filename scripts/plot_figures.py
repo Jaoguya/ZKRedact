@@ -342,9 +342,11 @@ def _draw(fig_spec: Figure, out_dir: Path, formats: Sequence[str],
             else:
                 ax.set_ylim(max(0.0, mid * 0.5), mid * 1.5)
 
-    ax.grid(True, which="major", linewidth=0.3, alpha=0.5)
-    if fig_spec.log_x or fig_spec.log_y:
-        ax.grid(True, which="minor", linewidth=0.2, alpha=0.3)
+    # Major grid only. A log axis carries eight minor lines per decade, and on
+    # a six-decade figure that is fifty lines of background competing with four
+    # curves — worse still at the size these are printed.
+    ax.grid(True, which="major", linewidth=0.25, alpha=0.35)
+    ax.grid(False, which="minor")
 
     # Legend inside the axes, one entry per row: ncol=1 removes label collision
     # by construction at any figure width. Opaque white, so it covers gridlines
