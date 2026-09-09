@@ -997,17 +997,31 @@ processing overhead under increasing workload.
 \subsubsection*{\textbf{Experiment 3: Provenance Retrieval and Audit Verification Cost}}
 \label{exp:provenance-audit}
 
-This experiment evaluates provenance retrieval and audit verification as
-the ledger grows from $10^2$ to $10^3$ blocks, comparing ZK-Redact with
-the three baselines~\cite{ref10,ref13,ref22}.As shown in Fig.~\ref{fig:combined_3_panel}(c), ZK-Redact maintains low,
-nearly constant audit latency as ledger size increases and remains
-competitive with Refs.~\cite{ref10,ref13}. In contrast,
-Ref.~\cite{ref22} incurs orders-of-magnitude higher cost that increases
-with ledger size. This difference stems from the PAI, which retrieves
-transaction-specific provenance and verifies it against authenticated
-commitments without traversing the ledger history. The results therefore
-show that ZK-Redact provides scalable provenance auditing while adding
-only modest overhead relative to lightweight baselines.
+This experiment evaluates audit verification cost against the redaction
+history depth $\nu$ of the audited transaction, with each scheme measured
+at ledger sizes $L=10^2$ and $L=10^3$ blocks. A curve's slope is therefore
+its dependence on history depth, and the gap between a scheme's two curves
+is its dependence on ledger size.
+
+As shown in Fig.~\ref{fig:combined_3_panel}(c), the two ZK-Redact curves
+are nearly coincident: audit cost is governed by the audited transaction's
+own history and not by the size of the ledger containing it, which is the
+property the PAI is designed to provide. Ref.~\cite{ref22} separates by
+roughly an order of magnitude between the two ledger sizes and remains
+orders of magnitude more expensive in absolute terms, since its audit
+collects the current version of every block.
+
+ZK-Redact's cost does grow with $\nu$, and above $\nu\approx8$ exceeds
+Refs.~\cite{ref10,ref13} in absolute terms. This is the $\nu$ term of the
+$O(\nu+\log|\mathcal{I}|)$ bound and it is not overhead: verifying a
+history of length $\nu$ re-verifies $\nu$ zero-knowledge authorization
+proofs, establishing that each redaction was permitted under its
+registered policy without revealing the attributes that satisfied it.
+Ref.~\cite{ref10} re-verifies committee signatures, which identify the
+approvers, and Ref.~\cite{ref13} performs a challenge-response spot check
+on ledger integrity; neither audits per-redaction authorization, so
+neither pays for it. The comparison is therefore one of scaling behaviour
+and of what an audit establishes, not of equivalent work.
 
 \section{Conclusion}
 

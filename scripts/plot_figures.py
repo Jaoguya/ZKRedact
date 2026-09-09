@@ -161,6 +161,18 @@ def style_for(key: str) -> Dict[str, object]:
     }
 
 
+def label_no_transport(key: str) -> str:
+    """LABELS[key] without the transport qualifier.
+
+    Only Exp 1 measures Ref[10] over a transport: its vote_transport carries
+    COMMITTEE VOTES, which happen during authorization. Redact and Audit never
+    touch it — ref10's Audit calls scanForRedactions and verifyEMT and nothing
+    else — so "(in-process)" on an Exp 2 or Exp 3 curve names a choice that had
+    no bearing on the number under it.
+    """
+    return LABELS[key].replace(" (in-process)", "")
+
+
 def legend_rank(key: str) -> int:
     if key in LEGEND_ORDER:
         return LEGEND_ORDER.index(key)
@@ -611,15 +623,15 @@ def figures_exp2(result: dict) -> List[Figure]:
         # the baselines do not batch and sit at B_R=1 by construction.
         if p.get("workload_size", 0) > 0                 and (not batches(p) or p["wait_bound_ms"] == head_wait)                 and p["conflict_ratio"] == head_ratio                 and (not batches(p) or p["batch_size"] == full_batch):
             k = p["scheme"]
-            overhead.add(k, LABELS[k], p["workload_size"],
+            overhead.add(k, label_no_transport(k), p["workload_size"],
                          p["cost_per_request_ns"] / 1e6)
         on_head = (not batches(p) or p["wait_bound_ms"] == head_wait) \
             and p["conflict_ratio"] == head_ratio
         if on_head:
             k = p["scheme"]
-            cost.add(k, LABELS[k], x, p["cost_per_request_ns"] / 1e6)
-            share.add(k, LABELS[k], x, p["crypto_share"])
-            stale.add(k, LABELS[k], x, p["stale_exclusion_rate"])
+            cost.add(k, label_no_transport(k), x, p["cost_per_request_ns"] / 1e6)
+            share.add(k, label_no_transport(k), x, p["crypto_share"])
+            stale.add(k, label_no_transport(k), x, p["stale_exclusion_rate"])
         if p["scheme"] == "zkredact":
             if p["conflict_ratio"] == head_ratio:
                 arm = f"$\\Delta_R$ = {p['wait_bound_ms']} ms"
@@ -684,11 +696,11 @@ def figures_exp3(result: dict) -> List[Figure]:
         # coincident curves. Verification only — retrieval is a transport cost
         # and is reported separately.
         arm_key = f"{k}@{x}"
-        audit.add(arm_key, f"{LABELS[k]}, L={x}", p["history_depth"],
+        audit.add(arm_key, f"{label_no_transport(k)}, L={x}", p["history_depth"],
                   p["verification_time_ns"] / 1e6)
         if p["history_depth"] == head_depth:
-            cost.add(k, LABELS[k], x, p["total_time_ns"] / 1e6)
-            evidence.add(k, LABELS[k], x, p["proof_size_bytes"])
+            cost.add(k, label_no_transport(k), x, p["total_time_ns"] / 1e6)
+            evidence.add(k, label_no_transport(k), x, p["proof_size_bytes"])
         if k == "zkredact":
             arm = f"depth {p['history_depth']}"
             depth.add(arm, arm, x, p["total_time_ns"] / 1e6)
