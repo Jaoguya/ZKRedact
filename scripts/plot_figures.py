@@ -113,10 +113,13 @@ LEGEND_ORDER: Tuple[str, ...] = (
 LABELS: Dict[str, str] = {
     "zkredact": "ZK-Redact (proposed)",
     "zkredact/plain": "ZK-Redact (no sharding, no batching)",
-    "ref10_emt": "Ref[10] EMT (in-process)",
-    "ref10_emt/fabric": "Ref[10] EMT (Fabric)",
-    "ref13_vrbc": "Ref[13] VRBC",
-    "ref22_shen": "Ref[22] Shen",
+    # Citation numbers follow the manuscript's bibliography ORDER, not the
+    # bibitem keys: refs were cut for page limit, so ref10/ref13/ref22 now print
+    # as [7]/[8]/[16]. Keys stay put because they name the implementations.
+    "ref10_emt": "Ref[7] EMT (in-process)",
+    "ref10_emt/fabric": "Ref[7] EMT (Fabric)",
+    "ref13_vrbc": "Ref[8] VRBC",
+    "ref22_shen": "Ref[16] Shen",
 }
 
 # The ablation and the knob sweeps are arms of ONE system, so their series keys
