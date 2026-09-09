@@ -164,7 +164,6 @@ hash-linked provenance is Merkle-authenticated and blockchain-anchored
 for efficient, independently verifiable auditing.
 
 The main contributions are as follows:
-
 \begin{itemize}
 \item \textbf{Sharded Privacy-Preserving ZK Authorization:}
 We combine state- and policy-bound ZK authorization with logical proof
@@ -193,7 +192,7 @@ Redactable blockchains have evolved from CH-based rewriting
 \cite{ref2}. Subsequent schemes distribute trapdoor control
 \cite{ref1,ref6,ref19}, enforce attribute- or policy-based
 authorization \cite{ref15}, and support dynamic or
-trust-aware control \cite{ref5,ref16}. These mechanisms strengthen
+trust-aware control \cite{ref16}. These mechanisms strengthen
 redaction security and access control, but largely focus on secure
 modification rather than scaling the complete authorization--redaction
 pipeline under high request concurrency.
@@ -213,7 +212,7 @@ redaction mechanisms. Wu \emph{et al.}~\cite{ref10} use an extended
 Merkle tree for inserted-data redaction, while Fugkeaw \emph{et
 al.}~\cite{ref21} target large-scale GDPR-compliant blockchain e-KYC.
 Other designs improve dynamic or distributed redaction
-\cite{ref1,ref5,ref6,ref19}. Nevertheless, authorization, CH
+\cite{ref1,ref6,ref19}. Nevertheless, authorization, CH
 adaptation, and ledger processing are commonly performed on a
 per-request basis, repeatedly incurring shared processing costs.
 ZK-Redact instead separates proof verification from redaction execution
@@ -263,9 +262,7 @@ ZK-Redact operates over a permissioned blockchain shared among multiple organiza
 
 
 \subsection{System Process}
-\label{sec:system-process}
 
-ZK-Redact operates through six phases as follows.
 \medskip
 \subsubsection*{\textbf{Phase 1: System Setup}}
 \label{sec:phase1}
@@ -305,7 +302,7 @@ E_a^{\mathrm{AU}}
 \label{eq:auditor-registration}
 \end{equation}
 where $\Pi_a^{\mathrm{audit}}$ defines its authorized scope for
-provenance queries in Phase~6.
+provenance queries in Phase~5.
 
 \smallskip
 \noindent\textbf{Step 2: Redaction Policy Registration}
@@ -376,7 +373,7 @@ commitments. The PVL initializes
 \begin{equation}
 \mathbb{S}
 =
-\{\mathcal{S}_1,\ldots,\mathcal{S}_N\},
+\{\mathcal{S}_1,\ldots,\mathcal{S}_N\}
 \label{eq:proof-shards}
 \end{equation}
 where each $\mathcal{S}_j$ maintains an independent proof queue.
@@ -543,7 +540,7 @@ For each accepted $Q_\rho^{*}$, the PVL assigns
 j_\rho=
 1+\big(\mathsf{Int}(H(DID_\rho))\bmod N\big),
 \qquad
-Q_\rho^{*}\rightarrow\mathcal{S}*{j*\rho}
+Q_\rho^{*}\rightarrow\mathcal{S}_{j_\rho}
 \label{eq:phase3-shard}
 \end{equation}
 providing uniform distribution in expectation across the $N$ shards. Each $\mathcal{S}_j$ maintains an independent queue and executes concurrently with other active shards.
@@ -555,7 +552,7 @@ In verification round $s$, each active shard forms
 \begin{equation}
 \mathcal{B}_j^{(s)}
 =
-{(x_\rho,\pi_\rho,Q_\rho^{*})}_{\rho\in\mathcal{Q}_j^{(s)}},
+\{(x_\rho,\pi_\rho,Q_\rho^{*})\}_{\rho\in\mathcal{Q}_j^{(s)}},
 \qquad
 |\mathcal{B}_j^{(s)}|\leq B
 \label{eq:proof-batch}
@@ -576,7 +573,7 @@ where $\tau_j^{(s)}$ is the oldest request's waiting time, thereby bounding dela
 Active shards process their batches concurrently. Each proof is verified as
 \begin{equation}
 V_\rho=
-\mathsf{ZK.Verify}(vk_{\mathrm{zk}},x_\rho,\pi_\rho)\in\{0,1\}.
+\mathsf{ZK.Verify}(vk_{\mathrm{zk}},x_\rho,\pi_\rho)\in\{0,1\}
 \label{eq:individual-zk-verification}
 \end{equation}
 When supported, a shard may instead apply
@@ -587,11 +584,11 @@ requests form
 \begin{equation}
 \mathcal{P}_{\mathrm{ver}}
 =
-\{Q_\rho^{*}\mid V_\rho=1\},
+\{Q_\rho^{*}\mid V_\rho=1\}
 \label{eq:verified-pool}
 \end{equation}
 while invalid requests are rejected and their pending identifiers released.
-
+\medskip
 
 \subsubsection*{\textbf{Phase 4: Batch Redaction and Authenticated Provenance Update}}
 
@@ -609,7 +606,7 @@ Verified requests are grouped into
 =
 \{Q_\rho^{*}\}_{\rho\in\mathcal{Q}_R^{(e)}},
 \qquad
-|\mathcal{B}_{R}^{(e)}|\le B_R,
+|\mathcal{B}_{R}^{(e)}|\le B_R
 \label{eq:redaction-batch}
 \end{equation}
 which closes at size $B_R$ or after the oldest request waits $\Delta_R$.
@@ -617,7 +614,7 @@ Immediately before execution, the PB checks
 \begin{equation}
 \mathsf{Fresh}_\rho=
 [v_i=v_i^{\mathrm{cur}}]\land
-[v_{P_q}=v_{P_q}^{\mathrm{cur}}],
+[v_{P_q}=v_{P_q}^{\mathrm{cur}}]
 \label{eq:redaction-revalidation}
 \end{equation}
 and forms
@@ -632,7 +629,7 @@ R_B^{(e)}
 \mathsf{MerkleRoot}
 \left(
 \{H(DID_\rho\parallel\eta_\rho)\}_{\rho\in\mathcal{Q}_F^{(e)}}
-\right).
+\right)
 \label{eq:redaction-batch-root}
 \end{equation}
 
@@ -650,11 +647,14 @@ r_i^{(v_i+1)}
 \end{equation}
 such that
 \begin{equation}
-\mathsf{CH.Hash}(pk_{\mathrm{ch}},m_i^{(v_i)},r_i^{(v_i)})
-=
-\mathsf{CH.Hash}(pk_{\mathrm{ch}},m_i^{(v_i+1)},r_i^{(v_i+1)}).
+\begin{aligned}
+&\mathsf{CH.Hash}(pk_{\mathrm{ch}},m_i^{(v_i)},r_i^{(v_i)})\\
+&\qquad=
+\mathsf{CH.Hash}(pk_{\mathrm{ch}},m_i^{(v_i+1)},r_i^{(v_i+1)})
+\end{aligned}
 \label{eq:ch-collision}
 \end{equation}
+
 Thus, $T_i^{(v_i)}$ advances to $T_i^{(v_i+1)}$ while its CH-based
 ledger commitment, block Merkle root, and blockchain links remain
 unchanged. Batching amortizes common validation, chaincode, commitment,
@@ -673,7 +673,7 @@ and binds its authorization evidence by
 \begin{equation}
 C_\rho^{\mathrm{auth}}
 =
-H(DID_\rho\parallel\eta_\rho\parallel H(\pi_\rho)).
+H(DID_\rho\parallel\eta_\rho\parallel H(\pi_\rho))
 \label{eq:authorization-evidence}
 \end{equation}
 It constructs
@@ -682,7 +682,7 @@ It constructs
 PR_i^{(v_i+1)}
 =\big(&TID_i,v_i,v_i+1,PID_\rho,v_{P_q},DID_\rho,e,\\
 &d_i^{\mathrm{old},(v_i+1)},d_i^{\mathrm{new},(v_i+1)},
-C_\rho^{\mathrm{auth}},R_B^{(e)},t_\rho'\big),
+C_\rho^{\mathrm{auth}},R_B^{(e)},t_\rho'\big)
 \end{split}
 \label{eq:provenance-record}
 \end{equation}
@@ -695,21 +695,20 @@ authenticated by $C_\rho^{\mathrm{auth}}$.
 Let $\mathcal{Q}_{\mathrm{succ}}^{(e)}\subseteq\mathcal{Q}_F^{(e)}$
 be the successful requests and
 $\mathcal{T}^{(e)}
-=\{\mathsf{tx}(\rho):\rho\in\mathcal{Q}_{\mathrm{succ}}^{(e)}\}$.
+=\{\mathsf{tx}(\rho):\rho\in\mathcal{Q}_{\mathrm{succ}}^{(e)}\}$
 ZK-Redact computes
 \begin{equation}
-\begin{aligned}
 R_{PR}^{(e)}
-&=
+=
 \mathsf{MerkleRoot}
 \left(
 \{H(PR_i^{(v_i+1)})\}_{i\in\mathcal{T}^{(e)}}
-\right),\\
+\right)
+\end{equation}
+\begin{equation}
 C_B^{(e)}
-&=
-H(R_B^{(e)}\parallel e\parallel R_{PR}^{(e)}).
-\end{aligned}
-\label{eq:batch-redaction-commitment}
+=
+H(R_B^{(e)}\parallel e\parallel R_{PR}^{(e)})
 \end{equation}
 The PB applies the successful state updates; stale or failed requests
 are excluded.
@@ -720,19 +719,19 @@ are excluded.
 For each $i\in\mathcal{T}^{(e)}$, the PAI appends
 $PR_i^{(v_i+1)}$ to $\mathcal{H}_i$ and updates
 \begin{equation}
-\begin{aligned}
 c_i^{(v_i+1)}
-&=H\!\left(c_i^{(v_i)}\parallel H(PR_i^{(v_i+1)})\right),\\
+=H\!\left(c_i^{(v_i)}\parallel H(PR_i^{(v_i+1)})\right)
+\end{equation}
+\begin{equation}
 A_i^{(v_i+1)}
-&=H(TID_i\parallel(v_i+1)\parallel c_i^{(v_i+1)}).
-\end{aligned}
+=H(TID_i\parallel(v_i+1)\parallel c_i^{(v_i+1)})
 \label{eq:pai-update}
 \end{equation}
 History continuity requires
 \begin{equation}
 d_i^{\mathrm{old},(1)}=d_i^{(0)},\qquad
 d_i^{\mathrm{new},(k)}=d_i^{\mathrm{old},(k+1)},
-\quad 1\le k<v_i^{(e)},
+\quad 1\le k<v_i^{(e)}
 \label{eq:history-continuity}
 \end{equation}
 where $d_i^{(0)}$ is the authenticated initial-state digest from
@@ -769,7 +768,7 @@ AR^{(e)}
 \big(
 e,R_{\mathrm{PAI}}^{(e)},R_{\mathrm{PAI}}^{(e-1)},
 R_B^{(e)},R_{PR}^{(e)},C_B^{(e)},AC^{(e)}
-\big).
+\big)
 \label{eq:anchor-record}
 \end{equation}
 This binds the authenticated provenance state to its predecessor and
@@ -790,15 +789,14 @@ blockchain records.
 
 For target $TID_i$ and PAI state $e$, auditor $AU_a$ signs
 \begin{equation}
-\begin{aligned}
-R_a^{\mathrm{audit}} &= (AID_a, TID_i, e, t_a, n_a), \\
-\sigma_a &= \mathsf{Sig.Sign}\big(sk_a, H(R_a^{\mathrm{audit}})\big).
-\end{aligned}
-\label{eq:auditor-request}
+R_a^{\mathrm{audit}} = (AID_a, TID_i, e, t_a, n_a)
+\end{equation}
+\begin{equation}
+\sigma_a = \mathsf{Sig.Sign}\big(sk_a, H(R_a^{\mathrm{audit}})\big)
 \end{equation}
 The PB verifies $\sigma_a$ and freshness and requires
 \begin{equation}
-\mathsf{AuditAuth}(AID_a, TID_i, e, \Pi_a^{\mathrm{audit}}) = 1.
+\mathsf{AuditAuth}(AID_a, TID_i, e, \Pi_a^{\mathrm{audit}}) = 1
 \label{eq:auditor-authorization}
 \end{equation}
 
@@ -813,7 +811,7 @@ The PAI returns
 \left(
 \mathcal{H}_i^{(\bar v_i)},\bar v_i,c_i^{(\bar v_i)},
 \mu_i^{(e)},\{\psi_{i,k}\}_{k=1}^{\bar v_i}
-\right),
+\right)
 \label{eq:audit-evidence}
 \end{equation}
 where $\mu_i^{(e)}$ authenticates
@@ -841,7 +839,9 @@ H(TID_i\parallel\bar v_i\parallel c_i^{(\bar v_i)})
 \label{eq:audit-entry}
 \end{equation}
 and verifies its membership under $R_{\mathrm{PAI}}^{(e)}$ using
-$\mu_i^{(e)}$. For each $1\le k\le\bar v_i$, it verifies
+$\mu_i^{(e)}$. 
+
+For each $1\le k\le\bar v_i$, it verifies
 \begin{equation}
 \mathsf{MerkleVerify}
 \left(H(PR_i^{(k)}),\psi_{i,k},R_{PR}^{(e_k)}\right)=1
@@ -850,7 +850,7 @@ $\mu_i^{(e)}$. For each $1\le k\le\bar v_i$, it verifies
 and confirms that $R_{PR}^{(e_k)}$ belongs to the corresponding
 blockchain anchor $AR^{(e_k)}$.
 
-Starting from the authenticated $c_i^{(0)}$ of Phase~1, it reconstructs
+Starting from the authenticated $c_i^{(0)}$, it reconstructs
 \begin{equation}
 \widehat c_i^{(k)}
 =
@@ -874,19 +874,18 @@ with $\widehat c_i^{(0)}=c_i^{(0)}$. Integrity and completeness require
 
 For each $PR_i^{(k)}$, the auditor verifies
 \begin{equation}
-\begin{aligned}
 H(DID_{i,k}\parallel H(x_{i,k})\parallel H(\pi_{i,k}))
-&=C_{i,k}^{\mathrm{auth}},\\
-\mathsf{ZK.Verify}(vk_{\mathrm{zk}},x_{i,k},\pi_{i,k})&=1,
-\end{aligned}
-\label{eq:audit-authorization}
+=C_{i,k}^{\mathrm{auth}}
+\end{equation}
+\begin{equation}
+\mathsf{ZK.Verify}(vk_{\mathrm{zk}},x_{i,k},\pi_{i,k})=1
 \end{equation}
 and checks consistency of its transaction, policy, and version information.
 History continuity requires
 \begin{equation}
 d_i^{\mathrm{old},(1)}=d_i^{(0)},\qquad
 d_i^{\mathrm{new},(k)}=d_i^{\mathrm{old},(k+1)},
-\quad 1\le k<\bar v_i,
+\quad 1\le k<\bar v_i
 \label{eq:audit-continuity}
 \end{equation}
 with consecutive versions from $0$ to $\bar v_i$ and terminal digest
@@ -895,16 +894,15 @@ $d_i^{\mathrm{new},(\bar v_i)}$ matching the authenticated state at $e$.
 For each required anchor $r\in\{e,e_1,\ldots,e_{\bar v_i}\}$, the auditor
 further verifies
 \begin{equation}
-\begin{aligned}
 AC^{(r)}
-&\stackrel{?}{=}
+\stackrel{?}{=}
 H(r\parallel R_{\mathrm{PAI}}^{(r)}
-\parallel R_{\mathrm{PAI}}^{(r-1)}\parallel C_B^{(r)}),\\
+\parallel R_{\mathrm{PAI}}^{(r-1)}\parallel C_B^{(r)})
+\end{equation}
+\begin{equation}
 C_B^{(r)}
-&\stackrel{?}{=}
-H(R_B^{(r)}\parallel r\parallel R_{PR}^{(r)}).
-\end{aligned}
-\label{eq:audit-anchors}
+\stackrel{?}{=}
+H(R_B^{(r)}\parallel r\parallel R_{PR}^{(r)})
 \end{equation}
 The audit succeeds only if the provenance membership, authorization,
 history integrity and continuity, and blockchain anchors are valid,
@@ -912,8 +910,7 @@ enabling transaction-specific verification without exhaustive ledger
 traversal.
 
 
-\subsection*{Security Discussion}
-\label{sec:security-discussion}
+\section*{Security Discussion}
 
 ZK-Redact relies on the security of the underlying signature, ZKP,
 chameleon-hash, and collision-resistant hash schemes. Unauthorized
@@ -951,11 +948,11 @@ overhead.
 
 \begin{figure}[!t]
     \centering
-    \includegraphics[width=0.32\columnwidth]{Images/1.jpeg}
+    \includegraphics[width=0.32\columnwidth]{Images/1.pdf}
     \hfill
-    \includegraphics[width=0.32\columnwidth]{Images/2.png}
+    \includegraphics[width=0.32\columnwidth]{Images/2.pdf}
     \hfill
-    \includegraphics[width=0.32\columnwidth]{Images/3.png}
+    \includegraphics[width=0.32\columnwidth]{Images/3.pdf}
     \captionsetup{justification=centering}
     \caption{Experimental results: (a) Verification Throughput (b) Redaction Processing Overhead (c) Provenance Retrieval and Audit Verification Cost}
     \label{fig:combined_3_panel}
@@ -1033,11 +1030,6 @@ doi: 10.1109/TII.2019.2901011.
 H. Guo, W. Gan, M. Zhao, C. Zhang, T. Wu, L. Zhu, and J. Xue,
 ``PriChain: Efficient Privacy-Preserving Fine-Grained Redactable Blockchains in Decentralized Settings,''
 \textit{Chinese Journal of Electronics}, vol. 34, no. 1, pp. 82--97, 2025.
-
-\bibitem{ref5}
-D. Zhang, J. Le, X. Lei, T. Xiang, and X. Liao,
-``Secure Redactable Blockchain With Dynamic Support,''
-\textit{IEEE Trans. Dependable Secure Comput.}, vol. 21, no. 2, pp. 717--731, 2024.
 
 \bibitem{ref6}
 X. Wu, X. Du, Q. Yang, N. Wang, and W. Wang,
