@@ -16,7 +16,7 @@ ZK-Redact's mechanism as the swept variable.
 |---|---|---|---|
 | 1 Verification Throughput | authorizations/sec under concurrent load | shards `N` 1→64 | Ref[10] |
 | 2 Redaction Throughput | cost batching amortises, and its staleness price | batch `B_R` 1→64 | all three |
-| 3 Provenance Audit Cost | does audit cost track history depth, not ledger size | ledger 1k→10k | Ref[13] |
+| 3 Provenance Audit Cost | does audit cost track history depth, not ledger size | ledger `L` 100, 1,000 | Ref[13] |
 
 Full spec: [`docs/experiments.md`](docs/experiments.md).
 
@@ -24,23 +24,43 @@ Full spec: [`docs/experiments.md`](docs/experiments.md).
 
 | Name | What it is | State |
 |---|---|---|
-| `zkredact` | Groth16 over BLS12-381, sharded proof verification | Phases 2-3 run Exp 1; Phases 4-6 not built |
+| `zkredact` | Groth16 over BLS12-381, sharded proof verification | all six phases run; all three experiments |
 | `ref10_emt` | committee vote, real chaincode on a real Fabric network | complete |
 | `ref22_shen` | trapdoorless universal RSA accumulator | complete |
-| `ref13_vrbc` | q-ary BAT over Pointproofs vector commitments | not implemented |
+| `ref13_vrbc` | q-ary BAT over Pointproofs vector commitments | complete |
 
-Exp 2 and Exp 3 cannot run against ZK-Redact yet, and `-schemes` must exclude
-`ref13_vrbc`.
+All three experiments run against all four systems from
+`config/experiment.yaml`'s `systems:` lists; nothing is currently excluded.
 
 ## Quick start
 
 ```bash
 make validate-config   # the gate every experiment target depends on
-make build             # compile everything
+make all               # build every component in dependency order
 make test              # vet + full suite, no Docker required
 make build-zk          # compile the circuit and check it against the config
-make pilot             # build dataset and trace, execute nothing
+make pilot             # short run to resolve sweep bounds, before spending real time
 ```
+
+Then, with the network up (below):
+
+```bash
+make experiments   # all three experiments
+# or one at a time:
+make experiment-verification-throughput
+make experiment-redaction-throughput
+make experiment-provenance-audit
+
+make plots         # regenerate the figures from the results directory
+```
+
+A full sweep is large enough to shard across several hosts unattended:
+[`scripts/launch-run.sh`](scripts/launch-run.sh) provisions up to 20 real EC2
+instances (`c6i.8xlarge`, ~$1.4/hour each), each running one assigned slice
+and publishing its own results, and terminates them when done. It is
+documented in its own header, not elsewhere — read that before running it.
+[`scripts/setup-ec2.sh`](scripts/setup-ec2.sh) provisions a single host by
+hand for anything smaller.
 
 Live network work needs Docker:
 

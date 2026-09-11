@@ -54,14 +54,16 @@ small.
 
 ```
 network/
-├── chaincode/redaction/     Algorithm 3 as chaincode (own Go module)
-├── compose.minimal.yaml     1 org, verification only
-├── compose.yaml             4 orgs, measurement topology
-├── configtx.yaml            channel and ordering configuration
-├── crypto-config.yaml       identity material to generate
+├── chaincode/redaction/         Algorithm 3 as chaincode (own Go module)
+├── chaincode-service.yaml       chaincode-as-a-service overlay (ccaas)
+├── compose.minimal.yaml         1 org, verification only
+├── compose.yaml                 4 orgs, measurement topology
+├── configtx.yaml                channel and ordering configuration
+├── crypto-config-minimal.yaml   identity material for the minimal topology
+├── crypto-config-full.yaml      identity material for the measurement topology
 └── scripts/
-    ├── network.sh           up | down | deploy | status
-    └── smoke.sh             end-to-end check against a live network
+    ├── network.sh               up | down | deploy | status
+    └── smoke.sh                 end-to-end check against a live network
 ```
 
 ## Usage

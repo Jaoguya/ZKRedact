@@ -240,11 +240,17 @@ Verify before any Experiment 1 result is recorded:
 - [x] Attribute policy `A_r` is genuinely evaluated per requester
       — `TestEvalPolicy`, `TestEvalPolicyRejectsMalformed`,
       `TestCommitteeMemberRederivesTheDecision`
-- [ ] **Votes travel over the real network, not in-process function calls**
-      — NOT YET. `vote_transport: in_process` is the only implementation; the
-      `fabric` transport is refused rather than silently downgraded, and
-      `validate-config` warns while this stands. Exp 1 and Exp 2 numbers for
-      Ref[10] are a lower bound until this box is ticked.
+- [x] **Votes travel over the real network, not in-process function calls**
+      — `fabric` builds real Fabric identities and opens a real session
+      (`fabric_register.go::buildIdentities`, `scheme.go::newTransport`); a
+      transport that silently fell back to in-process is one of the ten
+      mutation checks below and fails the suite. **The committed
+      `config/experiment.yaml` currently sets `vote_transport: in_process`**
+      deliberately, as the like-for-like control — `validate-config` warns on
+      it for exactly that reason. Exp 1 and Exp 2 numbers taken under the
+      committed config are Ref[10]'s lower bound, not its deployed cost, until
+      the config is switched to `fabric` for the run that produces final
+      numbers.
 - [x] Audit verifies every located redaction transaction, not just the target
       — `TestAuditVerifiesEveryLocatedRedaction`,
       `TestAuditRejectsTamperedRedactionRecord`,

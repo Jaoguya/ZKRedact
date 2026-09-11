@@ -17,7 +17,7 @@ indicating why.
 | ⬜ | Not started |
 | ⚠️ | Conformance risk — read the note |
 
-Last audited against: `pkg/ch`, `pkg/merkle`, `internal/schemes/*`.
+Last audited against: `pkg/ch`, `pkg/merkle`, `pkg/vc`, `pkg/accumulator`, `internal/schemes/*` (2026-09-11).
 
 ---
 
@@ -202,10 +202,18 @@ Already enforced in code:
 | 4 Redaction Voting | Schnorr signature per vote | ✅ `pkg/crypto/schnorr.go` + `localTransport` |
 | 5 Local Redaction | verify `Σ`, replace `d_w` with a reference | ✅ `Scheme.Redact`, `ledger.applyRedaction` — `d_w` is pruned to a reference; `d_new` is carried by `tx_rdt` |
 
-⚠️ **Votes do not yet cross the network.** `vote_transport: in_process` is the
-only implementation; `fabric` is refused rather than downgraded, and
-`validate-config` warns. Exp 1 and Exp 2 figures for Ref[10] are a **lower
-bound** until `network/` exists.
+✅ **Both transports are implemented.** `newTransport` builds either
+`in_process` or `fabric` (`scheme.go`); the Fabric path maps committee members
+onto real Fabric identities before opening a session
+(`fabric_register.go::buildIdentities`) and votes cross a real network via
+`network/`.
+
+⚠️ **The committed config currently selects `in_process`.** That is a
+deliberate, budget-conscious choice recorded in `config/experiment.yaml`, not
+a missing capability — `validate-config` warns on it precisely because it
+changes what the numbers mean: Exp 1 and Exp 2 figures produced under the
+committed config are Ref[10]'s **lower bound**, not its deployed cost, until
+`vote_transport` is set to `fabric` for the run that produces final numbers.
 
 Already enforced:
 
@@ -240,12 +248,12 @@ paper's published figures and must never be presented as such.
 
 | Component | Requirement | Status |
 |---|---|---|
-| Block structure | `B_i = (h_{i-1}, ch_i, m_i, Y_i, r_i, ctr_i)` | 🔶 |
+| Block structure | `B_i = (h_{i-1}, ch_i, m_i, Y_i, r_i, ctr_i)` | ✅ `wiring.go::block`, `appendBlock` |
 | Chameleon hash | Eq. 5 | ✅ `ephemeral.go` |
-| BAT | q-ary tree, Pointproofs-style vector commitments | ⬜ |
-| Block query | Eq. 11 pairing check, Eq. 12 CH check | ⬜ |
-| Auditing | `Chal=(z,φ₁,φ₂)`, aggregate pairing check | ⬜ |
-| Optimized auditing §4.1 | path-union selection | ⬜ |
+| BAT | q-ary tree, Pointproofs-style vector commitments | ✅ `bat.go::BAT` (tree) + `pkg/vc` (Setup/Commit/Open/Verify — Pointproofs-style VC) |
+| Block query | Eq. 11 pairing check, Eq. 12 CH check | ✅ `verify.go::verifyBlock`, via `vc.Params.Verify` (pairing) and the chameleon hash check |
+| Auditing | `Chal=(z,φ₁,φ₂)`, aggregate pairing check | ✅ `audit.go::Challenge`, `ProveAudit`, `VerifyAudit`; `pkg/vc/aggregate.go::AggregateOpen`/`AggregateVerify` |
+| Optimized auditing §4.1 | path-union selection | ✅ `audit.go::SelectChallenged(ch, optimized bool)`, `unionKey` |
 
 Already enforced:
 
@@ -267,13 +275,13 @@ by `crypto.RequirePairingCurve`.
 
 | Algorithm | Requirement | Status |
 |---|---|---|
-| Block structure | `B = ⟨p,m,i,A,w,ctr,ξ⟩` | 🔶 |
+| Block structure | `B = ⟨p,m,i,A,w,ctr,ξ⟩` | ✅ `ledger.go::Block` |
 | Double-trapdoor CH | §II-A | ✅ `doubletrapdoor.go` |
-| Universal accumulator | trapdoorless, RSA-3072 | ⬜ |
-| 1 Append / 2 ValApp | | ⬜ |
-| 5 Modify / 6 ValMod | `UA.Del` then `UA.Add`, both witnesses | ⬜ |
-| 7 Delete / 8 ValDel | set `L`, consecutive vs inconsecutive | ⬜ |
-| 9 ValChain | full traversal | ⬜ |
+| Universal accumulator | trapdoorless, RSA-3072 | ✅ `pkg/accumulator::New`, `GenerateUntrusted`/`GenerateUntrustedWithOrder` (trapdoorless setup) |
+| 1 Append / 2 ValApp | | ✅ `ledger.go::Append`, `ValApp` |
+| 5 Modify / 6 ValMod | `UA.Del` then `UA.Add`, both witnesses | ✅ `ledger.go::Modify`, `ValMod` |
+| 7 Delete / 8 ValDel | set `L`, consecutive vs inconsecutive | ✅ `ledger.go::Delete`, `ValDel`, `consecutiveRuns` |
+| 9 ValChain | full traversal | ✅ `ledger.go::ValChain` |
 
 Already enforced:
 
@@ -298,7 +306,7 @@ must never share a table with ours.
 | 1 | ~~Scheme cryptography is unimplemented~~ — all four schemes and all six ZK-Redact phases are now implemented and tested | Closed. §3.1 maps each equation to its test |
 | 2 | Timing assertions cannot be made on a coarse-clock host: this host resolves ~500µs, and a single `CH.Adapt` or auditor authorization finishes inside one tick | Tests assert the STRUCTURAL evidence unconditionally and the timing only behind `metrics.RequireUsableClock`. Real measurements require the Linux target host, which the harness already enforces |
 | 3 | ZK-Redact's spec does not fix a CH construction, so the classic choice is an assumption | Recorded in `ch.Required`; revisit if the paper is revised |
-| 4 | Ref[13]'s BAT needs a Pointproofs-style vector commitment with no standard Go implementation | Highest-risk remaining component; conformance to §3.2.2 must be audited when written |
+| 4 | ~~Ref[13]'s BAT needs a Pointproofs-style vector commitment with no standard Go implementation~~ — written, in `pkg/vc`, and wired into `bat.go` | Closed. §5 maps it against Eq. 11/12 and the aggregate audit check |
 
 ---
 

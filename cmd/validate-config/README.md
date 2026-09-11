@@ -79,6 +79,12 @@ must span at least one order of magnitude.
 **Reproducibility** — every `output.record.*` flag must be true, and
 `allow_published_numbers_in_tables` must be false.
 
+**Repetition floor and sample size** — `meta.repetitions` below 10 warns
+(the Status section above shows the current config is at 1, deliberately);
+`workload.total_requests` too small for the top percentile you're reporting
+also warns. Neither blocks a run; both say the result you get needs the
+caveat attached.
+
 ---
 
 ## Dependencies
@@ -98,17 +104,25 @@ so this adds nothing the project would not need regardless.
 
 ## Status
 
-> **Not yet compile-tested.** Go was not available on the machine where this was
-> written. Before relying on it:
->
-> ```bash
-> go mod tidy
-> go vet ./cmd/validate-config
-> go run ./cmd/validate-config
-> ```
->
-> Expected on the current config: **0 errors**, with warnings for
-> `zkredact.circuit.*` (values recorded after `make build-zk`, not chosen).
+Built, compile-tested, and wired into the Makefile (`validate-config:` runs
+`go run ./cmd/validate-config $(CONFIG)` and every experiment target depends
+on it). Run against the committed `config/experiment.yaml`, checked
+2026-09-11:
+
+```
+0 error(s), 3 warning(s)
+Config is valid.
+```
+
+The three warnings are real and currently live, not stale — each says the
+committed config is tuned for a budget-conscious variance-measurement run,
+not yet a final one:
+
+| Warning | What it means |
+|---|---|
+| `meta.repetitions = 1`, below the floor of 10 | Deliberate, per `config/experiment.yaml`'s own derivation — a 30-repetition floor was rejected as "the digit, not the derivation" once Ref[10]'s measured CV (0.12-0.16%) showed one sample was defensible for it. **Not yet shown for ZK-Redact**, whose CPU-bound path has never had its variance measured; raising `repetitions` if that CV is worse is the config's own open item. |
+| `baselines.ref10_emt.vote_transport = in_process` | The committed config measures Ref[10]'s **lower bound**, not its deployed cost. Set to `fabric` before recording the numbers this repo reports as final. |
+| `workload.total_requests = 5000` gives < 100 top-percentile samples | p99 will read as noise at this sample size. |
 
 ---
 

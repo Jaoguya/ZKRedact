@@ -121,7 +121,7 @@ VeRedact/
 ├── cmd/                   # Component entrypoints (incl. validate-config)
 ├── pkg/                   # Shared libraries (proto, ch, zk, crypto, merkle)
 ├── internal/              # Component internals (gateway, pvl, redactor, pai)
-│   └── baselines/         # Re-implemented baselines (ref10, ref13, ref22)
+│   └── schemes/           # Registry + all four systems (zkredact, ref10, ref13, ref22)
 ├── network/               # Blockchain network config + chaincode
 ├── config/                # Shared experiment and scheme configurations
 ├── experiments/           # Experiment scripts
