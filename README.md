@@ -1,111 +1,103 @@
 # VeRedact
 
-Evaluation framework for **ZK-Redact** — a privacy-preserving scheme for
+**An evaluation framework for ZK-Redact** — a privacy-preserving scheme for
 scalable redaction and provenance auditing in permissioned blockchains.
 
-Three re-implemented baselines run against the same dataset, config, workload
-and Hyperledger Fabric network, so a difference in the numbers is a difference
-between designs and not between harnesses.
+## What this is
 
-## What it measures
+Permissioned blockchains sometimes have to forget. A record enters the ledger
+and later has to come out — a legal erasure order, a key leak, content that was
+never supposed to be written down. Immutability, the property the ledger was
+built for, becomes the obstacle.
 
-Each experiment is named after the operation **every** system performs, with
-ZK-Redact's mechanism as the swept variable.
+Redaction schemes answer this, and each one answers it differently: who may
+authorize a redaction, what they learn in the process, how the change is
+recorded, and how an auditor later proves what was removed and by whom.
 
-| Exp | Question | Swept | Real competitor |
-|---|---|---|---|
-| 1 Verification Throughput | authorizations/sec under concurrent load | shards `N` 1→64 | Ref[10] |
-| 2 Redaction Throughput | cost batching amortises, and its staleness price | batch `B_R` 1→64 | all three |
-| 3 Provenance Audit Cost | does audit cost track history depth, not ledger size | ledger `L` 100, 1,000 | Ref[13] |
+VeRedact is the harness that compares those answers.
 
-Full spec: [`docs/experiments.md`](docs/experiments.md).
+## The problem it exists to solve
+
+Redaction schemes are published in different languages, on different hardware,
+against different platforms, with different measurement boundaries. Their
+figures cannot honestly share a table. Citing them side by side compares
+environments, not designs.
+
+So VeRedact does not cite baselines — it **re-implements** them. ZK-Redact and
+three reference schemes run on one shared harness: the same dataset, the same
+config file, the same request trace, the same permissioned network, the same
+timers. A difference in the numbers is then a difference between designs, and
+not between harnesses.
 
 ## The four systems
 
-| Name | What it is | State |
-|---|---|---|
-| `zkredact` | Groth16 over BLS12-381, sharded proof verification | all six phases run; all three experiments |
-| `ref10_emt` | committee vote, real chaincode on a real Fabric network | complete |
-| `ref22_shen` | trapdoorless universal RSA accumulator | complete |
-| `ref13_vrbc` | q-ary BAT over Pointproofs vector commitments | complete |
+| Name | Mechanism |
+|---|---|
+| `zkredact` | Groth16 over BLS12-381, sharded proof verification, batched redaction, hash-linked provenance index |
+| `ref10_emt` | Committee vote with aggregated Schnorr verification over an extended Merkle tree |
+| `ref13_vrbc` | Manager trapdoor check, q-ary blockchain authentication tree over Pointproofs vector commitments |
+| `ref22_shen` | Regulator key check, double-trapdoor chameleon hash, trapdoorless universal RSA accumulator |
 
-All three experiments run against all four systems from
-`config/experiment.yaml`'s `systems:` lists; nothing is currently excluded.
+Each baseline implements the authorization, redaction and audit path its own
+paper specifies — not a convenient sketch of it. Every deviation is written down
+rather than left silent.
 
-## Quick start
+## What it compares
 
-```bash
-make validate-config   # the gate every experiment target depends on
-make all               # build every component in dependency order
-make test              # vet + full suite, no Docker required
-make build-zk          # compile the circuit and check it against the config
-make pilot             # short run to resolve sweep bounds, before spending real time
-```
+Three questions, each named after the operation **every** system performs, with
+ZK-Redact's mechanism as the swept variable. Naming an experiment after our own
+mechanism would exclude the baselines by definition.
 
-Then, with the network up (below):
+| Experiment | Question |
+|---|---|
+| **Verification Throughput** | How many authorizations per second survive concurrent load, and does sharding the proof verification actually buy scale? |
+| **Redaction Throughput** | What does batching amortize, what stays a per-request floor, and what does the resulting staleness cost? |
+| **Provenance Audit Cost** | Does the cost of auditing a transaction's redaction history track the depth of that history, or the size of the whole ledger? |
 
-```bash
-make experiments   # all three experiments
-# or one at a time:
-make experiment-verification-throughput
-make experiment-redaction-throughput
-make experiment-provenance-audit
+## How it keeps the comparison honest
 
-make plots         # regenerate the figures from the results directory
-```
+**Cryptographic cost and consensus cost are never summed.** Off-chain
+cryptographic work and ledger/consensus work are timed separately and reported
+separately. A single blended number hides which half a design actually moved.
 
-A full sweep is large enough to shard across several hosts unattended:
-[`scripts/launch-run.sh`](scripts/launch-run.sh) provisions up to 20 real EC2
-instances (`c6i.8xlarge`, ~$1.4/hour each), each running one assigned slice
-and publishing its own results, and terminates them when done. It is
-documented in its own header, not elsewhere — read that before running it.
-[`scripts/setup-ec2.sh`](scripts/setup-ec2.sh) provisions a single host by
-hand for anything smaller.
+**Every performance table is published beside a capability matrix.** A system
+can be fast for the uninteresting reason that it does less work — no
+privacy-preserving authorization, no per-transaction provenance, no freshness
+revalidation. One row in particular is the row a latency column cannot be read
+without: whether a scheme's authorization requires consensus at all. Otherwise a
+networked protocol and a function call appear in the same column, with nothing
+saying so.
 
-Live network work needs Docker:
+**Nothing is simulated.** No analytical cost models, no extrapolation, no
+placeholder timings.
 
-```bash
-./network/scripts/network.sh up minimal   # 1 org — correctness only
-./network/scripts/network.sh up full      # 4 orgs x 2 peers — measurement topology
-./network/scripts/network.sh deploy && ./network/scripts/smoke.sh
-make test-live                            # build-tagged, cannot pass quietly
-```
+**Nothing is hardcoded.** Shard counts, batch sizes, committee sizes, key
+lengths, tree arity, workload rates — all read from one shared config at
+runtime. A literal in code is a defect.
 
-## Where numbers are valid
+**No magic numbers.** A value taken from a reference paper is invalid until its
+rationale is recorded beside it. The derivation transfers, never the digit.
 
-The reference environment is Ubuntu 22.04 on `c6i.8xlarge` (32 vCPU, 64 GB).
-Anything else runs the code but does not measure it: the runner checks clock
-resolution at startup and **refuses a real run on a host whose clock is too
-coarse**, and the minimal topology is a correctness check that produces no
-measurements.
+**Reproducible or it does not count.** Same config plus same seed yields the
+same results; every run records its resolved config, seed, dataset, code
+revision and environment fingerprint. A result that cannot be regenerated from
+those does not go into the paper.
 
-Every experiment target depends on `validate-config`. Validation you have to
-remember is validation that gets skipped.
-
-## The rules
-
-Three constraints shape most of this codebase, and most of the guards exist to
-enforce them rather than trust them:
-
-1. **No fake, no simulation.** Every number comes from real code against a real
-   network — no analytical models, no extrapolation, no placeholder timings.
-2. **No hardcoded parameters.** Everything lives in `config/experiment.yaml`.
-3. **No magic numbers.** A value from a reference paper is invalid until its
-   rationale is recorded beside it. The derivation transfers, never the digit.
-
-The failure mode this guards against is silent: a baseline handed a cheaper
+Most of the guards in this codebase exist to *enforce* these rules rather than
+trust them, because the failure mode is silent: a baseline handed a cheaper
 primitive than its paper specifies does not crash, fails no test, and looks
-fine in a plot. If a guard fires, it is telling you something true — do not
-remove it to make something pass.
+perfectly fine in a plot.
 
-Full text, and the target environment: [`SKILL.md`](SKILL.md).
-
-## Where to look next
+## Where to look
 
 | File | For |
 |---|---|
-| [`SKILL.md`](SKILL.md) | the rules and the target environment — read before changing anything |
-| [`TASK.md`](TASK.md) | current state, what is done, what is next, and findings not to re-derive |
-| [`config/experiment.yaml`](config/experiment.yaml) | every parameter, each tagged DERIVED / METHOD / PROPOSED / CONFIRM |
+| [`SKILL.md`](SKILL.md) | the rules and the target environment |
+| [`docs/experiments.md`](docs/experiments.md) | what is measured, against what, under which conditions |
+| [`docs/baselines/`](docs/baselines/) | per-baseline scope, timing boundaries, deviation lists |
 | [`docs/paper-conformance.md`](docs/paper-conformance.md) | every claim against its paper citation |
-| [`docs/baselines/`](docs/baselines/) | per-baseline scope, timing boundaries, and deviation lists |
+| [`config/experiment.yaml`](config/experiment.yaml) | every parameter, with its rationale |
+
+## License
+
+TBD
