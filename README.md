@@ -1,4 +1,4 @@
-# VeRedact
+# ZK-Redact
 
 **An evaluation framework for ZK-Redact** — a privacy-preserving scheme for
 scalable redaction and provenance auditing in permissioned blockchains.
