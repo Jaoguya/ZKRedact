@@ -3,6 +3,8 @@
 **An evaluation framework for ZK-Redact** — a privacy-preserving scheme for
 scalable redaction and provenance auditing in permissioned blockchains.
 
+> **Accepted at IEEE KST 2027.**
+
 ## What this is
 
 Permissioned blockchains sometimes have to forget. A record enters the ledger
